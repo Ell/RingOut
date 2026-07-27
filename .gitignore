@@ -1,0 +1,92 @@
+# ---------------------------------------------------------------------------
+# NOTE ON STYLE: rules here are deliberately ANCHORED (leading "/") wherever
+# possible. Unanchored rules like "build/" or "*.png" match at every depth and
+# would silently gut the vendored trees -- upstream lz4 and zstd both ship a
+# real source directory named build/, and Dolphin ships ~1200 .png resources.
+# A missing file in a vendored GPL tree is a compliance problem, not a typo.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Game-derived data -- NEVER commit. Users supply their own disc; nothing
+# copyrighted ships with this project.
+# ---------------------------------------------------------------------------
+*.iso
+*.nkit.iso
+*.gcm
+*.rvz
+*.wbfs
+*.gcz
+*.7z
+*.olk
+*.dol
+*.xbe
+*_recomp.so
+# extracted character packages (copyrighted asset data)
+*_g22_*.bin
+# ROM-site drop, not ours to publish
+/Soulcalibur II (USA)/
+
+# ---------------------------------------------------------------------------
+# work/ -- scratch space. Everything is excluded; the GRSEAF cheat file is the
+# single deliberate exception, whitelisted directory by directory (git does not
+# look inside an excluded directory, so each level must be re-included).
+# In particular this keeps out work/portlab/ -- the character-porting tooling
+# is deliberately unpublished.
+# ---------------------------------------------------------------------------
+/work/*
+!/work/mg_userdir/
+/work/mg_userdir/*
+!/work/mg_userdir/GameSettings/
+/work/mg_userdir/GameSettings/*
+!/work/mg_userdir/GameSettings/GRSEAF.ini
+
+# ---------------------------------------------------------------------------
+# Abandoned runtime experiments -- not part of the shipped build.
+# ---------------------------------------------------------------------------
+/RecompCore/
+/GXRuntime/
+
+# ---------------------------------------------------------------------------
+# Nested upstream git stores, parked by scratchpad/disable_nested_git.sh so the
+# vendored trees commit as plain files instead of empty gitlinks.
+# ---------------------------------------------------------------------------
+.git-disabled
+
+# ---------------------------------------------------------------------------
+# Build output -- anchored to OUR build trees only.
+# ---------------------------------------------------------------------------
+/ModernGekko/build/
+/DolRecomp/build/
+/ModernGekko/.cache/
+/DolRecomp/.cache/
+compile_commands.json
+*.gch
+
+# ---------------------------------------------------------------------------
+# Release artifacts -- attach to GitHub Releases, do not commit (50MB+ each)
+# ---------------------------------------------------------------------------
+/dist.zip
+/dist/*.zip
+/dist/RingOut-1.0/
+/dist/RingOut-1.0-distkjjkhjk/
+# redistributable: ship the scaffolding, never the built payload
+/dist/RingOut-1.0-dist/bin/
+/dist/RingOut-1.0-dist/lib/
+/dist/RingOut-1.0-dist/libc-fallback/
+/dist/RingOut-1.0-dist/game/
+/dist/RingOut-1.0-dist/userdata/
+# prebuilt dolrecomp binary (unstripped, leaks build paths) -- setup.sh builds it
+/dist/RingOut-1.0-dist/tools/
+# GPL corresponding-source tarballs -- redundant now the source is in the repo
+/dist/RingOut-1.0-dist/source/
+
+# ---------------------------------------------------------------------------
+# Local / personal
+# ---------------------------------------------------------------------------
+/.claude/
+*.log
+core
+core.*
+# stray captures at the workspace root only -- docs/ screenshots are wanted
+/*.png
+/*.obj
