@@ -63,7 +63,14 @@ $crt = Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\2022\*\VC\Redist
         try { [version]$v } catch { [version]'0.0.0' }
     } -Descending | Select-Object -First 1
 if ($crt) {
+    # BOTH bin\ and tools\. Windows resolves DLLs from the executable's OWN
+    # directory, so shipping them next to moderngekko-run.exe does nothing for
+    # dolrecomp.exe sitting alone in tools\ -- it imports VCRUNTIME140.dll,
+    # failed to load on a machine without the redist installed, and died before
+    # main() with no output whatsoever. A tool that prints nothing at all, not
+    # even an error, is the signature of that failure.
     Copy-Item (Join-Path $crt.FullName '*.dll') (Join-Path $stage 'bin') -Force
+    Copy-Item (Join-Path $crt.FullName '*.dll') (Join-Path $stage 'tools') -Force
     Write-Host "  from $($crt.FullName)"
     Get-ChildItem (Join-Path $stage 'bin') -Filter '*.dll' | ForEach-Object {
         Write-Host ("    {0}  {1}" -f $_.Name, $_.VersionInfo.FileVersion)
