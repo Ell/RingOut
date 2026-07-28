@@ -282,7 +282,12 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // at that PC makes CoreTiming fast-forward to the next event instead → full
   // 60fps. (Idle-skip is the standard Dolphin approach; only the PC is game-
   // specific, so it is scoped to this disc ID.)
-  if (impl->metadata.disc_id == "GRSEAF")
+  // GRSEPS is the "SC2 Plus" community mod. It appends its own code at
+  // 0x80476000 and hooks the base text in place rather than relocating it, so
+  // the scheduler and its idle loop stay where they were: the four
+  // instructions at 0x80185DEC are byte-identical between the two discs
+  // (verified section by section against the stock DOL). Same spin, same skip.
+  if (impl->metadata.disc_id == "GRSEAF" || impl->metadata.disc_id == "GRSEPS")
     Config::SetBase(Config::MAIN_STATICRECOMP_IDLE_PC, 0x80185DECu);
   if (!impl->config.graphics.backend.empty())
     Config::SetBase(Config::MAIN_GFX_BACKEND, impl->config.graphics.backend);

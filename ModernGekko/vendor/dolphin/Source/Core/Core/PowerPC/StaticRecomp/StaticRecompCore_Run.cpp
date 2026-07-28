@@ -422,6 +422,14 @@ void StaticRecompCore::Run()
   const std::string initial_game_id = SConfig::GetInstance().GetGameID();
   m_module_active = m_module && (initial_game_id.empty() || initial_game_id == m_module->game_id);
 
+  if (getenv("STATICRECOMP_DEBUG_ID"))
+  {
+    fprintf(stderr, "[dbg] disc_game_id='%s' module_game_id='%s' module=%p active=%d\n",
+            initial_game_id.c_str(), m_module ? m_module->game_id : "(null)", (void*)m_module,
+            (int)m_module_active);
+    fflush(stderr);
+  }
+
   if (!m_module_active && m_fallback_jit)
   {
     m_fallback_jit->Run();
@@ -615,6 +623,18 @@ void StaticRecompCore::Run()
       {
         // SingleStepInner delivers synchronous exceptions itself; external
         // interrupts are delivered at slice start, as in Interpreter::Run.
+        if (const char* dbg_env = getenv("STATICRECOMP_DEBUG_ID"))
+        {
+          static int dbg_fb_count = 0;
+          const int dbg_cap = atoi(dbg_env) > 1 ? atoi(dbg_env) : 20;
+          if (dbg_fb_count < dbg_cap)
+          {
+            fprintf(stderr, "[dbg] fallback #%d at guest pc=0x%08X (dispatchable=%d)\n",
+                    dbg_fb_count, ppc.pc, (int)DispatchableAt(ppc.pc));
+            fflush(stderr);
+            ++dbg_fb_count;
+          }
+        }
         if (m_fallback_jit)
         {
           m_fallback_jit->Run();
