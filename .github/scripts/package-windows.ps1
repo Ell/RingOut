@@ -95,33 +95,51 @@ $llvmRoot = Get-ChildItem $dl -Directory -Filter 'llvm-mingw-*' | Select-Object 
 if (-not $llvmRoot) { throw "llvm-mingw did not extract as expected" }
 Copy-Item (Join-Path $llvmRoot.FullName '*') $tc -Recurse -Force
 
-# Trim what a module build never touches. clang keeps its sysroot
-# (x86_64-w64-mingw32/, lib/clang/) -- removing that breaks the compiler.
+# Trim what a module build never touches.
+#
+# ** Do not remove toolchain\include. ** It looks like stray headers and it is
+# the mingw-w64 sysroot -- windows.h, string.h, all of it. Deleting it produced
+# a toolchain that unpacked perfectly and could not compile "#include
+# <windows.h>". The sysroot is include\, x86_64-w64-mingw32\ and lib\clang\.
 Write-Host "==> trimming toolchain"
 $before = (Get-ChildItem $tc -Recurse -File | Measure-Object Length -Sum).Sum
 Get-ChildItem (Join-Path $tc 'bin') -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match '^(lldb|clang-repl|clang-check|clang-tidy|clang-format|clang-refactor|clang-rename|clang-scan-deps|llvm-lto|llvm-reduce|llvm-exegesis|bugpoint|opt|llc|lli|clang-doc|llvm-cfi-verify|clang-linker-wrapper)' } |
+    Where-Object { $_.Name -match '^(lldb|clangd|clang-repl|clang-check|clang-tidy|clang-format|clang-refactor|clang-rename|clang-scan-deps|llvm-lto|llvm-reduce|llvm-exegesis|bugpoint|opt|llc|lli|clang-doc|llvm-cfi-verify|clang-linker-wrapper|cmake-gui|ctest|cpack)' } |
     Remove-Item -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $tc 'bin\liblldb.dll') -Force -ErrorAction SilentlyContinue
 # The other three target triples are dead weight for an x86_64-only release.
 foreach ($t in 'aarch64-w64-mingw32', 'armv7-w64-mingw32', 'i686-w64-mingw32') {
     Remove-Item (Join-Path $tc $t) -Recurse -Force -ErrorAction SilentlyContinue
 }
-Remove-Item (Join-Path $tc 'share\doc'), (Join-Path $tc 'share\man'), (Join-Path $tc 'include') `
+# Sanitizer runtimes, and the Linux ones in particular, on a Windows-only bundle.
+Get-ChildItem (Join-Path $tc 'lib\clang') -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item (Join-Path $_.FullName 'lib\linux') -Recurse -Force -ErrorAction SilentlyContinue
+}
+Remove-Item (Join-Path $tc 'share\doc'), (Join-Path $tc 'share\man') `
     -Recurse -Force -ErrorAction SilentlyContinue
 $after = (Get-ChildItem $tc -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("  {0:N0} MB -> {1:N0} MB" -f ($before / 1MB), ($after / 1MB))
 
 # --- launcher -------------------------------------------------------------
-# Built with the toolchain we just unpacked, so no dev shell is needed. It is a
-# real .exe so players double-click something that looks like a game rather than
-# a .cmd that bypasses PowerShell's execution policy and flashes a console.
-Write-Host "==> launcher"
+# Built with the toolchain we just unpacked, so no dev shell is needed, and it
+# is a real .exe so players double-click something that looks like a game rather
+# than a .cmd that bypasses PowerShell's execution policy.
+#
+# This step doubles as the TRIM CANARY, and has already earned it: an
+# over-aggressive trim removed the mingw sysroot and this is what caught it.
+# Without a compile here, a broken toolchain ships and fails on a player's
+# machine halfway through setup.ps1.
+#
+# -flto=thin is deliberate even though the launcher does not need it: the module
+# build uses ThinLTO, so this exercises the same clang + lld + LTO plugin path
+# the user's own build depends on.
+Write-Host "==> launcher (also verifies the trimmed toolchain)"
 $clang = Join-Path $tc 'bin\clang.exe'
 if (-not (Test-Path -LiteralPath $clang)) { throw "bundled clang missing at $clang" }
 $launcherSrc = Join-Path $RepoRoot 'dist\RingOut-1.0-dist\launcher\RingOut.c'
 $launcherExe = Join-Path $stage 'RingOut.exe'
-& $clang $launcherSrc -o $launcherExe -municode -O2 -s -lcomdlg32
-if ($LASTEXITCODE -ne 0) { throw "launcher build failed" }
+& $clang $launcherSrc -o $launcherExe -municode -O2 -s -flto=thin -lcomdlg32
+if ($LASTEXITCODE -ne 0) { throw "launcher build failed -- the bundled toolchain is broken (over-trimmed?)" }
 Write-Host ("  RingOut.exe {0:N0} KB" -f ((Get-Item $launcherExe).Length / 1KB))
 
 Write-Host "==> ninja"
