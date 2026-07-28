@@ -183,6 +183,24 @@ if ($LASTEXITCODE -ne 0) { Die "Recompilation failed." }
 Copy-Item (Join-Path $Game 'sys\main.dol') (Join-Path $Work 'out\generated\main.dol')
 
 # --- 3/3 build the module -------------------------------------------------
+# ZIP stores DOS timestamps with no timezone, so files written by CI at 21:49
+# UTC extract as 21:49 LOCAL. Anyone west of UTC therefore ends up with build
+# inputs dated in the future, and ninja can never make build.ninja newer than
+# CMakeLists.txt:
+#
+#   ninja: error: manifest 'build.ninja' still dirty after 100 tries,
+#                 perhaps system time is not set
+#
+# The clock is fine; the files are ahead of it. Pull anything future-dated back
+# to now before configuring.
+$now = Get-Date
+$future = @(Get-ChildItem (Join-Path $Here 'module-src') -Recurse -File -ErrorAction SilentlyContinue |
+           Where-Object { $_.LastWriteTime -gt $now })
+if ($future.Count -gt 0) {
+    Write-Host "    normalising $($future.Count) future-dated file(s) from the archive"
+    foreach ($f in $future) { try { $f.LastWriteTime = $now } catch { } }
+}
+
 Write-Host "==> 3/3  Building the module"
 & $Cmake -S (Join-Path $Here 'module-src') -B (Join-Path $Work 'build') -GNinja `
     "-DCMAKE_MAKE_PROGRAM=$Ninja" `
