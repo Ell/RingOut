@@ -10,7 +10,13 @@ on:
     paths:
       - 'ModernGekko/**'
       - 'DolRecomp/**'
+      # The packaging script and the shipped scaffolding are part of what this
+      # workflow produces. Leaving them out meant a fix to the packaging script
+      # pushed cleanly, triggered nothing, and looked green against the PREVIOUS
+      # run's result.
       - '.github/workflows/windows.yml'
+      - '.github/scripts/**'
+      - 'dist/RingOut-1.0-dist/**'
 
 jobs:
   build:
