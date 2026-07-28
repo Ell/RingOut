@@ -27,9 +27,14 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=.
 OutputBaseFilename=RingOut-{#AppVersion}-windows-x64-setup
-Compression=lzma2/ultra64
+; ISCC.exe is a 32-bit process. lzma2/ultra64 is a 64 MB dictionary, and with
+; solid compression over a ~450 MB payload of thousands of small files it runs
+; out of address space: "Error in ringout.iss: Out of memory. Compile aborted."
+; max is a 32 MB dictionary, which fits and costs very little ratio on a payload
+; that is mostly already-compressed executables.
+Compression=lzma2/max
 SolidCompression=yes
-LZMANumBlockThreads=4
+LZMANumBlockThreads=2
 WizardStyle=modern
 ; The bundled toolchain is thousands of small files; without this the progress
 ; bar sits at 0% for a long time while Inno enumerates them.
