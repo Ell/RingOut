@@ -35,7 +35,7 @@ WizardStyle=modern
 ; bar sits at 0% for a long time while Inno enumerates them.
 SetupLogging=yes
 UninstallDisplayName={#AppName} {#AppVersion}
-UninstallDisplayIcon={app}\bin\moderngekko-run.exe
+UninstallDisplayIcon={app}\RingOut.exe
 ; Extracted disc + build output need considerably more room than the install.
 ExtraDiskSpaceRequired=1600000000
 
@@ -49,12 +49,12 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "RingOut-1.0\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}";           Filename: "{app}\RingOut.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\bin\moderngekko-run.exe"
+Name: "{group}\{#AppName}";           Filename: "{app}\RingOut.exe"; WorkingDir: "{app}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}";     Filename: "{app}\RingOut.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\bin\moderngekko-run.exe"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}";     Filename: "{app}\RingOut.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\RingOut.cmd"; Description: "Set up my game disc now"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent unchecked
+Filename: "{app}\RingOut.exe"; Description: "Set up my game disc now"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallDelete]
 ; Everything below is produced on the user's machine after install, so Inno does

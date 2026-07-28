@@ -111,6 +111,19 @@ Remove-Item (Join-Path $tc 'share\doc'), (Join-Path $tc 'share\man'), (Join-Path
 $after = (Get-ChildItem $tc -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("  {0:N0} MB -> {1:N0} MB" -f ($before / 1MB), ($after / 1MB))
 
+# --- launcher -------------------------------------------------------------
+# Built with the toolchain we just unpacked, so no dev shell is needed. It is a
+# real .exe so players double-click something that looks like a game rather than
+# a .cmd that bypasses PowerShell's execution policy and flashes a console.
+Write-Host "==> launcher"
+$clang = Join-Path $tc 'bin\clang.exe'
+if (-not (Test-Path -LiteralPath $clang)) { throw "bundled clang missing at $clang" }
+$launcherSrc = Join-Path $RepoRoot 'dist\RingOut-1.0-dist\launcher\RingOut.c'
+$launcherExe = Join-Path $stage 'RingOut.exe'
+& $clang $launcherSrc -o $launcherExe -municode -O2 -s -lcomdlg32
+if ($LASTEXITCODE -ne 0) { throw "launcher build failed" }
+Write-Host ("  RingOut.exe {0:N0} KB" -f ((Get-Item $launcherExe).Length / 1KB))
+
 Write-Host "==> ninja"
 $ninjaZip = Fetch (Get-LatestAsset 'ninja-build/ninja' 'ninja-win.zip') 'ninja.zip'
 Expand-Archive $ninjaZip -DestinationPath (Join-Path $tc 'bin') -Force
