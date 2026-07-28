@@ -17,19 +17,33 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/ringout)
 endif()
 
-# Dolphin's headers assume the two things its own Windows build sets, so they
-# have to be set here too -- for EVERY target, not just one. Both were found by
-# CI as errors deep inside Dolphin headers rather than in our own code:
+# Dolphin's headers assume the Windows settings Dolphin's own build applies.
+# It applies them in vendor/dolphin/Source/CMakeLists.txt -- a CHILD directory,
+# so targets declared HERE never inherit them, and every one of them surfaces as
+# an error deep inside a Dolphin header rather than in our own code:
 #   /Zc:preprocessor  HookableEvent.h uses __VA_OPT__, which MSVC's legacy
 #                     preprocessor rejects outright.
 #   UNICODE/_UNICODE  StringUtil.h's TStr helpers only have a valid definition
 #                     in the _UNICODE branch; the #else returns std::string
 #                     from a std::string_view, which does not compile.
-# These are directory-scoped and therefore inherited by vendor/dolphin below,
-# which is what we want: it matches how Dolphin is built on Windows natively.
+#   NOMINMAX          <windows.h> defines min/max as macros, which breaks every
+#                     std::numeric_limits<T>::max() in BitField.h, SpanUtils.h...
+# The whole set is mirrored rather than added one at a time, because each
+# missing definition costs a ~25 minute CI round trip to discover.
+if(WIN32)
+    add_compile_definitions(
+        NOMINMAX
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+        _SCL_SECURE_NO_WARNINGS
+        _CRT_SECURE_NO_WARNINGS
+        _CRT_SECURE_NO_DEPRECATE
+        _CRT_NONSTDC_NO_WARNINGS
+        _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
+endif()
 if(MSVC)
     add_compile_options(/Zc:preprocessor)
-    add_compile_definitions(UNICODE _UNICODE)
 endif()
 
 if(WIN32)
