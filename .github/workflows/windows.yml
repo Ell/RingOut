@@ -1,0 +1,67 @@
+name: Windows build
+
+# Windows binaries cannot be built or tested on the maintainer's machine
+# (Linux only), so CI is the feedback loop for the Windows port. Runs on
+# demand; it is not cheap (Windows runners bill at 2x).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'ModernGekko/**'
+      - 'DolRecomp/**'
+      - '.github/workflows/windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Configure
+        # Dolphin's own CMake drives the vendored tree. Qt and the tests are the
+        # two things that pull in toolchain we do not have on the runner, and the
+        # runtime is headless-capable, so both are off.
+        run: >
+          cmake -S ModernGekko -B build
+          -G "Visual Studio 17 2022" -A x64
+          -DENABLE_QT=OFF
+          -DENABLE_TESTS=OFF
+          -DENABLE_ANALYTICS=OFF
+          -DENABLE_AUTOUPDATE=OFF
+
+      - name: Build runtime
+        run: cmake --build build --config Release --target moderngekko-run
+
+      - name: Build recompiler
+        run: cmake --build build --config Release --target dolrecomp
+
+      - name: Collect binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          Get-ChildItem -Path build -Recurse -Include moderngekko-run.exe,dolrecomp.exe |
+            ForEach-Object { Copy-Item $_.FullName staging/ }
+          Get-ChildItem staging
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ringout-windows-x64
+          path: staging/
+          if-no-files-found: error
+
+      # A failed configure/build leaves the useful detail in these logs rather
+      # than in the step output.
+      - name: Upload CMake logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmake-logs
+          path: |
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/CMakeCache.txt
+          if-no-files-found: ignore
