@@ -17,6 +17,21 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/ringout)
 endif()
 
+# Dolphin's headers assume the two things its own Windows build sets, so they
+# have to be set here too -- for EVERY target, not just one. Both were found by
+# CI as errors deep inside Dolphin headers rather than in our own code:
+#   /Zc:preprocessor  HookableEvent.h uses __VA_OPT__, which MSVC's legacy
+#                     preprocessor rejects outright.
+#   UNICODE/_UNICODE  StringUtil.h's TStr helpers only have a valid definition
+#                     in the _UNICODE branch; the #else returns std::string
+#                     from a std::string_view, which does not compile.
+# These are directory-scoped and therefore inherited by vendor/dolphin below,
+# which is what we want: it matches how Dolphin is built on Windows natively.
+if(MSVC)
+    add_compile_options(/Zc:preprocessor)
+    add_compile_definitions(UNICODE _UNICODE)
+endif()
+
 if(WIN32)
     set(MODERNGEKKO_DYNAMIC_MODULES_DEFAULT ON)
 else()
