@@ -28,7 +28,23 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+// MSVC has no <unistd.h>; the POSIX names it does provide are underscored.
+// The mode must be "rb" here: the pipe carries raw ARGB frames, and Windows
+// text mode would expand 0x0A to 0x0D 0x0A and corrupt the video.
+#define RINGOUT_POPEN _popen
+#define RINGOUT_PCLOSE _pclose
+#define RINGOUT_POPEN_MODE "rb"
+#else
 #include <unistd.h>
+#define RINGOUT_POPEN popen
+#define RINGOUT_PCLOSE pclose
+// NOT "rb". POSIX defines the mode as "r" or "w", and glibc validates it
+// strictly -- popen("...", "rb") returns NULL, which silently killed FMV
+// playback (pipe=FAILED) while audio, which this hook does not touch, kept
+// playing. There is no text/binary distinction to worry about here anyway.
+#define RINGOUT_POPEN_MODE "r"
+#endif
 #ifdef __linux__
 #include <pthread.h>
 #include <sched.h>
@@ -108,10 +124,18 @@ public:
       }
     }
     char cmd[768];
+    // cmd.exe does not treat '...' as quoting -- it would pass the quotes
+    // through as part of the path -- so the argument is double-quoted there.
+#ifdef _WIN32
+    std::snprintf(cmd, sizeof(cmd),
+                  "ffmpeg -v error -i \"%s/movie%d.sfd\" -f rawvideo -pix_fmt argb -",
+                  base.c_str(), m_fno);
+#else
     std::snprintf(cmd, sizeof(cmd),
                   "ffmpeg -v error -i '%s/movie%d.sfd' -f rawvideo -pix_fmt argb -",
                   base.c_str(), m_fno);
-    m_pipe = popen(cmd, "r");
+#endif
+    m_pipe = RINGOUT_POPEN(cmd, RINGOUT_POPEN_MODE);
     m_stop = false;
     m_open = true;
     if (m_pipe)
@@ -147,7 +171,7 @@ public:
       m_reader.join();
     if (m_pipe)
     {
-      pclose(m_pipe);
+      RINGOUT_PCLOSE(m_pipe);
       m_pipe = nullptr;
     }
     m_queue.clear();
@@ -211,7 +235,7 @@ private:
           if (m_queue.size() < 8)
             break;
         }
-        usleep(2000);
+        std::this_thread::sleep_for(std::chrono::microseconds(2000));
       }
     }
   }
