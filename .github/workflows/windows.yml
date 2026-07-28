@@ -54,6 +54,22 @@ jobs:
           path: staging/
           if-no-files-found: error
 
+      # The release bundle carries a whole toolchain, so it is assembled here
+      # rather than on a developer machine: llvm-mingw alone unpacks to ~2 GB.
+      - name: Package release
+        shell: pwsh
+        run: |
+          .github/scripts/package-windows.ps1 `
+            -BinDir staging -RepoRoot (Get-Location).Path -OutDir package
+
+      - name: Upload release zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ringout-windows-release
+          path: package/RingOut-1.0-windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0   # already a zip
+
       # A failed configure/build leaves the useful detail in these logs rather
       # than in the step output.
       - name: Upload CMake logs on failure

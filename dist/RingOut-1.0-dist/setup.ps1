@@ -42,10 +42,21 @@ $Clang = Find-Tool 'clang'
 $Cmake = Find-Tool 'cmake'
 $Ninja = Find-Tool 'ninja'
 
+# The module's CMake does find_package(Python3 REQUIRED) for gen_module_tables.py.
+# The bundled interpreter is the embeddable build, which is deliberately not on
+# PATH and not in the registry, so CMake will never discover it on its own --
+# it has to be pointed at explicitly.
+$Python = Join-Path $Tools 'python\python.exe'
+if (-not (Test-Path -LiteralPath $Python)) {
+    $onPath = Get-Command 'python.exe' -ErrorAction SilentlyContinue
+    $Python = if ($onPath) { $onPath.Source } else { $null }
+}
+
 $missing = @()
-if (-not $Clang) { $missing += 'clang' }
-if (-not $Cmake) { $missing += 'cmake' }
-if (-not $Ninja) { $missing += 'ninja' }
+if (-not $Clang)  { $missing += 'clang' }
+if (-not $Cmake)  { $missing += 'cmake' }
+if (-not $Ninja)  { $missing += 'ninja' }
+if (-not $Python) { $missing += 'python' }
 if ($missing.Count -gt 0) {
     Die ("Bundled toolchain is incomplete -- missing: {0}`nExpected it under {1}`nRe-download the release; the toolchain\ folder must be extracted with everything else." -f ($missing -join ', '), $Tools)
 }
@@ -116,6 +127,7 @@ Write-Host "==> 3/3  Building the module"
     "-DCMAKE_MAKE_PROGRAM=$Ninja" `
     -DCMAKE_BUILD_TYPE=Release `
     "-DCMAKE_C_COMPILER=$Clang" `
+    "-DPython3_EXECUTABLE=$Python" `
     -DCMAKE_C_FLAGS="-march=native" `
     "-DGAME_ID=$DiscId" `
     "-DGENERATED_DIR=$(Join-Path $Work 'out\generated')" `
