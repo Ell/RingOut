@@ -85,8 +85,12 @@ compile_commands.json
 # ---------------------------------------------------------------------------
 /.claude/
 *.log
-core
-core.*
+# Core dumps -- ROOT ONLY. Unanchored, "core" matches every directory named
+# core (SDL's src/core/, ...) and "core.*" matches core.h / core.c, which
+# silently dropped 171 vendored source files from the first commit and broke
+# the Windows build at CMake configure time.
+/core
+/core.*
 # stray captures at the workspace root only -- docs/ screenshots are wanted
 /*.png
 /*.obj
