@@ -64,8 +64,11 @@ static BOOL pick_iso(wchar_t *out, DWORD n)
     out[0] = L'\0';
     ofn.lStructSize = sizeof ofn;
     ofn.hwndOwner = NULL;
-    ofn.lpstrFilter = L"Disc images (*.iso;*.gcm;*.rvz;*.wbfs;*.gcz)\0"
-                      L"*.iso;*.gcm;*.rvz;*.wbfs;*.gcz\0"
+    /* Only what dolrecomp can actually read. Offering .rvz/.gcz/.gcm led
+     * straight to "Disc extraction failed" after the user had already picked a
+     * file -- the extractor rejects them by extension. */
+    ofn.lpstrFilter = L"GameCube disc images (*.iso;*.wbfs)\0"
+                      L"*.iso;*.wbfs\0"
                       L"All files (*.*)\0*.*\0";
     ofn.lpstrFile = out;
     ofn.nMaxFile = n;

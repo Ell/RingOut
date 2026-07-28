@@ -95,11 +95,52 @@ Most likely causes:
 Write-Host "Using C compiler: $Clang"
 
 # --- 1/3 extract ----------------------------------------------------------
+# Check the image BEFORE the long extract, and say something useful. dolrecomp
+# accepts only .iso and .wbfs, and wants a plain uncompressed image: it reads
+# the GameCube magic C2 33 9F 3D at offset 0x1C. A compressed image (NKit, RVZ
+# renamed to .iso) passes the extension test and then fails with a message that
+# does not explain what to do about it.
+$ext = [System.IO.Path]::GetExtension($Iso).ToLowerInvariant()
+if ($ext -notin '.iso', '.wbfs') {
+    Die @"
+'$ext' images cannot be read directly -- only .iso and .wbfs are supported.
+
+Convert it to a plain ISO first. In Dolphin: right-click the game ->
+Properties -> Convert File, choose format "ISO" with no compression.
+"@
+}
+if ($ext -eq '.iso') {
+    $fs = [System.IO.File]::OpenRead($Iso)
+    try {
+        $hdr = New-Object byte[] 32
+        $null = $fs.Read($hdr, 0, 32)
+    } finally { $fs.Dispose() }
+    # Big-endian 0xC2339F3D at 0x1C.
+    if (-not ($hdr[0x1C] -eq 0xC2 -and $hdr[0x1D] -eq 0x33 -and
+              $hdr[0x1E] -eq 0x9F -and $hdr[0x1F] -eq 0x3D)) {
+        $id = -join ($hdr[0..5] | ForEach-Object { [char]$_ })
+        Die @"
+That .iso is not a plain GameCube disc image.
+
+The GameCube signature is missing from its header, which almost always means
+the file is compressed -- an NKit image, or an RVZ/GCZ renamed to .iso. They
+have to be decompressed before they can be recompiled.
+
+  disc id read: '$id'
+
+In Dolphin: right-click the game -> Properties -> Convert File, choose
+format "ISO" and compression "None".
+"@
+    }
+}
+
 Write-Host "==> 1/3  Extracting disc"
 $Game = Join-Path $Here 'game'
 if (Test-Path -LiteralPath $Game) { Remove-Item -Recurse -Force -LiteralPath $Game }
-& (Join-Path $Here 'tools\dolrecomp.exe') extract $Iso $Game
-if ($LASTEXITCODE -ne 0) { Die "Disc extraction failed." }
+# 2>&1 so dolrecomp's stderr lands in this window; it explains the failure and
+# was previously invisible to anyone reporting a problem.
+& (Join-Path $Here 'tools\dolrecomp.exe') extract $Iso $Game 2>&1 | Write-Host
+if ($LASTEXITCODE -ne 0) { Die "Disc extraction failed (dolrecomp exit $LASTEXITCODE). See the messages above." }
 
 $bootBin = Join-Path $Game 'sys\boot.bin'
 if (-not (Test-Path -LiteralPath $bootBin)) { Die "Could not read a disc ID -- is that a GameCube disc image?" }
