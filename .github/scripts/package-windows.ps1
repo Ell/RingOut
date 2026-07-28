@@ -131,12 +131,33 @@ $pyVer = '3.11.9'
 $pyZip = Fetch "https://www.python.org/ftp/python/$pyVer/python-$pyVer-embed-amd64.zip" 'python.zip'
 Expand-Archive $pyZip -DestinationPath (Join-Path $tc 'python') -Force
 
+# --- installer ------------------------------------------------------------
+# The .exe is the primary download; the .zip stays for people who prefer a
+# portable folder they can drop anywhere.
+Write-Host "==> installer"
+$iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+                      'C:\Program Files\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+if (-not $iscc) { throw "ISCC.exe (Inno Setup 6) not found on this runner" }
+Write-Host "  using $($iscc.FullName)"
+
+Copy-Item (Join-Path $PSScriptRoot 'ringout.iss') $OutDir -Force
+Push-Location $OutDir
+try {
+    & $iscc.FullName 'ringout.iss'
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+} finally {
+    Pop-Location
+}
+Remove-Item (Join-Path $OutDir 'ringout.iss') -Force -ErrorAction SilentlyContinue
+
 # --- zip ------------------------------------------------------------------
 Write-Host "==> zipping"
 $zip = Join-Path $OutDir 'RingOut-1.0-windows-x64.zip'
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal -Force
 Remove-Item $dl -Recurse -Force -ErrorAction SilentlyContinue
 
-$mb = (Get-Item $zip).Length / 1MB
-Write-Host ("`nRingOut-1.0-windows-x64.zip  {0:N0} MB" -f $mb)
+Write-Host ""
+Get-ChildItem $OutDir -File | Where-Object { $_.Extension -in '.exe', '.zip' } |
+    ForEach-Object { Write-Host ("{0,-44} {1,6:N0} MB" -f $_.Name, ($_.Length / 1MB)) }
 Get-ChildItem $stage | Select-Object Name, Length | Format-Table -AutoSize

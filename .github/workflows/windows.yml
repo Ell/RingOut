@@ -68,13 +68,15 @@ jobs:
           .github/scripts/package-windows.ps1 `
             -BinDir staging -RepoRoot (Get-Location).Path -OutDir package
 
-      - name: Upload release zip
+      - name: Upload release
         uses: actions/upload-artifact@v4
         with:
           name: ringout-windows-release
-          path: package/RingOut-1.0-windows-x64.zip
+          path: |
+            package/RingOut-1.0-windows-x64-setup.exe
+            package/RingOut-1.0-windows-x64.zip
           if-no-files-found: error
-          compression-level: 0   # already a zip
+          compression-level: 0   # both are already compressed
 
       # A failed configure/build leaves the useful detail in these logs rather
       # than in the step output.
