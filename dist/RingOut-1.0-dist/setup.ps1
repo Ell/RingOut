@@ -118,15 +118,35 @@ if ($ext -eq '.iso') {
     # Big-endian 0xC2339F3D at 0x1C.
     if (-not ($hdr[0x1C] -eq 0xC2 -and $hdr[0x1D] -eq 0x33 -and
               $hdr[0x1E] -eq 0x9F -and $hdr[0x1F] -eq 0x3D)) {
-        $id = -join ($hdr[0..5] | ForEach-Object { [char]$_ })
+        $id = -join ($hdr[0..5] | ForEach-Object { if ($_ -ge 32 -and $_ -lt 127) { [char]$_ } else { '.' } })
+        $sizeMB = [int]((Get-Item -LiteralPath $Iso).Length / 1MB)
+        # A GameCube disc holds at most ~1.36 GB. Anything materially larger is
+        # a DVD -- the PS2 or Xbox release of the same game, which people pick
+        # by mistake because the filename looks right. Telling them to
+        # "decompress it in Dolphin" would be useless advice for that case.
+        if ($sizeMB -gt 1500) {
+            Die @"
+That image is $sizeMB MB, which is too large to be a GameCube disc (max ~1400 MB).
+
+It is almost certainly the PlayStation 2 or Xbox release of the game. Those
+are the same game but a completely different console, and this port recompiles
+GameCube PowerPC code specifically -- it cannot use them.
+
+  disc id read: '$id'
+
+You need the GameCube version, around 1.0-1.4 GB, whose first six bytes are a
+disc id like GRSEAF.
+"@
+        }
         Die @"
 That .iso is not a plain GameCube disc image.
 
-The GameCube signature is missing from its header, which almost always means
-the file is compressed -- an NKit image, or an RVZ/GCZ renamed to .iso. They
-have to be decompressed before they can be recompiled.
+The GameCube signature is missing from its header, which usually means the file
+is compressed -- an NKit image, or an RVZ/GCZ renamed to .iso. It has to be
+decompressed before it can be recompiled.
 
   disc id read: '$id'
+  size:         $sizeMB MB
 
 In Dolphin: right-click the game -> Properties -> Convert File, choose
 format "ISO" and compression "None".
