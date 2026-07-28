@@ -17,35 +17,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/ringout)
 endif()
 
-# Dolphin's headers assume the Windows settings Dolphin's own build applies.
-# It applies them in vendor/dolphin/Source/CMakeLists.txt -- a CHILD directory,
-# so targets declared HERE never inherit them, and every one of them surfaces as
-# an error deep inside a Dolphin header rather than in our own code:
-#   /Zc:preprocessor  HookableEvent.h uses __VA_OPT__, which MSVC's legacy
-#                     preprocessor rejects outright.
-#   UNICODE/_UNICODE  StringUtil.h's TStr helpers only have a valid definition
-#                     in the _UNICODE branch; the #else returns std::string
-#                     from a std::string_view, which does not compile.
-#   NOMINMAX          <windows.h> defines min/max as macros, which breaks every
-#                     std::numeric_limits<T>::max() in BitField.h, SpanUtils.h...
-# The whole set is mirrored rather than added one at a time, because each
-# missing definition costs a ~25 minute CI round trip to discover.
-if(WIN32)
-    add_compile_definitions(
-        NOMINMAX
-        UNICODE
-        _UNICODE
-        WIN32_LEAN_AND_MEAN
-        _SCL_SECURE_NO_WARNINGS
-        _CRT_SECURE_NO_WARNINGS
-        _CRT_SECURE_NO_DEPRECATE
-        _CRT_NONSTDC_NO_WARNINGS
-        _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
-endif()
-if(MSVC)
-    add_compile_options(/Zc:preprocessor)
-endif()
-
 if(WIN32)
     set(MODERNGEKKO_DYNAMIC_MODULES_DEFAULT ON)
 else()
@@ -143,6 +114,39 @@ if(BUILD_TESTING)
     add_subdirectory(vendor/dolphin/DolRecomp)
 else()
     add_subdirectory(vendor/dolphin/DolRecomp EXCLUDE_FROM_ALL)
+endif()
+
+# Dolphin's headers assume the Windows settings Dolphin's own build applies, and
+# targets declared here do not inherit them: Dolphin sets them in
+# vendor/dolphin/Source/CMakeLists.txt, a CHILD directory. Each missing one
+# surfaces as an error deep inside a Dolphin header rather than in our code:
+#   /Zc:preprocessor  HookableEvent.h uses __VA_OPT__, which MSVC's legacy
+#                     preprocessor rejects outright.
+#   UNICODE/_UNICODE  StringUtil.h's TStr helpers only have a valid definition
+#                     in the _UNICODE branch; the #else returns std::string
+#                     from a std::string_view, which does not compile.
+#   NOMINMAX          <windows.h> defines min/max as macros, breaking every
+#                     std::numeric_limits<T>::max() in BitField.h, SpanUtils.h.
+#
+# ** Placement is load-bearing. ** These are directory-scoped, so they apply
+# only to targets created AFTER this point -- i.e. ours, and deliberately NOT
+# the vendored trees added above. Dolphin confines them to Source/ for the same
+# reason: applied tree-wide, WIN32_LEAN_AND_MEAN excludes the headers that
+# declare PROPERTYKEY and Externals/hidapi stops compiling.
+if(WIN32)
+    add_compile_definitions(
+        NOMINMAX
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+        _SCL_SECURE_NO_WARNINGS
+        _CRT_SECURE_NO_WARNINGS
+        _CRT_SECURE_NO_DEPRECATE
+        _CRT_NONSTDC_NO_WARNINGS
+        _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
+endif()
+if(MSVC)
+    add_compile_options(/Zc:preprocessor)
 endif()
 
 add_library(moderngekko_abi INTERFACE)
