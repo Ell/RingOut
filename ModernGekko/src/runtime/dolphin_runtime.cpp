@@ -291,6 +291,16 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
     Config::SetBase(Config::MAIN_STATICRECOMP_IDLE_PC, 0x80185DECu);
   if (!impl->config.graphics.backend.empty())
     Config::SetBase(Config::MAIN_GFX_BACKEND, impl->config.graphics.backend);
+#ifdef _WIN32
+  // Default to Direct3D on Windows. Vulkan is only present if the GPU driver
+  // installed vulkan-1.dll, and on a machine without it the failure is fatal
+  // and opaque -- "Failed to load Vulkan library", then "Failed to initialize
+  // video backend!", and the emulated CPU never starts (native=0). D3D11 ships
+  // with Windows itself, so it always works. This is the BASE layer, so a
+  // backend chosen in the settings menu still wins.
+  else if (!impl->config.headless)
+    Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("D3D"));
+#endif
   else if (impl->config.headless)
     Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Null"));
   if (impl->config.graphics.internal_resolution_scale)
