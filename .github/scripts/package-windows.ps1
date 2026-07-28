@@ -50,11 +50,24 @@ Copy-Item (Join-Path $BinDir 'dolrecomp.exe')       (Join-Path $stage 'tools') -
 # The runtime imports MSVCP140 / VCRUNTIME140; shipping the redist DLLs beats
 # telling players to go and install the C++ redistributable first.
 Write-Host "==> VC++ runtime"
+# Take the NEWEST redist, not whichever the filesystem lists first. The runner
+# carries several side by side, and the first match was the VS2019 (VC142) set
+# while the binary is built with the v143 toolset. MSVCP140.dll is ABI-stable,
+# but VCRUNTIME140_1.dll and MSVCP140_ATOMIC_WAIT.dll gain exports over time, so
+# an older redist fails with "entry point not found" -- on a player's machine,
+# never here, because CI has the real runtime installed system-wide.
 $crt = Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT' `
-    -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    -Directory -ErrorAction SilentlyContinue |
+    Sort-Object {
+        $v = $_.Parent.Parent.Name          # the 14.xx.yyyyy version folder
+        try { [version]$v } catch { [version]'0.0.0' }
+    } -Descending | Select-Object -First 1
 if ($crt) {
     Copy-Item (Join-Path $crt.FullName '*.dll') (Join-Path $stage 'bin') -Force
     Write-Host "  from $($crt.FullName)"
+    Get-ChildItem (Join-Path $stage 'bin') -Filter '*.dll' | ForEach-Object {
+        Write-Host ("    {0}  {1}" -f $_.Name, $_.VersionInfo.FileVersion)
+    }
 } else {
     Write-Warning "VC++ redist DLLs not found -- players will need the redistributable installed"
 }
