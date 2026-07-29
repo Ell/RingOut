@@ -12,6 +12,14 @@ export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 USER_DIR="$HERE/userdata"
 mkdir -p "$USER_DIR"
 
+# Bundled post-processing filters (scanlines, CRT). Dolphin only searches
+# <userdir>/Shaders, so they are installed there on launch. -n means a filter
+# the user has edited is never overwritten.
+if [ -d "$HERE/shaders" ]; then
+    mkdir -p "$USER_DIR/Shaders"
+    cp -n "$HERE/shaders"/*.glsl "$USER_DIR/Shaders/" 2>/dev/null || true
+fi
+
 have_module() { ls "$HERE"/bin/g*_recomp.so >/dev/null 2>&1; }
 
 # Ask for the disc image, preferring a graphical picker when one exists.

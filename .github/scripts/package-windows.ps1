@@ -82,10 +82,16 @@ if ($crt) {
 # --- scaffolding ----------------------------------------------------------
 Write-Host "==> scaffolding"
 $src = Join-Path $RepoRoot 'dist\RingOut-1.0-dist'
-foreach ($f in 'setup.ps1', 'RingOut.ps1', 'RingOut.cmd', 'README.txt', 'CREDITS.txt') {
+# Windows-only scaffolding lives in windows\ so the Linux distribution stays
+# unambiguous; it is flattened into the root of the package here.
+foreach ($f in 'README.txt', 'CREDITS.txt') {
     Copy-Item (Join-Path $src $f) $stage -Force
 }
+foreach ($f in 'setup.ps1', 'RingOut.ps1', 'RingOut.cmd') {
+    Copy-Item (Join-Path $src 'windows' | Join-Path -ChildPath $f) $stage -Force
+}
 Copy-Item (Join-Path $src 'module-src') $stage -Recurse -Force
+Copy-Item (Join-Path $src 'shaders')    $stage -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'userdata\GameSettings') | Out-Null
 Copy-Item (Join-Path $RepoRoot 'work\mg_userdir\GameSettings\GRSEAF.ini') `
           (Join-Path $stage 'userdata\GameSettings') -Force
@@ -143,7 +149,7 @@ Write-Host ("  {0:N0} MB -> {1:N0} MB" -f ($before / 1MB), ($after / 1MB))
 Write-Host "==> launcher (also verifies the trimmed toolchain)"
 $clang = Join-Path $tc 'bin\clang.exe'
 if (-not (Test-Path -LiteralPath $clang)) { throw "bundled clang missing at $clang" }
-$launcherSrc = Join-Path $RepoRoot 'dist\RingOut-1.0-dist\launcher\RingOut.c'
+$launcherSrc = Join-Path $RepoRoot 'dist\RingOut-1.0-dist\windows\launcher\RingOut.c'
 $launcherExe = Join-Path $stage 'RingOut.exe'
 & $clang $launcherSrc -o $launcherExe -municode -O2 -s -flto=thin -lcomdlg32
 if ($LASTEXITCODE -ne 0) { throw "launcher build failed -- the bundled toolchain is broken (over-trimmed?)" }

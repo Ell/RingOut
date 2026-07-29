@@ -71,6 +71,7 @@ enum class Item
   FreeCamera,
   TrainingHud,
   LensFlares,
+  Filter,
   Fullscreen,
   // Audio
   Volume,
@@ -129,7 +130,7 @@ const std::vector<Item>& TabItems(Tab tab)
       Item::Widescreen,   Item::InternalRes, Item::AspectRatio,      Item::VSync,
       Item::AntiAliasing, Item::Anisotropy,  Item::TextureFiltering, Item::TexturePacks,
       Item::PrefetchTextures, Item::ShowFPS, Item::FreeCamera,       Item::TrainingHud,
-      Item::LensFlares,       Item::Fullscreen,                      Item::Apply};
+      Item::LensFlares,       Item::Filter,      Item::Fullscreen,       Item::Apply};
   static const std::vector<Item> audio = {Item::Volume, Item::Muted, Item::AudioLatency,
                                           Item::FillGaps, Item::Apply};
   static const std::vector<Item> system = {Item::Speed,      Item::StateSlot, Item::SaveState,
@@ -514,6 +515,8 @@ const char* ItemLabel(Item item)
     return "Aspect Ratio";
   case Item::LensFlares:
     return "Lens Flares";
+  case Item::Filter:
+    return "Filter";
   case Item::VSync:
     return "V-Sync";
   case Item::AntiAliasing:
@@ -562,6 +565,30 @@ const char* ItemLabel(Item item)
     return "";
   }
 }
+
+// Post-processing filters offered by the Filter row. Dolphin ships 48 shaders,
+// which is far too many to page through one key press at a time, so this is a
+// curated set: the two written for this project (Dolphin has no scanline or CRT
+// filter of its own) plus the generally useful ones already present.
+//
+// The empty string is Dolphin's own representation of "no shader", not a
+// placeholder of ours.
+struct FilterEntry
+{
+  const char* label;
+  const char* shader;
+};
+
+constexpr std::array<FilterEntry, 8> kFilters = {{
+    {"Off", ""},
+    {"Scanlines", "scanlines"},
+    {"CRT", "crt"},
+    {"FXAA", "FXAA"},
+    {"Grayscale", "grayscale"},
+    {"Sepia", "sepia"},
+    {"Posterize", "posterize"},
+    {"Invert", "invert"},
+}};
 
 std::string ItemValue(Item item, int state_slot)
 {
@@ -624,6 +651,16 @@ std::string ItemValue(Item item, int state_slot)
     default:
       return "Default";
     }
+  case Item::Filter:
+  {
+    const std::string current = Config::Get(Config::GFX_ENHANCE_POST_SHADER);
+    for (const FilterEntry& filter : kFilters)
+      if (current == filter.shader)
+        return filter.label;
+    // Something set it to a shader outside the curated list -- show its name
+    // rather than lying about it being off.
+    return current.empty() ? "Off" : current;
+  }
   case Item::TexturePacks:
     return Config::Get(Config::GFX_HIRES_TEXTURES) ? "ON" : "OFF";
   case Item::PrefetchTextures:
@@ -836,6 +873,17 @@ bool AdjustItem(Item item, int direction, State& state)
         index = static_cast<int>(i);
     index = std::clamp(index + direction, 0, static_cast<int>(kModes.size()) - 1);
     Config::SetBase(Config::GFX_ENHANCE_FORCE_TEXTURE_FILTERING, kModes[index]);
+    break;
+  }
+  case Item::Filter:
+  {
+    const std::string current = Config::Get(Config::GFX_ENHANCE_POST_SHADER);
+    int index = 0;
+    for (size_t i = 0; i < kFilters.size(); ++i)
+      if (current == kFilters[i].shader)
+        index = static_cast<int>(i);
+    index = std::clamp(index + direction, 0, static_cast<int>(kFilters.size()) - 1);
+    Config::SetBase(Config::GFX_ENHANCE_POST_SHADER, std::string(kFilters[index].shader));
     break;
   }
   case Item::TexturePacks:

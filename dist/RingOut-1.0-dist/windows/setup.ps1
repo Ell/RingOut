@@ -223,5 +223,18 @@ $dll = Join-Path $Work "build\g${DiscId}_recomp.dll"
 if (-not (Test-Path -LiteralPath $dll)) { Die "Module built but g${DiscId}_recomp.dll was not produced." }
 Copy-Item $dll (Join-Path $Here 'bin') -Force
 
+# Bundled post-processing filters (scanlines, CRT). Dolphin only searches
+# <userdir>\Shaders, so they are installed there. Existing files are left
+# alone so an edited filter is never overwritten.
+$shaderSrc = Join-Path $Here 'shaders'
+if (Test-Path -LiteralPath $shaderSrc) {
+    $shaderDst = Join-Path $Here 'userdata\Shaders'
+    New-Item -ItemType Directory -Force -Path $shaderDst | Out-Null
+    Get-ChildItem $shaderSrc -Filter *.glsl | ForEach-Object {
+        $target = Join-Path $shaderDst $_.Name
+        if (-not (Test-Path -LiteralPath $target)) { Copy-Item $_.FullName $target }
+    }
+}
+
 Write-Host ""
-Write-Host "Setup complete. Run RingOut.cmd to play."
+Write-Host "Setup complete. Run RingOut.exe to play."
