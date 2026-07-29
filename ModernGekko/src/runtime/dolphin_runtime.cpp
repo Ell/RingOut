@@ -329,8 +329,8 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   if (impl->config.headless) {
     impl->config.audio.backend = BACKEND_NULLSOUND;
   } else if (impl->config.audio.backend.empty() ||
-             !std::ranges::contains(audio_backends,
-                                    impl->config.audio.backend)) {
+             std::ranges::find(audio_backends, impl->config.audio.backend) ==
+                 audio_backends.end()) {
     impl->config.audio.backend = AudioCommon::GetDefaultSoundBackend();
     if (impl->config.audio.backend == BACKEND_NULLSOUND) {
       const auto available =
