@@ -7,10 +7,46 @@
 # and stays in this folder.
 
 HERE="$(dirname "$(readlink -f "$0")")"
-export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 USER_DIR="$HERE/userdata"
 mkdir -p "$USER_DIR"
+
+# Only the libraries this host does NOT already provide go on the search path.
+#
+# Putting all of lib/ on LD_LIBRARY_PATH shadows the host's copy of every soname
+# we ship, and the variable as a whole outranks the system paths, so ordering
+# within it is not a fix. That matters because the process is not only ours: the
+# Vulkan loader dlopens the host's Mesa driver into it, and Mesa then resolves
+# libzstd, libz, libxcb, libX11, libwayland-client and friends against our
+# copies rather than the ones it was built against. No driver loads, the loader
+# has no ICD, and the run dies at "Failed to create Vulkan instance".
+#
+# That is not hypothetical: it is exactly how the Steam Deck build failed, and
+# it only shows up when the user's distro differs from wherever lib/ was filled
+# from -- so it would reach users of this package and not the person who built
+# it. ldconfig is asked what is installed and only the remainder is linked into
+# a private directory. RINGOUT_ALL_LIBS=1 forces the whole bundle back, which
+# separates a library the host is missing from one whose bundled copy is wrong.
+LIBDIR="$HERE/lib"
+LIB_PATH=""
+if [ -d "$LIBDIR" ]; then
+    if [ "${RINGOUT_ALL_LIBS:-0}" = "1" ] || ! command -v ldconfig >/dev/null 2>&1; then
+        LIB_PATH="$LIBDIR"
+    else
+        HOSTLIBS="$(ldconfig -p 2>/dev/null | awk '{print $1}' | sort -u)"
+        FALLBACK="$USER_DIR/lib-fallback"
+        rm -rf "$FALLBACK"
+        mkdir -p "$FALLBACK"
+        for so in "$LIBDIR"/*.so*; do
+            [ -e "$so" ] || continue
+            name="$(basename "$so")"
+            printf '%s\n' "$HOSTLIBS" | grep -qxF "$name" && continue
+            ln -sf "$so" "$FALLBACK/$name"
+        done
+        LIB_PATH="$FALLBACK"
+    fi
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$LIB_PATH"
+fi
 
 # Bundled post-processing filters (scanlines, CRT). Dolphin only searches
 # <userdir>/Shaders, so they are installed there on launch. -n means a filter
@@ -117,7 +153,10 @@ LOADER="$HERE/libc-fallback/ld-linux-x86-64.so.2"
 if [ -n "$host_glibc" ] && [ -x "$LOADER" ] && \
    [ "$(printf '%s\n%s\n' "$NEED_GLIBC" "$host_glibc" | sort -V | head -1)" != "$NEED_GLIBC" ]; then
     echo "Ring Out: host glibc $host_glibc is older than $NEED_GLIBC - using bundled glibc." >&2
-    exec "$LOADER" --library-path "$HERE/libc-fallback:$HERE/lib:$LD_LIBRARY_PATH:/usr/lib:/usr/lib64:/lib:/lib64" \
+    # $LIB_PATH, not $HERE/lib: on this path the bundled glibc genuinely has to
+    # win, but the rest of the bundle should still defer to the host for
+    # anything the host already has, for the Mesa reason above.
+    exec "$LOADER" --library-path "$HERE/libc-fallback:$LIB_PATH:$LD_LIBRARY_PATH:/usr/lib:/usr/lib64:/lib:/lib64" \
         "$HERE/bin/moderngekko-run" --user-dir "$USER_DIR" $GAME_ARGS "$@"
 fi
 
