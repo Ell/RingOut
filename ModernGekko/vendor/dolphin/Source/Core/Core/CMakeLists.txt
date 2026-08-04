@@ -555,6 +555,8 @@ add_library(core
   NetPlay/NetPlayServerInput.cpp
   NetPlay/NetworkCaptureLogger.cpp
   NetPlay/NetworkCaptureLogger.h
+  RecompDeterminism.cpp
+  RecompDeterminism.h
   Cheats/PatchEngine.cpp
   Cheats/PatchEngine.h
   PowerPC/BreakPoints.cpp

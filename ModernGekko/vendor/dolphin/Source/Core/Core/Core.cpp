@@ -66,6 +66,7 @@
 #include "Core/Movie.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/NetPlayProto.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/Cheats/PatchEngine.h"
 #include "Core/PowerPC/GDBStub.h"
 #include "Core/PowerPC/JitInterface.h"
@@ -136,6 +137,10 @@ void FrameUpdateOnCPUThread()
 {
   if (NetPlay::IsNetPlayRunning())
     NetPlay::NetPlayClient::SendTimeBase();
+
+  // On the CPU thread and once per emulated frame, which is the only place a
+  // state hash is comparable between two runs.
+  RecompDeterminism::OnFrame(Core::System::GetInstance());
 }
 
 void OnFrameEnd(Core::System& system)

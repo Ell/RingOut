@@ -15,6 +15,7 @@
 #include "Core/HW/GBACore.h"
 #include "Core/Host.h"
 #include "Core/NetPlay/NetPlayClient.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompModuleSource.h"
@@ -274,7 +275,12 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // the GPU to its own thread (matching real GC's async GP), the biggest perf
   // win for FMV/gameplay. The recomp core drives the FIFO like any CPU core, so
   // this is orthogonal to StaticRecomp.
-  Config::SetBase(Config::MAIN_CPU_THREAD, true);
+  // ...except when hashing state per frame. Dual-core has the GPU thread
+  // writing guest RAM asynchronously, so RAM read at a CPU frame boundary is
+  // racy by construction and two runs would differ whether or not the core is
+  // deterministic. The determinism harness therefore needs single-core, or it
+  // measures its own noise.
+  Config::SetBase(Config::MAIN_CPU_THREAD, !RecompDeterminism::IsActive());
   // SoulCalibur II (GRSEAF): the OS scheduler spins in an idle loop at
   // 0x80185DEC waiting for an interrupt to wake a task. Without idle-skip the
   // recomp core burns real wall-time executing that spin, which halved FMV /
