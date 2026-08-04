@@ -136,6 +136,32 @@ if [ -d "$HERE/shaders" ]; then
     cp -n "$HERE/shaders"/*.glsl "$USER_DIR/Shaders/" 2>/dev/null || true
 fi
 
+# Seed the frontend config before the runtime can, because the runtime's own
+# default is wrong for this machine: it writes resolution=1920x1080, which is
+# EFB scale 3 -- a 1920x1584 render target. The Deck's panel is 1280x800, and
+# the game is a 4:3 projection, so at most 1067x800 of that is ever seen. Scale
+# 3 is roughly three times the pixels the display can show, paid for in frame
+# time and battery for nothing visible.
+#
+# 1280x720 is scale 2 (1280x1056), still comfortably above the panel in both
+# axes, so this is not a quality trade -- it is dropping work with no output.
+# Written only when absent, so a resolution chosen in the VIDEO tab survives.
+if [ ! -f "$USER_DIR/config.ini" ]; then
+    cat > "$USER_DIR/config.ini" <<'CONFIG'
+# ModernGekko frontend settings
+# This is Dolphin's internal render target, not the window size.
+[Video]
+resolution=1280x720
+show_fps_in_title=true
+[Input]
+[Netplay]
+nickname=Player
+address=127.0.0.1
+port=2626
+buffer=auto
+CONFIG
+fi
+
 MODULE="$(ls "$HERE"/bin/g*_recomp.so 2>/dev/null | head -1)"
 if [ -z "$MODULE" ]; then
     echo "No recompiled module in bin/. This package is incomplete." >&2
