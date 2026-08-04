@@ -59,6 +59,11 @@
 /DolRecomp/build/
 /ModernGekko/.cache/
 /DolRecomp/.cache/
+# container build trees from .github/scripts/build-deck.sh. They live at the
+# repo root rather than under ModernGekko/ because the script bind-mounts the
+# whole repo as /src and CMake writes the build dir relative to that.
+/build-deck/
+/build-deck-module/
 compile_commands.json
 *.gch
 
