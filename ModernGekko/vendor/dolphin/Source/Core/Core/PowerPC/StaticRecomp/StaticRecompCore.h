@@ -14,6 +14,7 @@
 #include "Core/PowerPC/JitCommon/JitCache.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompABI.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompModuleSource.h"
+#include "Core/RecompDeterminism.h"
 
 namespace Core
 {
@@ -141,6 +142,26 @@ private:
   // with the guest MSR before any MMU access or exception delivery.
   void PropagateGuestMSR();
 
+  // Determinism write watch (RINGOUT_DETERMINISM_WATCH). Installs the module's
+  // write journal permanently and reports the dispatching block whenever a
+  // store lands in the watched range, turning a diverging address into the
+  // function that wrote it. Covers native stores only: a silent watch means the
+  // write did not come from recompiled guest code, which is itself the answer.
+  void InitDeterminismWatch();
+  static void DeterminismWatchTrampoline(u32 offset, u32 size, void* user);
+
+  // Polls the watched word and reports a change, naming where it was noticed.
+  // The cached compare keeps this to a load and a branch, so it can sit on the
+  // per-dispatch path; only an actual change calls out.
+  void PollDeterminismWatch(const char* site, u32 pc)
+  {
+    const u32 value = GuestRead32(0x80000000u + m_watch_offset);
+    if (value == m_watch_last) [[likely]]
+      return;
+    m_watch_last = value;
+    RecompDeterminism::PollWatch(site, pc, value);
+  }
+
   std::unique_ptr<StaticRecompLockstep::StaticRecompLockstepVerifier> m_lockstep_verifier;
 
   EmptyBlockCache m_block_cache{*this};
@@ -180,6 +201,16 @@ private:
   mutable u32 m_last_chunk_index = 0;
 
   u32 m_idle_pc = 0;
+
+  // Determinism write watch state. m_watch_block_* is refreshed before each
+  // native dispatch so the journal callback -- which is handed nothing but an
+  // offset -- can attribute the store to a block.
+  bool m_watch_armed = false;
+  u32 m_watch_offset = 0;  // RAM byte offset of the watched range
+  u32 m_watch_size = 0;
+  u32 m_watch_block_pc = 0;
+  u32 m_watch_block_lr = 0;
+  u32 m_watch_last = 0;  // last polled value, so the poll costs a compare
 };
 
 extern StaticRecompCore* g_static_recomp_core;

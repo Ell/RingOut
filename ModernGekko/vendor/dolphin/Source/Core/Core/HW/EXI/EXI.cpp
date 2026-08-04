@@ -129,8 +129,20 @@ void ExpansionInterfaceManager::Init(const Sram* override_sram)
     const CardFlashId& flash_id = sram.settings_ex.flash_id[Memcard::SLOT_A];
     const u32 rtc_bias = sram.settings.rtc_bias;
     const u32 sram_language = static_cast<u32>(sram.settings.language);
+    // The card header's format timestamp, which the game DMAs into guest RAM
+    // when it reads the card -- so the host wall clock this used to come from
+    // ended up *in guest memory*, and two runs started seconds apart differed
+    // there forever after. It is not just this field either: the 12-byte serial
+    // is an LCG seeded from it and the header checksum covers both, so one
+    // unpinned second moved 20 bytes of the header plus its checksum. That is
+    // the whole of the divergence the determinism harness was chasing.
+    //
+    // GetEmulatedTime is the one place that already knows how to answer this
+    // question reproducibly -- a fixed start plus emulated ticks under a movie,
+    // netplay or the harness, the host clock otherwise -- so ask it rather than
+    // adding a second opinion here.
     const u64 format_time =
-        Common::Timer::GetLocalTimeSinceJan1970() - ExpansionInterface::CEXIIPL::GC_EPOCH;
+        ExpansionInterface::CEXIIPL::GetEmulatedTime(m_system, ExpansionInterface::CEXIIPL::GC_EPOCH);
 
     for (u32 i = 0; i < MAX_EXI_CHANNELS; i++)
     {

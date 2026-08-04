@@ -14,7 +14,9 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/StaticRecompSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/HW/Memmap.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/System.h"
 
 #ifdef _M_X86_64
@@ -122,6 +124,7 @@ void StaticRecompCore::Init()
     m_idle_pc = static_cast<u32>(std::strtoul(e, nullptr, 0));
   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
   m_lockstep_verifier->Init();
+  InitDeterminismWatch();
 
 #ifdef _M_ARM_64
   m_fallback_jit = std::make_unique<JitArm64>(m_system);
@@ -130,6 +133,75 @@ void StaticRecompCore::Init()
 #endif
   if (m_fallback_jit)
     m_fallback_jit->Init();
+}
+
+void StaticRecompCore::InitDeterminismWatch()
+{
+  if (!RecompDeterminism::IsWatchArmed())
+    return;
+  if (!m_module)
+  {
+    std::fprintf(stderr, "[watch] no module loaded; there are no native stores to watch.\n");
+    return;
+  }
+  // The module has exactly one journal slot, and the lockstep verifier claims
+  // and releases it around every checked block. Sharing it would silently drop
+  // whichever writes fell outside a lockstep window, so refuse instead.
+  if (m_lockstep_verifier->IsEnabled())
+  {
+    std::fprintf(stderr, "[watch] STATICRECOMP_LOCKSTEP already owns the module's write "
+                         "journal; watch DISABLED (run them separately).\n");
+    return;
+  }
+  const auto set_journal = reinterpret_cast<StaticRecompLockstep::SetMemJournalFn>(
+      m_library.GetSymbolAddress("ppc_set_mem_write_journal"));
+  if (!set_journal)
+  {
+    std::fprintf(stderr, "[watch] module lacks ppc_set_mem_write_journal export; "
+                         "watch DISABLED (rebuild the module).\n");
+    return;
+  }
+
+  // Cached MEM1 only, which is what the harness's dump covers and therefore the
+  // only place an address it reports can be. Rejected loudly rather than left to
+  // match nothing, because a silent watch is meant to mean "nobody stored here".
+  // Asked of the memory manager, not m_guest: Run() binds m_guest.ram, so its
+  // size is still zero this early.
+  const u32 address = RecompDeterminism::WatchGuestAddress();
+  const u32 size = RecompDeterminism::WatchSize();
+  const u32 offset = address - 0x80000000u;
+  const u32 ram_size = m_system.GetMemory().GetRamSizeReal();
+  if (ram_size == 0 || size > ram_size || offset > ram_size - size)
+  {
+    std::fprintf(stderr,
+                 "[watch] 0x%08X + %u is outside cached MEM1 (0x80000000..0x%08X); "
+                 "watch DISABLED.\n",
+                 address, size, 0x80000000u + ram_size);
+    return;
+  }
+
+  m_watch_offset = offset;
+  m_watch_size = size;
+  m_watch_armed = true;
+  // Installed for the whole run, not per block: the write we are hunting for
+  // happens once, and we do not know when.
+  set_journal(&StaticRecompCore::DeterminismWatchTrampoline, this);
+  std::fprintf(stderr, "[watch] armed on 0x%08X (%u bytes, RAM offset 0x%X)\n", address,
+               m_watch_size, m_watch_offset);
+}
+
+// Called from inside the module's store fast path, before the store commits, so
+// this runs on every guest RAM write while the watch is armed -- the range test
+// is deliberately the entire body.
+void StaticRecompCore::DeterminismWatchTrampoline(u32 offset, u32 size, void* user)
+{
+  auto* const core = static_cast<StaticRecompCore*>(user);
+  if (offset + size <= core->m_watch_offset || offset >= core->m_watch_offset + core->m_watch_size)
+    return;
+
+  RecompDeterminism::ReportWatchWrite(core->m_watch_block_pc, core->m_watch_block_lr, size,
+                                      core->GuestRead32(0x80000000u + core->m_watch_offset),
+                                      core->m_guest.timebase);
 }
 
 void StaticRecompCore::Shutdown()

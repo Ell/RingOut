@@ -463,6 +463,11 @@ void StaticRecompCore::Run()
   while (*state_ptr == CPU::State::Running)
   {
     core_timing.Advance();
+    // Advance() runs the due hardware events, which are the writers the module's
+    // journal cannot see (DVD/DSP/AI DMA landing in RAM). Polling either side of
+    // it separates those from anything the guest triggered.
+    if (m_watch_armed)
+      PollDeterminismWatch("coretiming", ppc.pc);
     const std::string current_game_id = SConfig::GetInstance().GetGameID();
     m_module_active = m_module && (current_game_id.empty() || current_game_id == m_module->game_id);
 
@@ -588,8 +593,24 @@ void StaticRecompCore::Run()
             ++s_calls;
           }
 
+          // The write journal is handed a RAM offset and nothing else, so the
+          // block being dispatched has to be recorded here for it to attribute
+          // the store to. Two stores behind a member bool, in the shape of the
+          // env-gated diagnostics above.
+          if (m_watch_armed)
+          {
+            m_watch_block_pc = m_guest.pc;
+            m_watch_block_lr = m_guest.lr;
+          }
+
           m_module->dispatch(&m_guest, m_guest.pc);
           ++m_native_dispatches;
+
+          // A change seen here with nothing in the journal means the block's
+          // MMIO side effects wrote it -- the guest asked hardware to, rather
+          // than storing it itself -- and m_watch_block_pc names that block.
+          if (m_watch_armed)
+            PollDeterminismWatch("dispatch", m_watch_block_pc);
 
           if (do_ls)
           {
