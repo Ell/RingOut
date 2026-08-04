@@ -29,8 +29,10 @@ INSTALLING
   works and is the quicker way to see errors.
 
   Game Mode gives you Steam's own controller configuration. The runtime
-  reads the Deck's built-in pad through evdev, so the default template is
-  usually right; the CONTROLS tab rebinds anything it is not.
+  reads the Deck's built-in pad through SDL, which is built into the
+  binary rather than loaded from the system, so it sees whatever Steam
+  Input presents to it; the CONTROLS tab rebinds anything that lands
+  wrong.
 
 CONTROLS
   Escape          settings menu

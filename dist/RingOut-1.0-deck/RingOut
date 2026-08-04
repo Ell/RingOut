@@ -13,7 +13,26 @@
 # Add to Steam as a non-Steam game and launch from Game Mode, or run directly.
 
 HERE="$(dirname "$(readlink -f "$0")")"
-export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# APPENDED, not prepended, and the distinction is the whole ballgame.
+#
+# lib/ is a fallback for what the host lacks, not an override for what it has.
+# Prepending made these Debian 12 libraries win for the entire process -- and
+# the process is not just us: the Vulkan loader dlopens the host's driver into
+# it, and Mesa then resolved libzstd, libz, libxcb, libX11-xcb and
+# libwayland-client against our older copies instead of the ones it was built
+# against. The driver failed to load, leaving the loader with no ICD, and
+# vkCreateInstance failed with the video backend init taking the process down
+# with it:
+#
+#     [alert] Warning: Failed to create Vulkan instance.
+#     [alert] Warning: Failed to initialize video backend!
+#
+# Appending inverts the priority: SteamOS's copy of a library wins whenever it
+# has one, and ours is reached only when nothing else provides that soname. A
+# soname is an ABI promise, and SteamOS is newer than Debian 12 across the
+# board, so preferring the host is also the safer half of the trade.
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$HERE/lib"
 
 USER_DIR="$HERE/userdata"
 mkdir -p "$USER_DIR"
