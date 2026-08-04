@@ -281,6 +281,16 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // deterministic. The determinism harness therefore needs single-core, or it
   // measures its own noise.
   Config::SetBase(Config::MAIN_CPU_THREAD, !RecompDeterminism::IsActive());
+  if (RecompDeterminism::IsActive()) {
+    // Pin the clock the same way NetPlayServer does (NetPlayServer.cpp:2088):
+    // the RTC is converted to timebase ticks at boot, so two runs started
+    // seconds apart diverge from frame 0 through every value the game seeds
+    // from it. Forced here rather than left to the ini, because the setting is
+    // spelled EnableCustomRTC and getting that wrong fails silently -- which is
+    // exactly what happened to the first attempt at this measurement.
+    Config::SetBase(Config::MAIN_CUSTOM_RTC_ENABLE, true);
+    Config::SetBase(Config::MAIN_CUSTOM_RTC_VALUE, 0x386D4380u);
+  }
   // SoulCalibur II (GRSEAF): the OS scheduler spins in an idle loop at
   // 0x80185DEC waiting for an interrupt to wake a task. Without idle-skip the
   // recomp core burns real wall-time executing that spin, which halved FMV /

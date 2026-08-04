@@ -23,6 +23,7 @@
 #include "Core/Config/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/HW/Sram.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
@@ -415,6 +416,17 @@ u32 CEXIIPL::GetEmulatedTime(Core::System& system, u32 epoch)
     ltime = NetPlay_GetEmulatedTime();
 
     // let's keep time moving forward, regardless of what it starts at
+    ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
+  }
+  else if (RecompDeterminism::IsActive())
+  {
+    // Same shape as the movie and netplay branches above: a fixed start plus
+    // emulated ticks. The branch below reads the host wall clock, so the value
+    // the guest sees depends on how fast the host got here -- two runs read
+    // different times and everything seeded from them diverges. That is not a
+    // hypothetical either; it is what the determinism harness measured, from
+    // the exact frame this game first asks for the time.
+    ltime = Config::Get(Config::MAIN_CUSTOM_RTC_VALUE);
     ltime += system.GetCoreTiming().GetTicks() / system.GetSystemTimers().GetTicksPerSecond();
   }
   else

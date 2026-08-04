@@ -861,7 +861,12 @@ void UpdateWantDeterminism(Core::System& system, bool initial)
   // For now, this value is not itself configurable.  Instead, individual
   // settings that depend on it, such as GPU determinism mode. should have
   // override options for testing,
-  bool new_want_determinism = system.GetMovie().IsMovieActive() || NetPlay::IsNetPlayRunning();
+  // The harness is a third reason to want determinism, alongside movies and
+  // netplay -- and it has to go through the same switch, because this also
+  // drives FIFO determinism and JIT FMA use, either of which would otherwise
+  // make the measurement disagree with the netplay it is meant to predict.
+  bool new_want_determinism = system.GetMovie().IsMovieActive() ||
+                              NetPlay::IsNetPlayRunning() || RecompDeterminism::IsActive();
   if (new_want_determinism != s_wants_determinism || initial)
   {
     NOTICE_LOG_FMT(COMMON, "Want determinism <- {}", new_want_determinism ? "true" : "false");

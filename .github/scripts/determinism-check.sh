@@ -27,17 +27,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 run() {
     local n="$1"
-    mkdir -p "$WORK/user$n/Config"
-    # Pin the real-time clock. The IPL seeds the RTC and time base into the OS
-    # globals at boot, so two runs started seconds apart differ from frame 0 by
-    # construction -- which says nothing about the core. Netplay pins the same
-    # setting across peers for exactly this reason, so pinning it here is not
-    # cheating: it is reproducing the condition netplay would run under.
-    cat > "$WORK/user$n/Config/Dolphin.ini" <<'INI'
-[Core]
-CustomRTCEnable = True
-CustomRTCValue = 0x386D4380
-INI
+    mkdir -p "$WORK/user$n"
+    # The RTC is pinned by the runtime itself whenever the harness is active,
+    # not from here. Writing it into Dolphin.ini looked like it worked and did
+    # nothing: the key is EnableCustomRTC, and an unrecognised one is ignored in
+    # silence, so the first measurements were taken with an unpinned clock.
     RINGOUT_DETERMINISM_LOG="$WORK/run$n.log" \
     RINGOUT_DETERMINISM_FRAMES="$FRAMES" \
         "$PKG/bin/moderngekko-run" --headless \
