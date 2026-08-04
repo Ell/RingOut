@@ -18,6 +18,31 @@ export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 USER_DIR="$HERE/userdata"
 mkdir -p "$USER_DIR"
 
+# Steam discards stdout and stderr for a non-Steam shortcut, and Game Mode has
+# no terminal to print to in any case, so a failed launch shows up only as the
+# game opening and closing again with no reason given anywhere. Mirror the lot
+# to a log that outlives the process. Truncated per run: what matters is the
+# attempt just made, and the previous one is kept for comparison.
+LOG="$USER_DIR/launch.log"
+[ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
+if [ -t 1 ]; then
+    exec > >(tee "$LOG") 2>&1
+else
+    exec > "$LOG" 2>&1
+fi
+
+# The environment is the difference between a launch that works from a terminal
+# and the same launch failing under Steam, so record the parts that decide it.
+echo "=== RingOut launch $(date -Is) ==="
+echo "session      : ${XDG_SESSION_TYPE:-unset}"
+echo "wayland      : ${WAYLAND_DISPLAY:-unset}"
+echo "x11 display  : ${DISPLAY:-unset}"
+echo "gamescope    : ${GAMESCOPE_WAYLAND_DISPLAY:-unset}"
+echo "steam        : ${SteamEnv:-${STEAM_COMPAT_DATA_PATH:-not set}}"
+echo "LD_PRELOAD   : ${LD_PRELOAD:-unset}"
+echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+echo
+
 # Bundled post-processing filters live where Dolphin actually looks for them.
 # -n so a filter the user has edited is never overwritten.
 if [ -d "$HERE/shaders" ]; then
@@ -37,8 +62,24 @@ fi
 
 # The Deck's screen is 1280x800 and gamescope owns the display in Game Mode, so
 # fullscreen is left to Steam rather than forced here.
-exec "$HERE/bin/moderngekko-run" \
+# Not exec, so the exit status can be recorded. A runtime that dies during video
+# init and one that never started at all look identical from Steam's side.
+"$HERE/bin/moderngekko-run" \
     --user-dir "$USER_DIR" \
     --game "$HERE/game" \
     --module "$MODULE" \
     "$@"
+status=$?
+
+echo
+if [ $status -ne 0 ]; then
+    echo "[launcher] moderngekko-run exited with status $status"
+    # 139 is SIGSEGV and 134 SIGABRT once the shell has folded the signal in.
+    case $status in
+        139) echo "[launcher] that is a segfault" ;;
+        134) echo "[launcher] that is an abort" ;;
+    esac
+else
+    echo "[launcher] exited cleanly"
+fi
+exit $status
