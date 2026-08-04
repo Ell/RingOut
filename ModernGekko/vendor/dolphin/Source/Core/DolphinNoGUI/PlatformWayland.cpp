@@ -155,7 +155,13 @@ constexpr wl_pointer_listener s_pointer_listener = {
     PlatformWayland::PointerAxisStop,
     PlatformWayland::PointerAxisDiscrete,
     PlatformWayland::PointerAxisValue120,
+// axis_relative_direction was added in wayland 1.23. Debian 12 ships 1.21, and
+// the Steam Deck build has to target an old glibc, so the listener must degrade
+// to whatever the build-time headers actually declare -- initialising a member
+// that does not exist is a hard error, not a warning.
+#ifdef WL_POINTER_AXIS_RELATIVE_DIRECTION_SINCE_VERSION
     PlatformWayland::PointerAxisRelativeDirection,
+#endif
 };
 
 PlatformWayland::~PlatformWayland()
