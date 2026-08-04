@@ -1,0 +1,94 @@
+Ring Out - Ver 1.0
+Steam Deck / SteamOS build
+==========================
+
+This package contains NO game data and NO game code. Unlike the desktop
+package there is also no setup step here: SteamOS ships compilers without
+the C library headers and mounts /usr read-only, so nothing can be built
+on the Deck itself. The runtime is prebuilt against an old glibc instead.
+
+  runtime  built against glibc 2.36; SteamOS ships ~2.37, and binaries run
+           forward across glibc versions but never backward
+  module   -march=x86-64-v3, which the Deck's Zen 2 supports
+
+GETTING YOUR GAME ONTO IT
+  The recompiled module is derived from your own disc, so it cannot ship
+  with this package. Produce it once on a desktop Linux machine using the
+  normal package, then copy two things across:
+
+    1. Run  ./setup.sh /path/to/your/disc.iso  in the desktop package
+    2. Copy its  game/  directory into this folder
+    3. Copy its  bin/g<ID>_recomp.so  into this folder's  bin/
+
+  The launcher checks for both and will tell you which one is missing.
+
+INSTALLING
+  Put this folder anywhere on the Deck -- internal storage or an SD card.
+  In Desktop Mode, add RingOut to Steam as a non-Steam game, then launch
+  it from Game Mode. Running ./RingOut directly from a terminal also
+  works and is the quicker way to see errors.
+
+  Game Mode gives you Steam's own controller configuration. The runtime
+  reads the Deck's built-in pad through evdev, so the default template is
+  usually right; the CONTROLS tab rebinds anything it is not.
+
+CONTROLS
+  Escape          settings menu
+  Arrow keys      navigate; Left/Right change a value or switch tab
+  Space           confirm / activate
+  Alt+W           toggle widescreen (16:9)
+  F1-F8           load state      Shift+F1-F8   save state
+  Shift+Escape    quit
+
+  Fullscreen is left to Steam. In Game Mode gamescope owns the display and
+  scales the 4:3 image to the Deck's 1280x800 panel, so Alt+Enter and the
+  fullscreen setting are not needed and are best left alone.
+
+SETTINGS MENU TABS
+  VIDEO     widescreen, internal resolution, aspect ratio, v-sync,
+            anti-aliasing, anisotropic + texture filtering, filter,
+            texture packs, show FPS, free camera, fullscreen
+  AUDIO     volume, mute, latency, fill audio gaps
+  SYSTEM    emulation speed, save/load state, quit
+  CONTROLS  rebind any pad button (Space to rebind, Left to clear)
+  CHEATS    master switch, plus any codes you add yourself to
+            userdata/GameSettings/<DISCID>.ini
+
+  A word on internal resolution: the Deck renders this game comfortably at
+  2x, and 2x is already well above the 1280x800 panel. Higher multipliers
+  cost battery for nothing you can see.
+
+FILTERS (VIDEO tab, Filter row)
+  Two filters are bundled and installed into userdata/Shaders on first
+  run: Scanlines and CRT. An edited filter is never overwritten, so your
+  own tweaks survive an update. The row also cycles a selection of
+  Dolphin's own shaders.
+
+FREE CAMERA (enable in the VIDEO tab)
+  Shift + W/A/S/D   move          Shift + Q/E   down / up
+  Shift + arrows    look          Shift + Z/C   roll
+  Shift + 1/2       speed         Shift + R     reset view
+
+WHAT IS IN THIS FOLDER
+  RingOut       launcher
+  bin/          the runtime, and your recompiled module once you copy it in
+  lib/          bundled support libraries
+  shaders/      the bundled filters, installed to userdata on first run
+
+  Created on first run, or copied from a desktop setup:
+  game/         your extracted disc
+  userdata/     settings, save states, screenshots
+
+CREDITS, DISCLAIMER AND LICENSING
+  See CREDITS.txt. Short version: this is an unofficial fan project by
+  Jack Poison, made with AI assistance, built almost entirely on the
+  work of the Dolphin Emulator Project, ExpansionPak's ModernGekko and
+  DolRecomp, and Dear ImGui. The game is Bandai Namco's and is not
+  included here.
+
+  The runtime is GPL-2.0-or-later. Because these binaries are prebuilt,
+  the matching source matters more here than in the desktop package --
+  CREDITS.txt says where to get it.
+
+  Anything built from your disc is derived from the game itself.
+  Keep it to yourself.

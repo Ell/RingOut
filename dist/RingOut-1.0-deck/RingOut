@@ -1,0 +1,44 @@
+#!/bin/bash
+# Ring Out - Ver 1.0 : Steam Deck / SteamOS build
+#
+# Everything here is prebuilt. Unlike the desktop redistributable there is no
+# setup step, no toolchain and nothing to compile: SteamOS ships compilers
+# without the C library headers and mounts /usr read-only, so an on-device
+# build needs a distrobox container. The runtime and the recompiled module were
+# both built elsewhere against an old glibc instead.
+#
+#   runtime : glibc 2.36 (SteamOS ships ~2.37, and binaries run forward only)
+#   module  : -march=x86-64-v3, which the Deck's Zen 2 supports
+#
+# Add to Steam as a non-Steam game and launch from Game Mode, or run directly.
+
+HERE="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+USER_DIR="$HERE/userdata"
+mkdir -p "$USER_DIR"
+
+# Bundled post-processing filters live where Dolphin actually looks for them.
+# -n so a filter the user has edited is never overwritten.
+if [ -d "$HERE/shaders" ]; then
+    mkdir -p "$USER_DIR/Shaders"
+    cp -n "$HERE/shaders"/*.glsl "$USER_DIR/Shaders/" 2>/dev/null || true
+fi
+
+MODULE="$(ls "$HERE"/bin/g*_recomp.so 2>/dev/null | head -1)"
+if [ -z "$MODULE" ]; then
+    echo "No recompiled module in bin/. This package is incomplete." >&2
+    exit 1
+fi
+if [ ! -d "$HERE/game" ]; then
+    echo "No game data in game/. This package is incomplete." >&2
+    exit 1
+fi
+
+# The Deck's screen is 1280x800 and gamescope owns the display in Game Mode, so
+# fullscreen is left to Steam rather than forced here.
+exec "$HERE/bin/moderngekko-run" \
+    --user-dir "$USER_DIR" \
+    --game "$HERE/game" \
+    --module "$MODULE" \
+    "$@"

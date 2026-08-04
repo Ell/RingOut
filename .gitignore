@@ -90,6 +90,15 @@ compile_commands.json
 /dist/RingOut-1.0-dist/tools/
 # GPL corresponding-source tarballs -- redundant now the source is in the repo
 /dist/RingOut-1.0-dist/source/
+# Steam Deck package: same rule, scaffolding only. It has no setup.sh, no
+# tools/ and no module-src/ -- the runtime and the module are both prebuilt
+# elsewhere against an old glibc -- so what is left to track is the launcher,
+# the bundled filters and the text.
+!/dist/RingOut-1.0-deck/
+/dist/RingOut-1.0-deck/bin/
+/dist/RingOut-1.0-deck/lib/
+/dist/RingOut-1.0-deck/game/
+/dist/RingOut-1.0-deck/userdata/
 
 # ---------------------------------------------------------------------------
 # Local / personal
