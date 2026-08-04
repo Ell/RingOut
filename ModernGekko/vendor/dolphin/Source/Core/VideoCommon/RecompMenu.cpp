@@ -104,6 +104,12 @@ enum class Tab
 
 constexpr int kTabCount = static_cast<int>(Tab::Count);
 
+// The Controls tab lists two fixed rows above the rebindable inputs -- which
+// backend to take input from, and which device on it -- in the same way the
+// Cheats tab puts its master switch above the codes. Rebind rows are therefore
+// offset by this much when indexing control_rows.
+constexpr int kControlsHeaderRows = 2;
+
 const char* TabName(Tab tab)
 {
   switch (tab)
@@ -181,6 +187,12 @@ struct State
   Tab tab = Tab::System;
   std::vector<ControlRow> control_rows;
 
+  // Backend and device selection, shown above the rebind rows. Qualified device
+  // strings are "SOURCE/CID/NAME", so the backend is the leading field and no
+  // separate list of backends has to be kept in step with this one.
+  std::vector<std::string> devices;
+  std::string device_current;
+
   // Input detection is asynchronous: Start() then Update() until IsComplete(),
   // driven from PumpFrame so the overlay keeps redrawing while we wait.
   std::unique_ptr<ciface::Core::InputDetector> detector;
@@ -199,7 +211,7 @@ int RowCount(const State& state)
   switch (state.tab)
   {
   case Tab::Controls:
-    return static_cast<int>(state.control_rows.size());
+    return kControlsHeaderRows + static_cast<int>(state.control_rows.size());
   case Tab::Cheats:
     return 1 + static_cast<int>(state.cheat_rows.size());  // master switch + codes
   default:
@@ -703,6 +715,91 @@ ControllerEmu::EmulatedController* GetPad()
   return config->GetController(0);
 }
 
+// A qualified device string is "SOURCE/CID/NAME", or "SOURCE//NAME" when the
+// backend does not number its devices, so the backend is everything before the
+// first slash and the readable name everything after the second.
+std::string DeviceSource(const std::string& qualified)
+{
+  const size_t slash = qualified.find('/');
+  return slash == std::string::npos ? qualified : qualified.substr(0, slash);
+}
+
+std::string DeviceName(const std::string& qualified)
+{
+  const size_t first = qualified.find('/');
+  if (first == std::string::npos)
+    return qualified;
+  const size_t second = qualified.find('/', first + 1);
+  return second == std::string::npos ? qualified.substr(first + 1) : qualified.substr(second + 1);
+}
+
+// Every backend that currently has at least one device, in the order the
+// interface reports them. A backend with no devices is deliberately not
+// offered: selecting it would leave the row below with nothing to show.
+std::vector<std::string> DeviceSources(const std::vector<std::string>& devices)
+{
+  std::vector<std::string> sources;
+  for (const std::string& device : devices)
+  {
+    std::string source = DeviceSource(device);
+    if (std::ranges::find(sources, source) == sources.end())
+      sources.push_back(std::move(source));
+  }
+  return sources;
+}
+
+// Both return the device to switch to, or empty for "nothing to change to".
+// Changing backend lands on that backend's first device so the two rows can
+// never disagree about which backend is selected.
+std::string CycleBackend(const State& state, int direction)
+{
+  const std::vector<std::string> sources = DeviceSources(state.devices);
+  if (sources.empty())
+    return {};
+
+  const auto iter = std::ranges::find(sources, DeviceSource(state.device_current));
+  const int index = iter == sources.end() ? 0 : static_cast<int>(iter - sources.begin());
+  const int count = static_cast<int>(sources.size());
+  const std::string& target = sources[(index + direction + count) % count];
+
+  for (const std::string& device : state.devices)
+  {
+    if (DeviceSource(device) == target)
+      return device;
+  }
+  return {};
+}
+
+// Moves within the current backend only, so this row never silently switches
+// the row above it.
+std::string CycleDevice(const State& state, int direction)
+{
+  const std::string source = DeviceSource(state.device_current);
+  std::vector<std::string> siblings;
+  for (const std::string& device : state.devices)
+  {
+    if (DeviceSource(device) == source)
+      siblings.push_back(device);
+  }
+  if (siblings.empty())
+    return {};
+
+  const auto iter = std::ranges::find(siblings, state.device_current);
+  const int index = iter == siblings.end() ? 0 : static_cast<int>(iter - siblings.begin());
+  const int count = static_cast<int>(siblings.size());
+  return siblings[(index + direction + count) % count];
+}
+
+// Reads the interface's device list and the pad's current device. Touches
+// g_controller_interface and InputConfig, so like BuildControlRowsData it must
+// run with the menu mutex released.
+void BuildDeviceListData(std::vector<std::string>* devices, std::string* current)
+{
+  *devices = g_controller_interface.GetAllDeviceStrings();
+  auto* const pad = GetPad();
+  *current = pad != nullptr ? pad->GetDefaultDevice().ToString() : std::string();
+}
+
 // Flattens the pad's group/control tree into the page's row list. Only inputs
 // are remappable; outputs (rumble) are skipped.
 // Touches InputConfig, so likewise runs with the menu mutex released.
@@ -1063,6 +1160,8 @@ void OnKey(Key key)
   bool enable_cheats_master = false;
   bool needs_build_controls = false;
   bool needs_load_cheats = false;
+  bool needs_refresh_devices = false;
+  std::string new_device;
   ControllerEmu::Control* changed_pad_control = nullptr;
   std::vector<ActionReplay::ARCode> ar_snapshot;
   std::vector<Gecko::GeckoCode> gecko_snapshot;
@@ -1129,13 +1228,27 @@ void OnKey(Key key)
         const int dir = key == Key::Left ? -1 : 1;
         if (s_state.tab == Tab::Controls)
         {
-          // Left clears a binding; the engine-side refresh happens after unlock.
-          if (key == Key::Left && index < static_cast<int>(s_state.control_rows.size()))
+          const int control_index = index - kControlsHeaderRows;
+          if (index == 0)
           {
-            auto* const control = s_state.control_rows[index].control;
+            new_device = CycleBackend(s_state, dir);
+          }
+          else if (index == 1)
+          {
+            new_device = CycleDevice(s_state, dir);
+          }
+          // Left clears a binding; the engine-side refresh happens after unlock.
+          else if (key == Key::Left && control_index >= 0 &&
+                   control_index < static_cast<int>(s_state.control_rows.size()))
+          {
+            auto* const control = s_state.control_rows[control_index].control;
             control->control_ref->SetExpression("");
             changed_pad_control = control;
           }
+          // Applied after unlock, but the snapshot the rows are drawn from is
+          // state, so it updates here or the row would lag a frame behind.
+          if (!new_device.empty())
+            s_state.device_current = new_device;
         }
         else if (s_state.tab != Tab::Cheats)
         {
@@ -1148,8 +1261,14 @@ void OnKey(Key key)
       case Key::Activate:
         if (s_state.tab == Tab::Controls)
         {
-          if (index < static_cast<int>(s_state.control_rows.size()))
-            StartDetection(s_state, s_state.control_rows[index].control);
+          const int control_index = index - kControlsHeaderRows;
+          // On either header row, Space re-scans instead of rebinding: a pad
+          // plugged in after the menu opened is otherwise invisible until the
+          // tab is left and re-entered.
+          if (index < kControlsHeaderRows)
+            needs_refresh_devices = true;
+          else if (control_index < static_cast<int>(s_state.control_rows.size()))
+            StartDetection(s_state, s_state.control_rows[control_index].control);
         }
         else if (s_state.tab == Tab::Cheats)
         {
@@ -1192,8 +1311,13 @@ void OnKey(Key key)
   {
     std::vector<ControlRow> built;
     BuildControlRowsData(&built);
+    std::vector<std::string> devices;
+    std::string current;
+    BuildDeviceListData(&devices, &current);
     std::lock_guard<std::mutex> guard(s_state.mutex);
     s_state.control_rows = std::move(built);
+    s_state.devices = std::move(devices);
+    s_state.device_current = std::move(current);
   }
 
   if (needs_load_cheats)
@@ -1206,6 +1330,33 @@ void OnKey(Key key)
     s_state.ar_codes = std::move(ar);
     s_state.gecko_codes = std::move(gecko);
     s_state.cheat_rows = std::move(cheat_rows);
+  }
+
+  // Re-scan, then re-read: RefreshDevices is what picks up a pad plugged in
+  // while the menu was already open.
+  if (needs_refresh_devices)
+  {
+    g_controller_interface.RefreshDevices();
+    std::vector<std::string> devices;
+    std::string current;
+    BuildDeviceListData(&devices, &current);
+    std::lock_guard<std::mutex> guard(s_state.mutex);
+    s_state.devices = std::move(devices);
+    s_state.device_current = std::move(current);
+  }
+
+  // Every binding is resolved against the pad's default device, so switching
+  // device has to re-resolve all of them, not just one -- hence
+  // UpdateReferences rather than the single-reference call used for a rebind.
+  if (!new_device.empty())
+  {
+    if (auto* const pad = GetPad())
+    {
+      pad->SetDefaultDevice(new_device);
+      pad->UpdateReferences(g_controller_interface);
+      if (auto* const config = Pad::GetConfig())
+        config->SaveConfig();
+    }
   }
 
   if (changed_pad_control != nullptr)
@@ -1399,6 +1550,14 @@ void Draw()
     switch (tab)
     {
     case Tab::Controls:
+    {
+      // Read from the snapshot rather than the pad, so Draw stays off
+      // InputConfig while holding the menu mutex.
+      const bool has_device = !s_state.device_current.empty();
+      rows.emplace_back("Input Backend", has_device ? DeviceSource(s_state.device_current) : "-",
+                        false);
+      rows.emplace_back("Device", has_device ? DeviceName(s_state.device_current) : "none found",
+                        false);
       for (const auto& row : s_state.control_rows)
       {
         std::string value = row.control->control_ref->GetExpression();
@@ -1407,6 +1566,7 @@ void Draw()
         rows.emplace_back(row.label, std::move(value), false);
       }
       break;
+    }
     case Tab::Cheats:
       cheats_enabled = Config::Get(Config::MAIN_ENABLE_CHEATS);
       rows.emplace_back("Enable Cheats", cheats_enabled ? "ON" : "OFF", cheats_enabled);
@@ -1517,6 +1677,8 @@ void Draw()
       hint = "Press a key or button...   Esc cancel";
     else if (tab_focused)
       hint = "Left/Right switch tab   Down enter list   Esc close";
+    else if (tab == Tab::Controls && selected >= 1 && selected <= kControlsHeaderRows)
+      hint = "Left/Right change   Space rescan devices   Esc close";
     else if (tab == Tab::Controls)
       hint = "Space rebind   Left clear   Up/Down select   Esc close";
     else if (tab == Tab::Cheats)
@@ -1638,8 +1800,13 @@ void HostTick()
     {
       std::vector<ControlRow> built;
       BuildControlRowsData(&built);
+      std::vector<std::string> devices;
+      std::string current;
+      BuildDeviceListData(&devices, &current);
       std::lock_guard<std::mutex> guard(s_state.mutex);
       s_state.control_rows = std::move(built);
+      s_state.devices = std::move(devices);
+      s_state.device_current = std::move(current);
       s_state.tab = Tab::Controls;
       std::fprintf(stderr, "[menu] auto-page controls: %zu rows\n", s_state.control_rows.size());
     }
