@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 #include "Common/CommonTypes.h"
 #include "Common/Hash.h"
@@ -27,6 +28,11 @@ struct Config
   std::FILE* out = nullptr;
   u64 frames = 0;  // 0 = run until the game is stopped by hand
   bool active = false;
+
+  // Whole-RAM snapshot at one frame. A hash says two runs differ; only a dump
+  // says where, and an address is what turns a divergence into a subsystem.
+  std::string dump_path;
+  u64 dump_frame = 0;
 };
 
 // Configured from the environment rather than the command line on purpose:
@@ -46,6 +52,13 @@ Config& GetConfig()
 
     if (const char* const frames = std::getenv("RINGOUT_DETERMINISM_FRAMES"))
       result.frames = std::strtoull(frames, nullptr, 10);
+
+    if (const char* const dump = std::getenv("RINGOUT_DETERMINISM_DUMP"))
+    {
+      result.dump_path = dump;
+      if (const char* const frame = std::getenv("RINGOUT_DETERMINISM_DUMP_FRAME"))
+        result.dump_frame = std::strtoull(frame, nullptr, 10);
+    }
 
     result.active = true;
     return result;
@@ -93,6 +106,20 @@ void OnFrame(Core::System& system)
   // Flushed every frame because the interesting run is the one that diverges
   // and then crashes; a buffered tail would lose exactly the frames that matter.
   std::fflush(config.out);
+
+  // Dumped after the hash of the same frame, so the log line and the snapshot
+  // describe identical state. Raw main RAM with no header: the file offset is
+  // the offset into RAM, which makes the guest address 0x80000000 + offset and
+  // lets cmp do the comparison without a tool of our own.
+  if (!config.dump_path.empty() && s_frame == config.dump_frame)
+  {
+    if (std::FILE* const dump = std::fopen(config.dump_path.c_str(), "wb"))
+    {
+      std::fwrite(ram, 1, ram_size, dump);
+      std::fclose(dump);
+    }
+    config.dump_path.clear();
+  }
 
   ++s_frame;
   if (config.frames != 0 && s_frame >= config.frames)
