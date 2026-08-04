@@ -80,6 +80,19 @@ if [ "${RINGOUT_DEBUG:-0}" = "1" ]; then
     export VK_LOADER_DEBUG=all
     echo "debug        : VK_LOADER_DEBUG=all"
 fi
+
+# Which backend the config actually asks for, read from the file this launcher
+# passes as --user-dir. Editing the wrong copy of Dolphin.ini looks identical to
+# the setting being ignored, and an unknown name is worse than either: the
+# lookup in ActivateBackend() returns silently and the default is used, so a
+# misspelling reports nothing at all. The flag below outranks this file.
+INI="$USER_DIR/Config/Dolphin.ini"
+if [ -f "$INI" ]; then
+    echo "GFXBackend   : $(grep -m1 '^GFXBackend' "$INI" | cut -d= -f2- | tr -d ' ')  (in $INI)"
+else
+    echo "GFXBackend   : no Dolphin.ini yet, the default backend will be used"
+fi
+echo "  to override: pass  -v OGL  or  -v Vulkan  to this launcher"
 echo
 
 # Bundled post-processing filters live where Dolphin actually looks for them.
