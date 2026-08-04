@@ -60,6 +60,26 @@ echo "gamescope    : ${GAMESCOPE_WAYLAND_DISPLAY:-unset}"
 echo "steam        : ${SteamEnv:-${STEAM_COMPAT_DATA_PATH:-not set}}"
 echo "LD_PRELOAD   : ${LD_PRELOAD:-unset}"
 echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+
+# vkCreateInstance fails for two quite different reasons and the environment
+# tells them apart. Either no driver could be loaded, or a LAYER could not --
+# and Steam injects its overlay layer into every instance a game creates, so a
+# game that runs from a terminal and fails under Steam is usually a layer, not
+# the driver. The loader treats a layer it cannot load as fatal to the instance.
+echo "VK_ICD_FILENAMES : ${VK_ICD_FILENAMES:-unset}"
+echo "VK_DRIVER_FILES  : ${VK_DRIVER_FILES:-unset}"
+echo "VK_LAYER_PATH    : ${VK_LAYER_PATH:-unset}"
+echo "VK_INSTANCE_LAYERS: ${VK_INSTANCE_LAYERS:-unset}"
+echo "VK_LOADER_LAYERS_ENABLE: ${VK_LOADER_LAYERS_ENABLE:-unset}"
+echo "steam overlay layer: ${DISABLE_VK_LAYER_VALVE_steam_overlay_1:+disabled}${DISABLE_VK_LAYER_VALVE_steam_overlay_1:-active}"
+
+# RINGOUT_DEBUG=1 turns on the Vulkan loader's own tracing, which names the
+# driver or layer that failed instead of leaving "failed to create instance" as
+# the whole story. Off by default: it is very loud.
+if [ "${RINGOUT_DEBUG:-0}" = "1" ]; then
+    export VK_LOADER_DEBUG=all
+    echo "debug        : VK_LOADER_DEBUG=all"
+fi
 echo
 
 # Bundled post-processing filters live where Dolphin actually looks for them.
