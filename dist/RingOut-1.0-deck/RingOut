@@ -14,26 +14,6 @@
 
 HERE="$(dirname "$(readlink -f "$0")")"
 
-# APPENDED, not prepended, and the distinction is the whole ballgame.
-#
-# lib/ is a fallback for what the host lacks, not an override for what it has.
-# Prepending made these Debian 12 libraries win for the entire process -- and
-# the process is not just us: the Vulkan loader dlopens the host's driver into
-# it, and Mesa then resolved libzstd, libz, libxcb, libX11-xcb and
-# libwayland-client against our older copies instead of the ones it was built
-# against. The driver failed to load, leaving the loader with no ICD, and
-# vkCreateInstance failed with the video backend init taking the process down
-# with it:
-#
-#     [alert] Warning: Failed to create Vulkan instance.
-#     [alert] Warning: Failed to initialize video backend!
-#
-# Appending inverts the priority: SteamOS's copy of a library wins whenever it
-# has one, and ours is reached only when nothing else provides that soname. A
-# soname is an ABI promise, and SteamOS is newer than Debian 12 across the
-# board, so preferring the host is also the safer half of the trade.
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$HERE/lib"
-
 USER_DIR="$HERE/userdata"
 mkdir -p "$USER_DIR"
 
@@ -50,9 +30,63 @@ else
     exec > "$LOG" 2>&1
 fi
 
+# Only the libraries the host does NOT provide go on the search path.
+#
+# Ordering within LD_LIBRARY_PATH was never the issue: the variable as a whole
+# outranks the system paths, so pointing it at lib/ shadowed the host's copy of
+# every soname we ship no matter where in the list it sat. Appending changed
+# nothing when the variable was otherwise empty, which is exactly the case when
+# launching from a terminal.
+#
+# That matters because the process is not only ours. The Vulkan loader dlopens
+# the host's Mesa driver into it, and Mesa then resolved libzstd, libz, libxcb,
+# libX11, libX11-xcb, libwayland-client, libffi, libudev, libdbus-1 and
+# libXext -- ten libraries SteamOS already has -- against Debian 12 copies it
+# was not built against. No driver loads, the loader has no ICD, and
+# vkCreateInstance fails:
+#
+#     [alert] Warning: Failed to create Vulkan instance.
+#     [alert] Warning: Failed to initialize video backend!
+#
+# So the set is computed per host rather than assumed: ask ldconfig what is
+# already installed, and link only the remainder into a private directory. On
+# SteamOS that leaves a handful of genuinely Debian-specific libraries instead
+# of all 66. Set RINGOUT_ALL_LIBS=1 to force the old behaviour of using the
+# whole bundle, which is useful for telling a missing library apart from an
+# incompatible one.
+LIBDIR="$HERE/lib"
+LIB_PATH=""
+if [ -d "$LIBDIR" ]; then
+    if [ "${RINGOUT_ALL_LIBS:-0}" = "1" ] || ! command -v ldconfig >/dev/null 2>&1; then
+        LIB_PATH="$LIBDIR"
+        LIB_NOTE="whole bundle"
+    else
+        HOSTLIBS="$(ldconfig -p 2>/dev/null | awk '{print $1}' | sort -u)"
+        FALLBACK="$USER_DIR/lib-fallback"
+        rm -rf "$FALLBACK"
+        mkdir -p "$FALLBACK"
+        kept=0
+        dropped=0
+        for so in "$LIBDIR"/*.so*; do
+            [ -e "$so" ] || continue
+            name="$(basename "$so")"
+            if printf '%s\n' "$HOSTLIBS" | grep -qxF "$name"; then
+                dropped=$((dropped + 1))
+                continue
+            fi
+            ln -sf "$so" "$FALLBACK/$name"
+            kept=$((kept + 1))
+        done
+        LIB_PATH="$FALLBACK"
+        LIB_NOTE="$kept bundled, $dropped left to the host"
+    fi
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$LIB_PATH"
+fi
+
 # The environment is the difference between a launch that works from a terminal
 # and the same launch failing under Steam, so record the parts that decide it.
 echo "=== RingOut launch $(date -Is) ==="
+echo "libraries    : ${LIB_NOTE:-no lib/ directory}"
 echo "session      : ${XDG_SESSION_TYPE:-unset}"
 echo "wayland      : ${WAYLAND_DISPLAY:-unset}"
 echo "x11 display  : ${DISPLAY:-unset}"
