@@ -59,6 +59,15 @@ target_link_libraries(${MODULE_NAME} PRIVATE m)
 # through the PLT on every load/store/FP guard (88k mem_read32, 87k
 # ppc_fp_available, 70k mem_write32 call sites) — the dominant FMV CPU cost.
 # The two chassis entry points keep explicit visibility("default").
+# -flto=thin is Clang's spelling; GCC only understands plain -flto and errors
+# out on "thin". setup.sh probes clang -> gcc -> cc, so a machine without clang
+# hit "unrecognized argument to '-flto=' option: 'thin'" and the module build
+# died. -fvisibility-inlines-hidden is also C++-only and warns on every C file.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+  set(MODULE_LTO_FLAG -flto=thin)
+else()
+  set(MODULE_LTO_FLAG -flto)
+endif()
 target_compile_options(${MODULE_NAME} PRIVATE
-  -flto=thin -fvisibility=hidden -fvisibility-inlines-hidden -fno-semantic-interposition)
-target_link_options(${MODULE_NAME} PRIVATE -flto=thin)
+  ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition)
+target_link_options(${MODULE_NAME} PRIVATE ${MODULE_LTO_FLAG})
