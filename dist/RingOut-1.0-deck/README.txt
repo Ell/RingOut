@@ -52,7 +52,11 @@ SETTINGS MENU TABS
             texture packs, show FPS, free camera, fullscreen
   AUDIO     volume, mute, latency, fill audio gaps
   SYSTEM    emulation speed, save/load state, quit
-  CONTROLS  rebind any pad button (Space to rebind, Left to clear)
+  CONTROLS  backend and device at the top, then rebind any pad button
+            (Space to rebind, Left to clear). The Deck's pad can show up
+            under more than one backend -- Steam Deck, SDL and XInput2 are
+            all built in -- so those two rows pick which one is used.
+            Space on either of them re-scans for pads plugged in since.
   CHEATS    master switch, plus any codes you add yourself to
             userdata/GameSettings/<DISCID>.ini
 

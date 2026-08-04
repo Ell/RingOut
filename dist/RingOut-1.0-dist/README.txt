@@ -37,7 +37,9 @@ SETTINGS MENU TABS
             texture packs, show FPS, free camera, fullscreen
   AUDIO     volume, mute, latency, fill audio gaps
   SYSTEM    emulation speed, save/load state, quit
-  CONTROLS  rebind any pad button (Space to rebind, Left to clear)
+  CONTROLS  input backend and device at the top, then rebind any pad
+            button (Space to rebind, Left to clear). Space on either of
+            the top two rows re-scans for pads plugged in since.
   CHEATS    master switch, plus any codes you add yourself to
             userdata/GameSettings/<DISCID>.ini
 
