@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/State.h"
+
+#include <chrono>
 #include "Core/StateFile.h"
 
 #include <algorithm>
@@ -89,6 +91,28 @@ static Common::WorkQueueThreadSP<CompressAndDumpStateArgs> s_compress_and_dump_t
   return std::shared_lock{s_state_saves_in_progress};
 }
 
+u32 SnapshotSkipMask()
+{
+  static const u32 mask = [] {
+    const char* const spec = std::getenv("RINGOUT_ROLLBACK_SKIP");
+    if (!spec)
+      return 0u;
+    u32 result = 0;
+    const std::string text = spec;
+    if (text.find("vmem") != std::string::npos)
+      result |= SKIP_VMEM;
+    if (text.find("pad") != std::string::npos)
+      result |= SKIP_PAD;
+    if (text.find("video") != std::string::npos)
+      result |= SKIP_VIDEO;
+    if (text.find("aram") != std::string::npos)
+      result |= SKIP_ARAM;
+    std::fprintf(stderr, "[state] snapshot skip mask 0x%X from \"%s\"\n", result, spec);
+    return result;
+  }();
+  return mask;
+}
+
 static void DoState(Core::System& system, PointerWrap& p)
 {
   bool is_wii = system.IsWii() || system.IsMIOS();
@@ -128,18 +152,29 @@ static void DoState(Core::System& system, PointerWrap& p)
   // shot: SaveToBuffer may run several passes (measure, grow, save) and we want
   // one clean report, not one per pass.
   static const bool s_breakdown = std::getenv("RINGOUT_STATE_BREAKDOWN") != nullptr;
-  static bool s_breakdown_done = false;
-  const bool report = s_breakdown && !s_breakdown_done;
+  // One report per direction: the write side says what a snapshot costs to
+  // build, the read side says where restoring it spends its time -- and restore
+  // turned out not to scale with size, so the two are different questions.
+  static bool s_reported_write = false;
+  static bool s_reported_read = false;
+  const bool is_read = p.IsReadMode();
+  const bool report = s_breakdown && (is_read ? !s_reported_read : !s_reported_write);
+  const char* const dir = is_read ? "load" : "save";
   u8* section_start = p.GetCurrentPosition();
   u32 section_total = 0;
+  auto section_clock = std::chrono::steady_clock::now();
   const auto section = [&](const char* name) {
     if (!report)
       return;
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed_ms =
+        std::chrono::duration<double, std::milli>(now - section_clock).count();
     const u32 bytes = p.GetOffsetFromPreviousPosition(section_start);
     section_total += bytes;
-    std::fprintf(stderr, "[state] %-16s %11u bytes  %7.2f MiB\n", name, bytes,
-                 double(bytes) / (1024.0 * 1024.0));
+    std::fprintf(stderr, "[state:%s] %-16s %11u bytes  %7.2f MiB  %7.2f ms\n", dir, name, bytes,
+                 double(bytes) / (1024.0 * 1024.0), elapsed_ms);
     section_start = p.GetCurrentPosition();
+    section_clock = now;
   };
   section("header");
 
@@ -151,7 +186,8 @@ static void DoState(Core::System& system, PointerWrap& p)
 
   // Begin with video backend, so that it gets a chance to clear its caches and writeback modified
   // things to RAM
-  g_video_backend->DoState(p);
+  if ((SnapshotSkipMask() & SKIP_VIDEO) == 0)
+    g_video_backend->DoState(p);
   p.DoMarker("video_backend");
   section("video_backend");
 
@@ -184,10 +220,10 @@ static void DoState(Core::System& system, PointerWrap& p)
   section("Achievements");
   if (report)
   {
-    std::fprintf(stderr, "[state] %-16s %11u bytes  %7.2f MiB\n", "TOTAL", section_total,
+    std::fprintf(stderr, "[state:%s] %-16s %11u bytes  %7.2f MiB\n", dir, "TOTAL", section_total,
                  double(section_total) / (1024.0 * 1024.0));
     std::fflush(stderr);
-    s_breakdown_done = true;
+    (is_read ? s_reported_read : s_reported_write) = true;
   }
 }
 

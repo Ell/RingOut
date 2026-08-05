@@ -38,6 +38,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/State.h"
 #include "Core/System.h"
 
 namespace DSP
@@ -78,7 +79,7 @@ constexpr int DSP_MAIL_SLICE = 72;
 
 void DSPManager::DoState(PointerWrap& p)
 {
-  if (!m_aram.wii_mode)
+  if (!m_aram.wii_mode && (State::SnapshotSkipMask() & State::SKIP_ARAM) == 0)
     p.DoArray(m_aram.ptr, m_aram.size);
   p.Do(m_dsp_control);
   p.Do(m_audio_dma);

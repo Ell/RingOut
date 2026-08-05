@@ -97,6 +97,26 @@ u64 GetUnixTimeOfSlot(int slot);
 void Save(Core::System& system, int slot);
 void Load(Core::System& system, int slot);
 
+// Rollback snapshot narrowing (RINGOUT_ROLLBACK_SKIP=vmem,pad,video,aram).
+//
+// A full savestate is ~106 MiB and 23 ms, well past a 60 fps frame, but a third
+// of it is provably zeroes and another quarter is caches the video backend can
+// rebuild. These let a snapshot drop sections independently so each one's saving
+// AND its effect on correctness can be measured on its own -- excluding them all
+// at once would prove nothing about which is safe.
+//
+// Save and load must use the same mask, which they do: it is read once from the
+// environment.
+enum SnapshotSkip : u32
+{
+  SKIP_NONE = 0,
+  SKIP_VMEM = 1 << 0,   // fake VMEM window: measured all-zero for this game
+  SKIP_PAD = 1 << 1,    // MEM1 above GetRamSizeReal(): padding to the fastmem arena
+  SKIP_VIDEO = 1 << 2,  // texture/EFB caches; also skips the backend's RAM writeback
+  SKIP_ARAM = 1 << 3,   // 16 MiB audio RAM
+};
+u32 SnapshotSkipMask();
+
 // Uncompressed, synchronous, in-memory state. These are what a rollback
 // netplay implementation needs -- SaveAs/LoadAs compress and go through a worker
 // thread, which is right for a user pressing F1 and wrong for something that has

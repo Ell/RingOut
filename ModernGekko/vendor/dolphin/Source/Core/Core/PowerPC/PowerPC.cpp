@@ -3,6 +3,8 @@
 
 #include "Core/PowerPC/PowerPC.h"
 
+#include <chrono>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -108,21 +110,44 @@ void PowerPCManager::DoState(PointerWrap& p)
   m_ppc_state.dCache.DoState(memory, p);
 
   auto& mmu = m_system.GetMMU();
+  // One-shot timing of the read path (RINGOUT_STATE_BREAKDOWN=1). PowerPC is
+  // 84 KB of a 24 MiB snapshot but ~87% of the restore time, so the cost is in
+  // what this does, not what it copies -- and a rollback restore that has to
+  // happen inside a frame needs to know which step owns it.
+  static const bool s_time = std::getenv("RINGOUT_STATE_BREAKDOWN") != nullptr;
+  static bool s_timed = false;
+  const bool time_it = s_time && !s_timed && p.IsReadMode();
+  using TClock = std::chrono::steady_clock;
+  const auto stamp = [&](const char* name, TClock::time_point from) {
+    if (!time_it)
+      return TClock::now();
+    const auto now = TClock::now();
+    std::fprintf(stderr, "[state:load]   PowerPC/%-14s %7.2f ms\n", name,
+                 std::chrono::duration<double, std::milli>(now - from).count());
+    return now;
+  };
+
   if (p.IsReadMode())
   {
+    auto mark = TClock::now();
     mmu.DoState(p, old_sr != m_ppc_state.sr);
+    mark = stamp("mmu.DoState", mark);
 
     if (!m_ppc_state.m_enable_dcache)
     {
       INFO_LOG_FMT(POWERPC, "Flushing data cache");
       m_ppc_state.dCache.FlushAll(memory);
     }
+    mark = stamp("dCache.FlushAll", mark);
 
     RoundingModeUpdated(m_ppc_state);
     RecalculateAllFeatureFlags(m_ppc_state);
+    mark = stamp("feature flags", mark);
 
     mmu.IBATUpdated();
+    mark = stamp("IBATUpdated", mark);
     mmu.DBATUpdated();
+    mark = stamp("DBATUpdated", mark);
   }
   else
   {
@@ -132,7 +157,14 @@ void PowerPCManager::DoState(PointerWrap& p)
   // SystemTimers::DecrementerSet();
   // SystemTimers::TimeBaseSet();
 
+  const auto jit_start = TClock::now();
   m_system.GetJitInterface().DoState(p);
+  stamp("JitInterface", jit_start);
+  if (time_it)
+  {
+    s_timed = true;
+    std::fflush(stderr);
+  }
 }
 
 void PowerPCManager::ResetRegisters()
