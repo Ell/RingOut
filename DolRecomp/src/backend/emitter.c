@@ -480,6 +480,44 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu) {
         "    return dolrecomp_f32_to_bits((f32)value);\n"
         "}\n"
         "\n"
+        // FPRF (FPSCR bits 12-16: class, <, >, =, ?) after an arithmetic result.
+        // The plain arithmetic below is emitted as C rather than routed through a
+        // runtime helper, so nothing was maintaining these bits -- lockstep caught
+        // native holding fpscr=0x4 where the interpreter had 0x4004/0xc004. The
+        // game reads FPSCR (two mffs sites), so it is observable, not cosmetic.
+        // ppc_fma / fres / frsqrte / ps_res / ps_rsqrte already set it themselves.
+        // Classification mirrors classify_f64 / classify_f32 in cpu.c exactly.
+        "static inline u32 dolrecomp_classify_d(f64 value) {\n"
+        "    u64 bits = dolrecomp_f64_to_bits(value);\n"
+        "    u64 sign = bits >> 63;\n"
+        "    u64 exponent = bits & 0x7FF0000000000000ull;\n"
+        "    u64 fraction = bits & 0x000FFFFFFFFFFFFFull;\n"
+        "    if (exponent == 0x7FF0000000000000ull)\n"
+        "        return fraction ? 0x11u : (sign ? 0x09u : 0x05u);\n"
+        "    if (exponent == 0)\n"
+        "        return fraction ? (sign ? 0x18u : 0x14u) : (sign ? 0x12u : 0x02u);\n"
+        "    return sign ? 0x08u : 0x04u;\n"
+        "}\n"
+        "\n"
+        "static inline u32 dolrecomp_classify_s(f32 value) {\n"
+        "    u32 bits = dolrecomp_f32_to_bits(value);\n"
+        "    u32 sign = bits >> 31;\n"
+        "    u32 exponent = bits & 0x7F800000u;\n"
+        "    u32 fraction = bits & 0x007FFFFFu;\n"
+        "    if (exponent == 0x7F800000u)\n"
+        "        return fraction ? 0x11u : (sign ? 0x09u : 0x05u);\n"
+        "    if (exponent == 0)\n"
+        "        return fraction ? (sign ? 0x18u : 0x14u) : (sign ? 0x12u : 0x02u);\n"
+        "    return sign ? 0x08u : 0x04u;\n"
+        "}\n"
+        "\n"
+        "static inline void dolrecomp_fprf_d(CPUState* ctx, f64 value) {\n"
+        "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_d(value) << 12);\n"
+        "}\n"
+        "static inline void dolrecomp_fprf_s(CPUState* ctx, f32 value) {\n"
+        "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_s(value) << 12);\n"
+        "}\n"
+        "\n"
         ,
         emit_cpu_label(cpu),
         emit_cpu_macro(cpu),
@@ -983,21 +1021,25 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         // so a later psq_st reads the correct second lane (fixes warped geometry).
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] + ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSUBS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] - ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FMULS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] * ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rC);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FDIVS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] / ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FRES:
@@ -1025,21 +1067,25 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_FADD:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] + ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSUB:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] - ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FMUL:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] * ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rC);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FDIV:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] / ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FRSQRTE:
@@ -1094,6 +1140,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         // frsp broadcasts to both lanes too (Dolphin: ps[FD].Fill(rounded)).
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)ctx->fpr[%u];\n",
                 inst->rD, inst->rD, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSEL:
@@ -1166,6 +1213,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1176,6 +1224,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] - (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1186,6 +1235,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rC);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rC);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1196,6 +1246,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] / (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1234,6 +1285,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         }
         fprintf(out, "        ctx->fpr[%u] = dolrecomp_ps_round(ps0);\n", inst->rD);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round(ps1);\n", inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1277,6 +1329,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rA, inst->rB);
         fprintf(out, "      f64 d1 = dolrecomp_ps_round(ctx->ps1[%u]);\n", inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1285,6 +1338,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->fpr[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1294,6 +1348,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->fpr[%u]);\n",
                 inst->rA, inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1303,6 +1358,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1312,6 +1368,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->fpr[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1321,6 +1378,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
