@@ -307,6 +307,19 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   Config::SetBase(Config::NETPLAY_NETWORK_MODE, std::string("fixeddelay"));
   Config::SetBase(Config::NETPLAY_USE_INDEX, false);
 
+  // Dolphin drops all input, pipe included, whenever the render window lacks
+  // focus, and it defaults to off. That is wrong for netplay in two ways: a
+  // peer that loses focus mid-match silently sends neutral input while its
+  // opponent keeps playing, and two peers on one machine can never both be
+  // focused -- which presents exactly as "the guest's controller does nothing"
+  // while the host's works, with no error anywhere.
+  //
+  // This has to go on the RuntimeConfig, not through Config::SetBase: writing
+  // it into Dolphin.ini does not survive init, and Runtime::Create then does
+  // SetBase(MAIN_INPUT_BACKGROUND_INPUT, config.input.background_input)
+  // unconditionally, which overwrites anything set here beforehand.
+  runtime_config.input.background_input = true;
+
   auto game = std::make_shared<UICommon::GameFile>(
       (runtime_config.game_root / "sys/main.dol").string());
   if (!game->IsValid()) {
@@ -423,6 +436,22 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
       Log("the client refused to start the game");
       result = static_cast<int>(NetplayExitCode::Failed);
     }
+  }
+
+  if (result == 0) {
+    // What this peer believes it owns. A client with zero local pads still
+    // boots and runs perfectly happily -- it just never sends any input, and
+    // the game sits in attract mode looking like it ignores the controller.
+    const NetPlay::PadMappingArray &map = client->GetPadMapping();
+    std::string map_text;
+    for (size_t i = 0; i < map.size(); ++i)
+      map_text += (i ? "," : "") + std::to_string(static_cast<int>(map[i]));
+    Log("pad map [" + map_text + "], local pads = " +
+        std::to_string(client->NumLocalPads()) +
+        ", local player has a controller = " +
+        (client->LocalPlayerHasControllerMapped() ? "yes" : "no"));
+    if (client->NumLocalPads() == 0)
+      Log("WARNING: no local pad -- this peer will send no input");
   }
 
   if (result == 0) {
