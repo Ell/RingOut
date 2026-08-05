@@ -163,6 +163,15 @@ void StaticRecompLockstepVerifier::LockstepCheck(u32 entry_pc, u32 end_pc, const
   int steps = 0;
   s64 interp_cycles = 0;
   const bool end_is_loop_header = LsIsLoopHeader(ram, ram_size, end_pc);
+  // Step the shadow to the SAME cycle count native charged, then require the PC
+  // to agree -- rather than stopping the moment pc == end_pc.
+  //
+  // Stopping at the first arrival assumes a native dispatch runs one block. That
+  // stopped being true when loop back-edges became `goto`s: a dispatch now passes
+  // through end_pc once per iteration, so the shadow would halt after one pass
+  // while native had run several, and the comparison reported register deltas of
+  // exactly one loop stride. Those looked like real divergences and were an
+  // artifact of the stopping rule.
   while (steps < m_ls_step_cap)
   {
     const u32 before = ppc.pc;
@@ -175,9 +184,11 @@ void StaticRecompLockstepVerifier::LockstepCheck(u32 entry_pc, u32 end_pc, const
                    steps, before, ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.msr.Hex,
                    ppc.GetXER().Hex, ppc.cr.Get(), ppc.spr[SPR_LR], ppc.spr[SPR_CTR]);
     }
-    if (ppc.pc == end_pc)
-      break;
     if (ppc.Exceptions != 0)
+      break;
+    // Matched native's work; stop here whether or not this is the first time
+    // end_pc has come round. If the PC disagrees now, that is a real divergence.
+    if (interp_cycles >= native_charge && ppc.pc == end_pc)
       break;
   }
 
