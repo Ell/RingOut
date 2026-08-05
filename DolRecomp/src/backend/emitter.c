@@ -3,6 +3,9 @@
 
 #include "emitter.h"
 
+/* Defined below, next to the refund state it reads. */
+static void emit_exc_check_return(FILE* out, const char* indent);
+
 #include <stdlib.h>
 
 static u32 cr_field_shift(u8 crf) {
@@ -246,7 +249,7 @@ static void emit_psq_load(FILE* out, const PPCInst* inst, bool indexed,
     fprintf(out, "        ppc_psq_load(ctx, %uu, ea, %s, %uu, %s, 0x%08Xu);\n",
             inst->rD, inst->w ? "true" : "false", inst->i,
             indexed ? "true" : "false", inst->address);
-    fprintf(out, "        if (ctx->exception) return;\n");
+    emit_exc_check_return(out, "        ");
     if (update) {
         fprintf(out, "        ctx->gpr[%u] = ea;\n", inst->rA);
     }
@@ -266,7 +269,7 @@ static void emit_psq_store(FILE* out, const PPCInst* inst, bool indexed,
     fprintf(out, "        ppc_psq_store(ctx, %uu, ea, %s, %uu, %s, 0x%08Xu);\n",
             inst->rS, inst->w ? "true" : "false", inst->i,
             indexed ? "true" : "false", inst->address);
-    fprintf(out, "        if (ctx->exception) return;\n");
+    emit_exc_check_return(out, "        ");
     if (update) {
         fprintf(out, "        ctx->gpr[%u] = ea;\n", inst->rA);
     }
@@ -319,6 +322,31 @@ static void emit_branch_condition(FILE* out, u8 bo, u8 bi) {
  * skip would silently stop happening: measured, the idle PC really is a
  * back-edge target here. 0 = no idle PC, every back-edge stays native. */
 static u32 s_idle_pc = 0;
+
+/* Cycles charged for the remainder of the current instruction's block: every
+ * instruction after this one, up to the end of the block.
+ *
+ * A block charges its whole cost up front at its leader, so an exception that
+ * leaves mid-block has charged CoreTiming for work that never ran -- events then
+ * fire early. Measured: the FP-unavailable exit in the FP context-save prologue
+ * at 0x80019F84 charged 367 cycles having executed five instructions.
+ *
+ * The faulting instruction itself stays charged, which matches the interpreter:
+ * SingleStepInner has a single exit and returns that instruction's opinfo cycles.
+ */
+/* Thread-local: codegen.c emits chunks on N worker threads (-jN), so a plain
+ * file-static is shared between them and one chunk's value lands in another's
+ * output. That produced refunds of 1 and 7 cycles inside a 367-cycle block. */
+static _Thread_local u32 s_block_suffix = 0;
+
+/* `if (ctx->exception) return;` plus the refund. */
+static void emit_exc_check_return(FILE* out, const char* indent) {
+    if (s_block_suffix != 0)
+        fprintf(out, "%sif (ctx->exception) { ctx->downcount += %u; return; }\n",
+                indent, s_block_suffix);
+    else
+        fprintf(out, "%sif (ctx->exception) return;\n", indent);
+}
 
 void emit_set_idle_pc(u32 pc) {
     s_idle_pc = pc;
@@ -555,8 +583,15 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         return;
     }
 
-    if (ppc_op_uses_fpu(inst->op))
-        fprintf(out, "    if (!ppc_fp_available(ctx, 0x%08Xu)) return;\n", inst->address);
+    if (ppc_op_uses_fpu(inst->op)) {
+        if (s_block_suffix != 0) {
+            fprintf(out,
+                    "    if (!ppc_fp_available(ctx, 0x%08Xu)) { ctx->downcount += %u; return; }\n",
+                    inst->address, s_block_suffix);
+        } else {
+            fprintf(out, "    if (!ppc_fp_available(ctx, 0x%08Xu)) return;\n", inst->address);
+        }
+    }
 
     switch (inst->op) {
     case PPC_OP_MULLI:
@@ -1626,7 +1661,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         emit_xform_ea(out, inst->rA, inst->rB, false);
         fprintf(out, ";\n");
         fprintf(out, "        ppc_dcbz_l(ctx, ea, 0x%08Xu);\n", inst->address);
-        fprintf(out, "        if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "        ");
         fprintf(out, "    }\n");
         break;
 
@@ -1803,7 +1838,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_MFTB:
         fprintf(out, "    ctx->gpr[%u] = ppc_mftb(ctx, %uu, 0x%08Xu);\n",
                 inst->rD, inst->spr, inst->address);
-        fprintf(out, "    if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "    ");
         break;
 
     case PPC_OP_MFSPR:
@@ -1817,7 +1852,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         case 269:
             fprintf(out, "    ctx->gpr[%u] = ppc_mftb(ctx, %uu, 0x%08Xu);\n",
                     inst->rD, inst->spr, inst->address);
-            fprintf(out, "    if (ctx->exception) return;\n");
+            emit_exc_check_return(out, "    ");
             break;
         case 912: fprintf(out, "    ctx->gpr[%u] = ctx->gqr[0];\n", inst->rD); break;
         case 913: fprintf(out, "    ctx->gpr[%u] = ctx->gqr[1];\n", inst->rD); break;
@@ -1864,7 +1899,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
 
     case PPC_OP_TLBIE:
         fprintf(out, "    ppc_tlbie(ctx, ctx->gpr[%u], 0x%08Xu);\n", inst->rB, inst->address);
-        fprintf(out, "    if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "    ");
         break;
 
     case PPC_OP_SYNC:
@@ -1880,7 +1915,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         emit_xform_ea(out, inst->rA, inst->rB, false);
         fprintf(out, ";\n");
         fprintf(out, "        u32 value = ppc_eciwx(ctx, ea, 0x%08Xu);\n", inst->address);
-        fprintf(out, "        if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "        ");
         fprintf(out, "        ctx->gpr[%u] = value;\n", inst->rD);
         fprintf(out, "    }\n");
         break;
@@ -1892,7 +1927,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, ";\n");
         fprintf(out, "        ppc_ecowx(ctx, ea, ctx->gpr[%u], 0x%08Xu);\n",
                 inst->rS, inst->address);
-        fprintf(out, "        if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "        ");
         fprintf(out, "    }\n");
         break;
 
@@ -2036,18 +2071,28 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
             leader[(inst->branch_target - func_addr) / 4u] = 1;
         }
     }
+    /* Per-instruction cost of the REST of its block, for the exception refund.
+     * Walked with exactly the same block bounds the charge uses, so the refund
+     * can never exceed what was charged. */
+    u32* suffix = (u32*)calloc(count ? count : 1u, sizeof(u32));
+
     for (i = 0; i < count; i++) {
-        u32 j;
+        u32 j, last;
         if (!leader[i])
             continue;
+        last = i;
         for (j = i;;) {
             block_cost[i] += inst_cycle_cost(&insts[j]);
+            last = j;
             if (inst_ends_block(&insts[j]))
                 break;
             j++;
             if (j >= count || leader[j])
                 break;
         }
+        /* Walk back from the end so suffix[j] = cost of everything after j. */
+        for (j = last + 1u; j-- > i;)
+            suffix[j] = (j == last) ? 0u : suffix[j + 1u] + inst_cycle_cost(&insts[j + 1u]);
     }
 
     fprintf(out, "void func_%08X(CPUState* ctx) {\n", func_addr);
@@ -2074,11 +2119,14 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
             if (block_cost[i] != 0)
                 fprintf(out, "    ctx->downcount -= %u;\n", block_cost[i]);
         }
+        s_block_suffix = suffix[i];
         emit_instruction_with_range(out, &insts[i], func_addr, func_end);
     }
+    s_block_suffix = 0;
 
     free(leader);
     free(block_cost);
+    free(suffix);
 
     fprintf(out, "    ctx->pc = 0x%08Xu;\n", func_end);
     fprintf(out, "}\n\n");
