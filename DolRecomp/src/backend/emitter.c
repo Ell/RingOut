@@ -85,6 +85,20 @@ static void emit_fcompare(FILE* out, const PPCInst* inst) {
     fprintf(out, "        else                     cr_bits = 0x1u;\n");
     fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (cr_bits << %u);\n",
             shift, shift);
+    /* A FLOAT compare also sets FPSCR's FPCC (bits 12-15); nothing was doing
+     * that, so lockstep saw the interpreter carrying compare results in FPSCR
+     * that we did not. Cleared then set, per the architecture: "the FPCC field
+     * is set to reflect the comparison". Integer compares must NOT touch FPSCR,
+     * which is why this lives here and not in emit_compare_s32.
+     *
+     * This deliberately does NOT match Dolphin's interpreter, which does
+     *   fpscr.FPRF = (fpscr.FPRF & ~FPCC_MASK) | compare_value;
+     * where FPRF is a 5-bit BitField holding 0..31 while FPCC_MASK is 0xF << 12,
+     * so the mask clears nothing and the result is OR-ed into the old value.
+     * Copying that would leave stale FPCC bits the hardware clears, and the game
+     * reads FPSCR (two mffs sites). Lockstep will keep reporting these; the
+     * divergence is on the reference side. */
+    fprintf(out, "        ctx->fpscr = (ctx->fpscr & ~(0xFu << 12)) | (cr_bits << 12);\n");
     fprintf(out, "    }\n");
 }
 
