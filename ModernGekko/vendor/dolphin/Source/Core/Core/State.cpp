@@ -122,37 +122,73 @@ static void DoState(Core::System& system, PointerWrap& p)
     return;
   }
 
+  // Env-gated size breakdown (RINGOUT_STATE_BREAKDOWN=1). A rollback snapshot
+  // has to fit in a frame and this one is ~106 MiB, so which subsystem owns
+  // those bytes decides whether a narrower snapshot is reachable at all. One
+  // shot: SaveToBuffer may run several passes (measure, grow, save) and we want
+  // one clean report, not one per pass.
+  static const bool s_breakdown = std::getenv("RINGOUT_STATE_BREAKDOWN") != nullptr;
+  static bool s_breakdown_done = false;
+  const bool report = s_breakdown && !s_breakdown_done;
+  u8* section_start = p.GetCurrentPosition();
+  u32 section_total = 0;
+  const auto section = [&](const char* name) {
+    if (!report)
+      return;
+    const u32 bytes = p.GetOffsetFromPreviousPosition(section_start);
+    section_total += bytes;
+    std::fprintf(stderr, "[state] %-16s %11u bytes  %7.2f MiB\n", name, bytes,
+                 double(bytes) / (1024.0 * 1024.0));
+    section_start = p.GetCurrentPosition();
+  };
+  section("header");
+
   // Movie must be done before the video backend, because the window is redrawn in the video backend
   // state load, and the frame number must be up-to-date.
   system.GetMovie().DoState(p);
   p.DoMarker("Movie");
+  section("Movie");
 
   // Begin with video backend, so that it gets a chance to clear its caches and writeback modified
   // things to RAM
   g_video_backend->DoState(p);
   p.DoMarker("video_backend");
+  section("video_backend");
 
   // CoreTiming needs to be restored before restoring Hardware because
   // the controller code might need to schedule an event if the controller has changed.
   system.GetCoreTiming().DoState(p);
   p.DoMarker("CoreTiming");
+  section("CoreTiming");
 
   // HW needs to be restored before PowerPC because the data cache might need to be flushed.
   HW::DoState(system, p);
   p.DoMarker("HW");
+  section("HW");
 
   system.GetPowerPC().DoState(p);
   p.DoMarker("PowerPC");
+  section("PowerPC");
 
   if (system.IsWii())
     Wiimote::DoState(p);
   p.DoMarker("Wiimote");
+  section("Wiimote");
   Gecko::DoState(p);
   p.DoMarker("Gecko");
+  section("Gecko");
 
 #ifdef USE_RETRO_ACHIEVEMENTS
   AchievementManager::GetInstance().DoState(p);
 #endif  // USE_RETRO_ACHIEVEMENTS
+  section("Achievements");
+  if (report)
+  {
+    std::fprintf(stderr, "[state] %-16s %11u bytes  %7.2f MiB\n", "TOTAL", section_total,
+                 double(section_total) / (1024.0 * 1024.0));
+    std::fflush(stderr);
+    s_breakdown_done = true;
+  }
 }
 
 static bool CheckIfStateLoadIsAllowed(Core::System& system)

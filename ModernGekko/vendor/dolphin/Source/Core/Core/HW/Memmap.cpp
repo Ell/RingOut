@@ -6,6 +6,9 @@
 // However, if a JITed instruction (for example lwz) wants to access a bad memory area that call
 // may be redirected here (for example to Read_U32()).
 
+#include <cstdio>
+#include <cstdlib>
+
 #include "Core/HW/Memmap.h"
 
 #include <algorithm>
@@ -531,6 +534,36 @@ void MemoryManager::DoState(PointerWrap& p)
                          3000);
     p.SetVerifyMode();
     return;
+  }
+
+  // One-shot occupancy probe (RINGOUT_STATE_BREAKDOWN=1). Fake VMEM is 40 MiB of
+  // a ~106 MiB savestate; whether a rollback snapshot may drop it turns on
+  // whether this game touches the window at all, which is a question of fact.
+  {
+    static const bool s_probe = std::getenv("RINGOUT_STATE_BREAKDOWN") != nullptr;
+    static bool s_probe_done = false;
+    if (s_probe && !s_probe_done)
+    {
+      s_probe_done = true;
+      const auto nonzero = [](const u8* base, u32 size) {
+        u64 count = 0;
+        for (u32 i = 0; i < size; ++i)
+          count += base[i] != 0;
+        return count;
+      };
+      if (current_have_fake_vmem)
+      {
+        const u64 used = nonzero(m_fake_vmem, current_fake_vmem_size);
+        std::fprintf(stderr, "[state]   fake VMEM %u bytes, %llu non-zero (%.4f%%)\n",
+                     current_fake_vmem_size, static_cast<unsigned long long>(used),
+                     100.0 * double(used) / double(current_fake_vmem_size));
+      }
+      const u64 ram_used = nonzero(m_ram, current_ram_size);
+      std::fprintf(stderr, "[state]   MEM1      %u bytes, %llu non-zero (%.1f%%)\n",
+                   current_ram_size, static_cast<unsigned long long>(ram_used),
+                   100.0 * double(ram_used) / double(current_ram_size));
+      std::fflush(stderr);
+    }
   }
 
   p.DoArray(m_ram, current_ram_size);

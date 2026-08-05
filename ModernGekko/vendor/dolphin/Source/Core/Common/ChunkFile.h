@@ -246,6 +246,10 @@ public:
     return static_cast<u32>((*m_ptr_current) - previous_pointer);
   }
 
+  // Paired with GetOffsetFromPreviousPosition to measure how much a single
+  // section of a savestate costs.
+  u8* GetCurrentPosition() const { return *m_ptr_current; }
+
   void Do(Common::Flag& flag)
   {
     bool s = flag.IsSet();
