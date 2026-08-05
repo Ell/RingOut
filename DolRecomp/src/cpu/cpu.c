@@ -549,11 +549,34 @@ static bool f32_is_denormal(f32 value) {
     return (bits & 0x7F800000u) == 0 && (bits & 0x007FFFFFu) != 0;
 }
 
-static s32 gqr_scale(u32 value) {
+/* ---- Paired-single quantised load/store: collapse the helper call chain ----
+ * psq_l/psq_st is the single hottest thing this core does during FMV -- 39% of
+ * the CPU thread, measured -- and one non-w psq_l was costing about six
+ * out-of-line calls: ppc_psq_load -> psq_check_enabled, then
+ * psq_access_is_valid + psq_load_value once per lane. Profiles showed all of
+ * them as separate symbols (psq_store_value 12.8%, psq_load_value 9.3%,
+ * psq_access_is_valid 1.3%), so -O3 + LTO was NOT inlining them despite their
+ * being static in this very file: the type switch makes them look expensive to
+ * the cost model. Forcing it collapses the chain to a single call.
+ *
+ * Measured over four FMV profiles (work/perf-fmv/): psq cost per unit of
+ * recompiled-chunk work fell from 0.890 to 0.506, about -43%, with the two
+ * groups' ranges not overlapping. Guest state is bit-identical to the previous
+ * build over 1800 frames and the module came out 208 bytes smaller.
+ *
+ * Do NOT extend this into a type-specialised fast path -- that was tried and
+ * measured (work/experiments/psq-typed-fastpath-REJECTED.patch): dispatching the
+ * type once for both lanes, inlining psq_quantize_int and dropping the
+ * redundant second psq_access_is_valid landed *inside* the noise of this
+ * version. The dispatch was never the cost; the loads, stores and FP conversion
+ * are. Only collapsing genuine out-of-line call chains has paid here. */
+#define DOLRECOMP_PSQ_FI static inline __attribute__((always_inline))
+
+DOLRECOMP_PSQ_FI s32 gqr_scale(u32 value) {
     return sign_extend(value & 0x3Fu, 6);
 }
 
-static u32 psq_type_size(u8 type) {
+DOLRECOMP_PSQ_FI u32 psq_type_size(u8 type) {
     switch (type) {
     case 0: return 4;
     case 4:
@@ -564,7 +587,7 @@ static u32 psq_type_size(u8 type) {
     }
 }
 
-static bool psq_access_is_valid(CPUState* cpu, u8 type, u32 ea, u32 cia) {
+DOLRECOMP_PSQ_FI bool psq_access_is_valid(CPUState* cpu, u8 type, u32 ea, u32 cia) {
     if (psq_type_size(type) == 0) {
         ppc_program_exception(cpu, PPC_PROGRAM_ILLEGAL, cia);
         return false;
@@ -587,7 +610,7 @@ static inline f64 psq_pow2i(s32 e) {
     return v.d;
 }
 
-static f64 psq_load_value(CPUState* cpu, u32 ea, u8 type, s32 scale) {
+DOLRECOMP_PSQ_FI f64 psq_load_value(CPUState* cpu, u32 ea, u8 type, s32 scale) {
     switch (type) {
     case 0:
         return (f64)f32_value(mem_read32(cpu, ea));
@@ -618,7 +641,7 @@ static s64 psq_quantize_int(f64 value, s64 min_value, s64 max_value, s32 scale) 
     return (s64)scaled;
 }
 
-static void psq_store_value(CPUState* cpu, u32 ea, u8 type, s32 scale, f64 value) {
+DOLRECOMP_PSQ_FI void psq_store_value(CPUState* cpu, u32 ea, u8 type, s32 scale, f64 value) {
     switch (type) {
     case 0: {
         f32 single = (f32)value;
@@ -640,7 +663,7 @@ static void psq_store_value(CPUState* cpu, u32 ea, u8 type, s32 scale, f64 value
     }
 }
 
-static bool psq_check_enabled(CPUState* cpu, bool indexed, u32 cia) {
+DOLRECOMP_PSQ_FI bool psq_check_enabled(CPUState* cpu, bool indexed, u32 cia) {
     if ((cpu->hid2 & PPC_HID2_PSE) == 0 || (!indexed && (cpu->hid2 & PPC_HID2_LSQE) == 0)) {
         ppc_program_exception(cpu, PPC_PROGRAM_ILLEGAL, cia);
         return false;
