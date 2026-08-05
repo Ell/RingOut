@@ -81,6 +81,25 @@ elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_G
 else()
   set(MODULE_LTO_FLAG -flto)
 endif()
+# Line-level profiling (-DMODULE_DEBUG_LINES=ON). Each chunk is ONE huge C
+# function, so perf can only ever report "func_8000D940" -- a 16 KB span holding
+# dozens of guest functions. That is enough to see which chunk is hot and no more.
+#
+# -g1 emits line tables only, so `perf report -s srcline` resolves samples to a
+# line of the generated .c; the emitter writes one `label_<guest addr>:` per guest
+# instruction, so that line maps back to a guest PC.
+# .github/scripts/hot-guest-code.sh does the mapping and prints hot guest
+# addresses.
+#
+# Off by default: it roughly doubles the .so and there is no reason to ship it.
+# Codegen is unaffected -- the .text bytes are identical with and without it --
+# so a -g1 build stays timing-comparable with a normal one.
+option(MODULE_DEBUG_LINES "Emit line tables so perf can attribute inside chunks" OFF)
+if(MODULE_DEBUG_LINES)
+  target_compile_options(${MODULE_NAME} PRIVATE -g1)
+  target_link_options(${MODULE_NAME} PRIVATE -g1)
+endif()
+
 target_compile_options(${MODULE_NAME} PRIVATE
   ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition)
 target_link_options(${MODULE_NAME} PRIVATE ${MODULE_LTO_FLAG})
