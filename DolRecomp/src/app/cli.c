@@ -151,6 +151,15 @@ int parse_cli(int argc, char** argv, CliOptions* opts) {
             continue;
         }
 
+        if (strcmp(arg, "--idle-pc") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: --idle-pc needs a guest address\n");
+                return 0;
+            }
+            opts->idle_pc = (u32)strtoul(argv[++i], NULL, 0);
+            continue;
+        }
+
         if (strcmp(arg, "--cpu") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "error: --cpu needs gekko, broadway, or espresso\n");

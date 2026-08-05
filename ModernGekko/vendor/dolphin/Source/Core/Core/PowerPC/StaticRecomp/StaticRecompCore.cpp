@@ -254,6 +254,17 @@ void StaticRecompCore::Shutdown()
                  m_native_dispatches, m_fallback_steps, m_native_exceptions,
                  m_hook_fallback_instructions, m_failed_chunks, m_verifications,
                  m_reverify_events);
+  if (m_dispatch_loop || m_dispatch_fwd || m_dispatch_cross)
+  {
+    const double total =
+        double(m_dispatch_loop) + double(m_dispatch_fwd) + double(m_dispatch_cross);
+    std::fprintf(stderr,
+                 "[dispatch] loop-backedge=%llu (%.1f%%) same-chunk-fwd=%llu (%.1f%%) "
+                 "cross-chunk=%llu (%.1f%%)\n",
+                 (unsigned long long)m_dispatch_loop, 100.0 * m_dispatch_loop / total,
+                 (unsigned long long)m_dispatch_fwd, 100.0 * m_dispatch_fwd / total,
+                 (unsigned long long)m_dispatch_cross, 100.0 * m_dispatch_cross / total);
+  }
   m_lockstep_verifier.reset();
   m_block_cache.Shutdown();
   m_module = nullptr;

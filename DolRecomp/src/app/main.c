@@ -27,6 +27,10 @@ int main(int argc, char** argv) {
     if (opts.setup_mode)
         return run_setup() ? 0 : 1;
 
+    /* Emitted code needs this before any chunk is written: back-edges to the
+     * idle loop must stay dispatcher returns so the host can still skip it. */
+    emit_set_idle_pc(opts.idle_pc);
+
     const char* input_path  = opts.input_path;
     const char* title_id_arg = opts.title_id_arg;
     const char* output_arg = opts.output_arg;

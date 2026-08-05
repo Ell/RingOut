@@ -178,6 +178,10 @@ private:
   bool m_fallback_jit_used = false;
 
   u64 m_native_dispatches = 0;
+  // Dispatch classification (STATICRECOMP_DISPATCHLOG), reported at shutdown.
+  u64 m_dispatch_loop = 0;   // same chunk, backward target: a loop back-edge
+  u64 m_dispatch_fwd = 0;    // same chunk, forward target
+  u64 m_dispatch_cross = 0;  // different chunk (calls, returns, far branches)
   u64 m_fallback_steps = 0;
   u64 m_native_exceptions = 0;
   u64 m_hook_fallback_instructions = 0;

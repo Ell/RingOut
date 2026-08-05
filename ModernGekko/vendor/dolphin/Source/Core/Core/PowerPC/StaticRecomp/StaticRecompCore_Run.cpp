@@ -606,8 +606,37 @@ void StaticRecompCore::Run()
             m_watch_block_lr = m_guest.lr;
           }
 
+          // Why did this dispatch happen? (STATICRECOMP_DISPATCHLOG) The emitter
+          // returns to the dispatcher for calls, for non-local branches, AND for
+          // every local BACKWARD branch -- so each loop iteration is a full
+          // round-trip. Whether that is worth attacking depends on how much of
+          // the ~10.8M dispatches/sec it actually is, which is a measurement,
+          // not a guess.
+          static const bool s_dispatchlog = std::getenv("STATICRECOMP_DISPATCHLOG") != nullptr;
+          const u32 dispatch_from = s_dispatchlog ? m_guest.pc : 0;
+
           m_module->dispatch(&m_guest, m_guest.pc);
           ++m_native_dispatches;
+
+          if (s_dispatchlog)
+          {
+            const u32 to = m_guest.pc;
+            const int ci_from = ChunkIndexOf(dispatch_from);
+            const int ci_to = ChunkIndexOf(to);
+            if (ci_from >= 0 && ci_from == ci_to)
+            {
+              // Same chunk: a backward target is a loop back-edge, which is the
+              // case that could have stayed native.
+              if (to <= dispatch_from)
+                ++m_dispatch_loop;
+              else
+                ++m_dispatch_fwd;
+            }
+            else
+            {
+              ++m_dispatch_cross;
+            }
+          }
 
           // A change seen here with nothing in the journal means the block's
           // MMIO side effects wrote it -- the guest asked hardware to, rather

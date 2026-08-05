@@ -14,6 +14,9 @@ typedef struct {
     u32 jobs;
     u32 rel_base;
     int gamecube_mode;
+    /* Guest PC of the OS idle spin loop (--idle-pc), or 0. Back-edges to it stay
+     * dispatcher returns so the host can still recognise and skip it. */
+    u32 idle_pc;
     int cpu_explicit;
     int rel_base_set;
     int setup_mode;
