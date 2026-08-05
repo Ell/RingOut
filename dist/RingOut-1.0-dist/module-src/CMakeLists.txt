@@ -63,8 +63,21 @@ target_link_libraries(${MODULE_NAME} PRIVATE m)
 # out on "thin". setup.sh probes clang -> gcc -> cc, so a machine without clang
 # hit "unrecognized argument to '-flto=' option: 'thin'" and the module build
 # died. -fvisibility-inlines-hidden is also C++-only and warns on every C file.
+#
+# Plain `-flto` also makes GCC run the whole back end serially: it reports
+# "using serial compilation of 128 LTRANS jobs" and pins one core while the
+# other eleven idle. Measured on a 12-core host, a relink of this module went
+# from 22 minutes to 6 with `-flto=auto`, which hands LTRANS the job server /
+# core count instead. setup.sh builds this on the user's machine, so that is
+# most of a coffee break per setup run.
+#
+# Version-guarded rather than assumed, for exactly the reason the paragraph
+# above records: `auto` only exists from GCC 10 (2020), and setup.sh takes
+# whatever compiler it finds.
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(MODULE_LTO_FLAG -flto=thin)
+elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 10)
+  set(MODULE_LTO_FLAG -flto=auto)
 else()
   set(MODULE_LTO_FLAG -flto)
 endif()
