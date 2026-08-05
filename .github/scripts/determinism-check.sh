@@ -12,11 +12,21 @@
 # into the emulation. Each run gets its own fresh user directory so both start
 # from an identical state rather than from whatever the last session left.
 #
-#   .github/scripts/determinism-check.sh dist/RingOut-1.0-deck [frames]
+# An optional third argument is a frame-keyed input script (see
+# .github/input-scripts/). Both runs get the same one. This matters more than it
+# looks: with no input the harness only ever tests boot and an idle menu, while
+# netplay desyncs on gameplay. Input must be keyed to the emulated frame, not
+# fed in over wall-clock time, or the two runs receive different input and
+# diverge for a reason that says nothing about the core.
+#
+#   .github/scripts/determinism-check.sh dist/RingOut-1.0-deck [frames] [input-script]
 set -euo pipefail
 
 PKG="$(cd "${1:?usage: determinism-check.sh <package-dir> [frames]}" && pwd)"
 FRAMES="${2:-600}"
+INPUT="${3:-}"
+[ -z "$INPUT" ] || [ -f "$INPUT" ] || { echo "no such input script: $INPUT" >&2; exit 1; }
+[ -z "$INPUT" ] || INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
 
 MODULE="$(ls "$PKG"/bin/g*_recomp.so 2>/dev/null | head -1)"
 [ -n "$MODULE" ] || { echo "no recompiled module in $PKG/bin" >&2; exit 1; }
@@ -32,14 +42,18 @@ run() {
     # not from here. Writing it into Dolphin.ini looked like it worked and did
     # nothing: the key is EnableCustomRTC, and an unrecognised one is ignored in
     # silence, so the first measurements were taken with an unpinned clock.
-    RINGOUT_DETERMINISM_LOG="$WORK/run$n.log" \
-    RINGOUT_DETERMINISM_FRAMES="$FRAMES" \
+    # env, not a bare VAR=... prefix: an assignment built from ${INPUT:+...}
+    # is not a literal assignment at parse time, so bash would try to run it.
+    env "RINGOUT_DETERMINISM_LOG=$WORK/run$n.log" \
+        "RINGOUT_DETERMINISM_FRAMES=$FRAMES" \
+        ${INPUT:+"RINGOUT_DETERMINISM_INPUT=$INPUT"} \
         "$PKG/bin/moderngekko-run" --headless \
             --user-dir "$WORK/user$n" \
             --game "$PKG/game" \
             --module "$MODULE" >"$WORK/run$n.out" 2>&1 || true
 }
 
+[ -n "$INPUT" ] && echo "==> input script: $INPUT" || echo "==> no input (boot/menu only -- weaker test than gameplay)"
 echo "==> run 1 of 2 ($FRAMES frames)"
 run 1
 echo "==> run 2 of 2"
@@ -58,6 +72,7 @@ echo "==> frames hashed: $(wc -l < "$WORK/run1.log") and $(wc -l < "$WORK/run2.l
 
 if diff -q "$WORK/run1.log" "$WORK/run2.log" >/dev/null; then
     echo "DETERMINISTIC over $FRAMES frames -- every frame hash matched."
+    [ -n "$INPUT" ] || echo "NOTE: no input script, so this only covers boot and an idle menu."
     echo "Delay-based netplay is viable on this evidence."
     exit 0
 fi

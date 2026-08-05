@@ -14,6 +14,7 @@
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/SystemTimers.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/Movie.h"
 #include "Core/NetPlay/NetPlayProto.h"
 #include "Core/System.h"
@@ -146,7 +147,11 @@ GCPadStatus CSIDevice_GCController::GetPadStatus()
   // the remote controllers receive their status there as well
   if (!NetPlay::IsNetPlayRunning())
   {
-    pad_status = Pad::GetStatus(m_device_number);
+    // The determinism harness supplies its own pad when a script is loaded, and
+    // then the host controller is deliberately not consulted at all: a stray
+    // keypress must not be able to perturb a measurement run.
+    if (!RecompDeterminism::ScriptedPad(m_device_number, &pad_status))
+      pad_status = Pad::GetStatus(m_device_number);
   }
 
   HandleMoviePadStatus(m_system.GetMovie(), m_device_number, &pad_status);

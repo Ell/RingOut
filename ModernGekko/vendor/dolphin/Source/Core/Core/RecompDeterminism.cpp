@@ -5,14 +5,19 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "Common/CommonTypes.h"
 #include "Common/Hash.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
 #include "Core/System.h"
+#include "InputCommon/GCPadStatus.h"
 
 namespace RecompDeterminism
 {
@@ -52,7 +57,74 @@ struct Config
   u32 watch_last_value = 0;
   u64 watch_stores = 0;   // native stores seen since the previous frame
   u64 watch_changes = 0;  // changes reported, against the same cap
+
+  // Scripted input: sorted by frame, each entry the pad state to hold from that
+  // frame until the next one.
+  struct PadFrame
+  {
+    u64 frame;
+    u16 button;
+    u8 stick_x, stick_y, substick_x, substick_y, trigger_l, trigger_r;
+  };
+  std::vector<PadFrame> input;
+  std::size_t input_cursor = 0;
 };
+
+// Button names as they appear in a script, matched case-insensitively.
+struct PadName
+{
+  const char* name;
+  u16 bit;
+};
+constexpr PadName kPadNames[] = {
+    {"A", PAD_BUTTON_A},         {"B", PAD_BUTTON_B},
+    {"X", PAD_BUTTON_X},         {"Y", PAD_BUTTON_Y},
+    {"Z", PAD_TRIGGER_Z},        {"START", PAD_BUTTON_START},
+    {"L", PAD_TRIGGER_L},        {"R", PAD_TRIGGER_R},
+    {"UP", PAD_BUTTON_UP},       {"DOWN", PAD_BUTTON_DOWN},
+    {"LEFT", PAD_BUTTON_LEFT},   {"RIGHT", PAD_BUTTON_RIGHT},
+};
+
+// One line: "<frame> <buttons|-> [stick_x stick_y [substick_x substick_y [l r]]]".
+// Buttons are comma-separated, '-' meaning none. Blank lines and '#' comments
+// are skipped. Sticks default to centred (0x80) and triggers to 0.
+bool ParseInputLine(const std::string& line, Config::PadFrame* out)
+{
+  std::string text = line.substr(0, line.find('#'));
+  std::istringstream stream(text);
+  std::string frame_token, buttons;
+  if (!(stream >> frame_token >> buttons))
+    return false;
+
+  *out = Config::PadFrame{};
+  out->frame = std::strtoull(frame_token.c_str(), nullptr, 10);
+  out->stick_x = out->stick_y = out->substick_x = out->substick_y = 0x80;
+
+  if (buttons != "-")
+  {
+    std::string name;
+    std::istringstream names(buttons);
+    while (std::getline(names, name, ','))
+    {
+      for (char& c : name)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      for (const PadName& known : kPadNames)
+      {
+        if (name == known.name)
+          out->button |= known.bit;
+      }
+    }
+  }
+
+  int value = 0;
+  if (stream >> value) out->stick_x = static_cast<u8>(value);
+  if (stream >> value) out->stick_y = static_cast<u8>(value);
+  if (stream >> value) out->substick_x = static_cast<u8>(value);
+  if (stream >> value) out->substick_y = static_cast<u8>(value);
+  if (stream >> value) out->trigger_l = static_cast<u8>(value);
+  if (stream >> value) out->trigger_r = static_cast<u8>(value);
+  return true;
+}
 
 // Configured from the environment rather than the command line on purpose:
 // this is a diagnostic for a question about the core, not a feature of the
@@ -90,6 +162,31 @@ Config& GetConfig()
         result.watch_size = 4;
       if (const char* const max = std::getenv("RINGOUT_DETERMINISM_WATCH_MAX"))
         result.watch_max = std::strtoull(max, nullptr, 10);
+    }
+
+    if (const char* const input = std::getenv("RINGOUT_DETERMINISM_INPUT"))
+    {
+      std::ifstream file(input);
+      if (!file)
+      {
+        std::fprintf(stderr, "[input] cannot open %s; running with no input\n", input);
+      }
+      else
+      {
+        std::string line;
+        while (std::getline(file, line))
+        {
+          Config::PadFrame entry;
+          if (ParseInputLine(line, &entry))
+            result.input.push_back(entry);
+        }
+        std::stable_sort(result.input.begin(), result.input.end(),
+                         [](const Config::PadFrame& a, const Config::PadFrame& b) {
+                           return a.frame < b.frame;
+                         });
+        std::fprintf(stderr, "[input] %zu scripted pad state(s) from %s\n",
+                     result.input.size(), input);
+      }
     }
 
     result.active = true;
@@ -163,6 +260,40 @@ void PollWatch(const char* site, u32 pc, u32 value)
     std::fflush(stderr);
   }
   config.watch_last_value = value;
+}
+
+bool ScriptedPad(int device_number, ::GCPadStatus* status)
+{
+  Config& config = GetConfig();
+  // Port 1 only: the harness drives one controller, and silently feeding the
+  // same script to every port would fake a four-player game.
+  if (!config.active || config.input.empty() || device_number != 0 || status == nullptr)
+    return false;
+
+  // The script is sorted and s_frame only advances, so this walks forward once
+  // over the run rather than searching per poll -- SI polls the pad several
+  // times a frame.
+  while (config.input_cursor + 1 < config.input.size() &&
+         config.input[config.input_cursor + 1].frame <= s_frame)
+  {
+    ++config.input_cursor;
+  }
+
+  const Config::PadFrame& entry = config.input[config.input_cursor];
+  // Nothing scripted yet: hold neutral rather than falling through to the host
+  // pad, so a stray keypress cannot perturb a measurement run.
+  const bool pending = entry.frame > s_frame;
+
+  *status = GCPadStatus{};
+  status->isConnected = true;
+  status->button = static_cast<u16>((pending ? 0 : entry.button) | PAD_USE_ORIGIN);
+  status->stickX = pending ? GCPadStatus::MAIN_STICK_CENTER_X : entry.stick_x;
+  status->stickY = pending ? GCPadStatus::MAIN_STICK_CENTER_Y : entry.stick_y;
+  status->substickX = pending ? GCPadStatus::C_STICK_CENTER_X : entry.substick_x;
+  status->substickY = pending ? GCPadStatus::C_STICK_CENTER_Y : entry.substick_y;
+  status->triggerLeft = pending ? 0 : entry.trigger_l;
+  status->triggerRight = pending ? 0 : entry.trigger_r;
+  return true;
 }
 
 void OnFrame(Core::System& system)

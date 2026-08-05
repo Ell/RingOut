@@ -5,6 +5,8 @@
 
 #include "Common/CommonTypes.h"
 
+struct GCPadStatus;
+
 namespace Core
 {
 class System;
@@ -42,6 +44,25 @@ u32 WatchSize();
 // Reported by the core from inside the module's write journal, so `old_value`
 // is the pre-image: the store has not committed yet.
 void ReportWatchWrite(u32 block_pc, u32 lr, u32 size, u32 old_value, u64 timebase);
+
+// Scripted controller input, keyed on the emulated frame (RINGOUT_DETERMINISM_INPUT).
+//
+// The harness has always run with no input at all, which makes its determinism
+// claim much weaker than it looks: netplay desyncs on gameplay, not on a title
+// screen that nothing is driving. Feeding both runs the same inputs is what
+// actually tests the thing netplay depends on.
+//
+// Keyed on the frame, not on wall-clock time, and that distinction is the whole
+// point. Writing presses into Dolphin's Pipe input device works for driving the
+// game by hand, but which emulated frame a press lands on then depends on host
+// timing -- so two runs would receive different input and diverge for a reason
+// that says nothing about the core. Frame-keyed playback is reproducible by
+// construction.
+//
+// Returns true when it filled `status`, in which case the host controller is
+// ignored entirely -- a stray keypress during a measurement run must not be able
+// to perturb it.
+bool ScriptedPad(int device_number, ::GCPadStatus* status);
 
 // Reports that the watched word changed to `value`, seen from `site`. The
 // journal covers guest stores; this covers everyone else -- DMA, and anything

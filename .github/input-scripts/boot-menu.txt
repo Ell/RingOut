@@ -1,0 +1,14 @@
+# frame  buttons   stick_x stick_y
+# Frame-keyed pad script for the determinism harness. Each line is the state to
+# HOLD from that frame until the next line. Sticks default to centred (128).
+0        -
+240      START
+246      -
+420      START
+426      -
+600      A
+606      -
+780      DOWN      128     220
+800      -
+860      A
+866      -
