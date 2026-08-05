@@ -463,6 +463,8 @@ void StaticRecompCore::Run()
   while (*state_ptr == CPU::State::Running)
   {
     core_timing.Advance();
+    if (m_gqr_log)
+      SampleGQRs();
     // Advance() runs the due hardware events, which are the writers the module's
     // journal cannot see (DVD/DSP/AI DMA landing in RAM). Polling either side of
     // it separates those from anything the guest triggered.

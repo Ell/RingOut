@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -201,6 +202,29 @@ private:
   mutable u32 m_last_chunk_index = 0;
 
   u32 m_idle_pc = 0;
+
+  // GQR quantisation survey (STATICRECOMP_GQRLOG=1). Records which values the
+  // eight GQRs actually hold over a run, sampled per burst -- they change rarely
+  // and a map lookup has no business on the per-dispatch path.
+  //
+  // READ THE OUTPUT CAREFULLY: this is what the registers CONTAIN, not how often
+  // each setting is USED. The two diverge badly here, and the difference already
+  // sent one optimisation down the wrong path. This survey reports GQR0 as
+  // 0x00000000 for 100% of samples, and 93% of the 4555 psq call sites name
+  // GQR0 -- from which a `gqr == 0` fast path looks obviously right. Counting
+  // actual executions inside the module said otherwise: gqr==0 is 49.5% of
+  // executed loads and only 15.3% of stores, because GQR4 is 3.5% of sites but
+  // 58.7% of store executions. A register that is usually zero is not the same
+  // as a hot path that is usually zero.
+  //
+  // So this answers "what settings does the game use", cheaply and without a
+  // module rebuild. For "which settings does the hot code hit", instrument
+  // ppc_psq_load/store directly instead; see work/perf-fmv/psq_dynamic_counts.log.
+  void SampleGQRs();
+  void ReportGQRSurvey() const;
+  std::map<u32, u64> m_gqr_seen[8];
+  u64 m_gqr_samples = 0;
+  bool m_gqr_log = false;
 
   // Determinism write watch state. m_watch_block_* is refreshed before each
   // native dispatch so the journal callback -- which is handed nothing but an

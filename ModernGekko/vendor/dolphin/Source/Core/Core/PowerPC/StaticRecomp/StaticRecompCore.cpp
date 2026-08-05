@@ -125,6 +125,7 @@ void StaticRecompCore::Init()
   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
   m_lockstep_verifier->Init();
   InitDeterminismWatch();
+  m_gqr_log = std::getenv("STATICRECOMP_GQRLOG") != nullptr;
 
 #ifdef _M_ARM_64
   m_fallback_jit = std::make_unique<JitArm64>(m_system);
@@ -204,8 +205,40 @@ void StaticRecompCore::DeterminismWatchTrampoline(u32 offset, u32 size, void* us
                                       core->m_guest.timebase);
 }
 
+// A GQR holds two independent settings: the store quantisation in bits 0-15 and
+// the load quantisation in bits 16-31, each a type (0 = unquantised f32) plus a
+// 6-bit scale exponent. 0x00000000 therefore means "plain float, no scaling"
+// both ways, which is the case a specialised fast path would handle.
+void StaticRecompCore::SampleGQRs()
+{
+  ++m_gqr_samples;
+  for (int i = 0; i < 8; ++i)
+    ++m_gqr_seen[i][m_guest.gqr[i]];
+}
+
+void StaticRecompCore::ReportGQRSurvey() const
+{
+  std::fprintf(stderr, "[gqr] %llu samples over the run\n",
+               static_cast<unsigned long long>(m_gqr_samples));
+  for (int i = 0; i < 8; ++i)
+  {
+    std::fprintf(stderr, "[gqr] GQR%d:", i);
+    for (const auto& [value, count] : m_gqr_seen[i])
+    {
+      const double pct = m_gqr_samples ? 100.0 * double(count) / double(m_gqr_samples) : 0.0;
+      std::fprintf(stderr, "  0x%08X (ld type=%u scale=%u, st type=%u scale=%u) %.1f%%", value,
+                   (value >> 16) & 7u, (value >> 24) & 0x3Fu, value & 7u, (value >> 8) & 0x3Fu,
+                   pct);
+    }
+    std::fprintf(stderr, "\n");
+  }
+  std::fflush(stderr);
+}
+
 void StaticRecompCore::Shutdown()
 {
+  if (m_gqr_log)
+    ReportGQRSurvey();
   g_static_recomp_core = nullptr;
   std::fprintf(stderr,
                "[staticrecomp] shutdown: native=%llu fallback=%llu native_exc=%llu hook_fb=%llu "
