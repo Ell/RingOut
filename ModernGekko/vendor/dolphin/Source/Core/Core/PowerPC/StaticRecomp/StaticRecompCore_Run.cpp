@@ -11,6 +11,8 @@
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
+#include "Core/NetPlay/NetPlayProto.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/ConfigManager.h"
 #include "Core/HW/SystemTimers.h"
@@ -371,8 +373,45 @@ void StaticRecompCore::OnFmvExecObserve(u32 handle)
   std::fprintf(stderr, "\n");
 }
 
+// Whether the native player may take a movie over at all.
+//
+// It must not when guest RAM has to match another run byte for byte. The frames
+// it writes come from a host ffmpeg process, and Next() reuses the previous
+// frame whenever the decoder has not produced one yet, so the pixels that land
+// in guest RAM depend on host decoder progress and differ between two machines
+// -- or between two runs on one machine. Under STATICRECOMP_FMV_TAKEOVER it is
+// worse than cosmetic: ReadyForNextFrame() gates guest control flow on the wall
+// clock, so emulated timing itself diverges.
+//
+// This is not hypothetical for netplay. The intro movie starts automatically a
+// few seconds after boot, long before anyone reaches a match, so an ungated
+// takeover desyncs every session immediately and for a reason that has nothing
+// to do with the netcode. Measurement says nothing is lost by gating it: the
+// HLE is a net CPU loss on every path (see .github/scripts/fmv-ab.sh).
+static bool FmvTakeoverAllowed()
+{
+  if (NetPlay::IsNetPlayRunning())
+    return false;
+  if (RecompDeterminism::IsActive())
+    return false;
+  // Movie playback/recording compares against a recorded input stream and has
+  // the same requirement.
+  return true;
+}
+
 void StaticRecompCore::OnFmvStartAfs(u32 fno, u32 patid, u32 handle)
 {
+  if (!FmvTakeoverAllowed())
+  {
+    static bool logged = false;
+    if (!logged)
+    {
+      logged = true;
+      std::fprintf(stderr, "[fmv-hle] takeover disabled: guest RAM must stay reproducible "
+                           "(netplay or determinism run); the game decodes its own movies\n");
+    }
+    return;   // never armed -> Active() stays false -> every hook below is inert
+  }
   std::fprintf(stderr, "[fmv-hle] mwPlyStartAfs: movie fno=%u patid=%u handle=0x%08X\n",
                fno, patid, handle);
   s_fmv.Start(static_cast<int>(fno));

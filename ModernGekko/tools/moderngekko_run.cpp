@@ -39,6 +39,9 @@ void Usage() {
                "[--netplay-port <port>]\n"
                "       [--nickname <name>] [--buffer <auto|1-20>] "
                "[--controller <device>]...\n"
+               "       [--netplay-players <n>]   (host: machines to wait for, "
+               "default 2)\n"
+               "       [--netplay-timeout <s>]   (lobby wait, default 120)\n"
                "       With no --game, boots the path in "
                "<user-dir>/default-game.txt.\n";
 }
@@ -105,6 +108,8 @@ int RunMain(int argc, char **argv) {
   std::string netplay_nickname;
   std::string netplay_buffer;
   std::vector<std::string> netplay_controllers;
+  std::optional<unsigned> netplay_players;
+  std::optional<unsigned> netplay_timeout;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value = [&](const char *option) -> const char * {
@@ -159,6 +164,23 @@ int RunMain(int argc, char **argv) {
       netplay_buffer = value("--buffer");
     else if (arg == "--controller")
       netplay_controllers.emplace_back(value("--controller"));
+    else if (arg == "--netplay-players") {
+      const std::string players_value = value("--netplay-players");
+      const long players = std::strtol(players_value.c_str(), nullptr, 10);
+      if (players < 1 || players > 4) {
+        std::cerr << "--netplay-players must be between 1 and 4\n";
+        return 2;
+      }
+      netplay_players = static_cast<unsigned>(players);
+    } else if (arg == "--netplay-timeout") {
+      const std::string timeout_value = value("--netplay-timeout");
+      const long timeout = std::strtol(timeout_value.c_str(), nullptr, 10);
+      if (timeout < 1) {
+        std::cerr << "--netplay-timeout must be at least 1 second\n";
+        return 2;
+      }
+      netplay_timeout = static_cast<unsigned>(timeout);
+    }
     else if (arg == "--help" || arg == "-h") {
       Usage();
       return 0;
@@ -248,6 +270,10 @@ int RunMain(int argc, char **argv) {
                            : netplay_nickname;
     options.buffer = netplay_buffer.empty() ? frontend_config.netplay_buffer
                                             : netplay_buffer;
+    if (netplay_players)
+      options.players = *netplay_players;
+    if (netplay_timeout)
+      options.lobby_timeout = *netplay_timeout;
     const std::vector<std::string> configured_controllers =
         moderngekko::frontend::ReadConfiguredControllers(config.user_directory);
     options.controllers =

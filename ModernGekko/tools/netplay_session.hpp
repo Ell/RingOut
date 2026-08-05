@@ -32,6 +32,12 @@ struct NetplayOptions {
   std::string nickname = "Player";
   std::string buffer = "auto";
   std::vector<std::string> controllers;
+  // Host only: how many machines to wait for before starting. Upstream Dolphin
+  // has no ready protocol, so this is what decides when the session begins.
+  unsigned players = 2;
+  // Seconds to wait for peers and for the start signal. A headless lobby must
+  // not block forever; a hung run looks exactly like a slow one to a script.
+  unsigned lobby_timeout = 120;
 };
 
 int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
