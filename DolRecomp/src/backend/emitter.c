@@ -480,14 +480,26 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu) {
         "    return dolrecomp_f32_to_bits((f32)value);\n"
         "}\n"
         "\n"
+        "#if defined(__GNUC__) || defined(__clang__)\n"
+        "#define DOLRECOMP_FPRF_FI static inline __attribute__((always_inline))\n"
+        "#else\n"
+        "#define DOLRECOMP_FPRF_FI static inline\n"
+        "#endif\n"
+        "\n"
         // FPRF (FPSCR bits 12-16: class, <, >, =, ?) after an arithmetic result.
+        // always_inline, not plain inline: these are a handful of bit tests, but
+        // the compiler declines to inline them into 16 KB chunk functions and a
+        // profile of real play showed dolrecomp_classify_s as an out-of-line call
+        // costing ~3% of the CPU thread. The harness workload exercises FP far
+        // less and reported the cost as noise -- measure on the workload you care
+        // about.
         // The plain arithmetic below is emitted as C rather than routed through a
         // runtime helper, so nothing was maintaining these bits -- lockstep caught
         // native holding fpscr=0x4 where the interpreter had 0x4004/0xc004. The
         // game reads FPSCR (two mffs sites), so it is observable, not cosmetic.
         // ppc_fma / fres / frsqrte / ps_res / ps_rsqrte already set it themselves.
         // Classification mirrors classify_f64 / classify_f32 in cpu.c exactly.
-        "static inline u32 dolrecomp_classify_d(f64 value) {\n"
+        "DOLRECOMP_FPRF_FI u32 dolrecomp_classify_d(f64 value) {\n"
         "    u64 bits = dolrecomp_f64_to_bits(value);\n"
         "    u64 sign = bits >> 63;\n"
         "    u64 exponent = bits & 0x7FF0000000000000ull;\n"
@@ -499,7 +511,7 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu) {
         "    return sign ? 0x08u : 0x04u;\n"
         "}\n"
         "\n"
-        "static inline u32 dolrecomp_classify_s(f32 value) {\n"
+        "DOLRECOMP_FPRF_FI u32 dolrecomp_classify_s(f32 value) {\n"
         "    u32 bits = dolrecomp_f32_to_bits(value);\n"
         "    u32 sign = bits >> 31;\n"
         "    u32 exponent = bits & 0x7F800000u;\n"
@@ -511,10 +523,10 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu) {
         "    return sign ? 0x08u : 0x04u;\n"
         "}\n"
         "\n"
-        "static inline void dolrecomp_fprf_d(CPUState* ctx, f64 value) {\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_d(CPUState* ctx, f64 value) {\n"
         "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_d(value) << 12);\n"
         "}\n"
-        "static inline void dolrecomp_fprf_s(CPUState* ctx, f32 value) {\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_s(CPUState* ctx, f32 value) {\n"
         "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_s(value) << 12);\n"
         "}\n"
         "\n"
