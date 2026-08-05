@@ -7,10 +7,12 @@
 
 #include <cstddef>
 #include <functional>
+#include <span>
 #include <string>
 #include <type_traits>
 
 #include "Common/CommonTypes.h"
+#include "Common/Buffer.h"
 
 namespace Core
 {
@@ -94,6 +96,16 @@ u64 GetUnixTimeOfSlot(int slot);
 //    If we're in the main CPU thread then they run immediately instead.
 void Save(Core::System& system, int slot);
 void Load(Core::System& system, int slot);
+
+// Uncompressed, synchronous, in-memory state. These are what a rollback
+// netplay implementation needs -- SaveAs/LoadAs compress and go through a worker
+// thread, which is right for a user pressing F1 and wrong for something that has
+// to run every frame. Exposed (rather than file-static as they were) so the
+// determinism harness can measure their cost and prove that restore + replay
+// reproduces state exactly. Must be called on the CPU thread.
+bool LoadFromBuffer(Core::System& system, std::span<u8> buffer);
+// Returns the required size, or 0 on failure; grows `buffer` if it was too small.
+std::size_t SaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer);
 
 void SaveAs(Core::System& system, std::string filename);
 void LoadAs(Core::System& system, std::string filename);

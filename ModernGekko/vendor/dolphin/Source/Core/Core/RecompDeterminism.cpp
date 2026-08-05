@@ -16,7 +16,10 @@
 #include "Common/Hash.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
+#include "Core/State.h"
 #include "Core/System.h"
+
+#include <chrono>
 #include "InputCommon/GCPadStatus.h"
 
 namespace RecompDeterminism
@@ -68,6 +71,18 @@ struct Config
   };
   std::vector<PadFrame> input;
   std::size_t input_cursor = 0;
+
+  // Rollback probe. Save at frame `rb_at`, run `rb_len` frames, restore, replay
+  // the same `rb_len` frames, and require the state to come out identical --
+  // which is exactly what rollback netplay does every time it mispredicts.
+  u64 rb_at = 0;
+  u64 rb_len = 0;
+  bool rb_on = false;
+  Common::UniqueBuffer<u8> rb_buffer;
+  std::size_t rb_size = 0;
+  u32 rb_hash = 0;       // game-memory hash at the end of the first pass
+  bool rb_replaying = false;
+  u64 rb_input_offset = 0;  // frames to subtract so the replay sees the same input
 };
 
 // Button names as they appear in a script, matched case-insensitively.
@@ -189,6 +204,15 @@ Config& GetConfig()
       }
     }
 
+    if (const char* const at = std::getenv("RINGOUT_DETERMINISM_ROLLBACK_AT"))
+    {
+      result.rb_at = std::strtoull(at, nullptr, 10);
+      result.rb_len = 60;
+      if (const char* const len = std::getenv("RINGOUT_DETERMINISM_ROLLBACK_LEN"))
+        result.rb_len = std::strtoull(len, nullptr, 10);
+      result.rb_on = result.rb_len != 0;
+    }
+
     result.active = true;
     return result;
   }();
@@ -273,16 +297,22 @@ bool ScriptedPad(int device_number, ::GCPadStatus* status)
   // The script is sorted and s_frame only advances, so this walks forward once
   // over the run rather than searching per poll -- SI polls the pad several
   // times a frame.
+  // During a replay the frame counter keeps climbing, so the script has to be
+  // rewound by the same amount or the replay would receive DIFFERENT input and
+  // 'prove' non-determinism that is really just a different button press.
+  const u64 input_frame = s_frame - config.rb_input_offset;
   while (config.input_cursor + 1 < config.input.size() &&
-         config.input[config.input_cursor + 1].frame <= s_frame)
+         config.input[config.input_cursor + 1].frame <= input_frame)
   {
     ++config.input_cursor;
   }
+  while (config.input_cursor > 0 && config.input[config.input_cursor].frame > input_frame)
+    --config.input_cursor;
 
   const Config::PadFrame& entry = config.input[config.input_cursor];
   // Nothing scripted yet: hold neutral rather than falling through to the host
   // pad, so a stray keypress cannot perturb a measurement run.
-  const bool pending = entry.frame > s_frame;
+  const bool pending = entry.frame > input_frame;
 
   *status = GCPadStatus{};
   status->isConnected = true;
@@ -328,6 +358,65 @@ void OnFrame(Core::System& system)
   // Flushed every frame because the interesting run is the one that diverges
   // and then crashes; a buffered tail would lose exactly the frames that matter.
   std::fflush(config.out);
+
+  // ---- Rollback probe -----------------------------------------------------
+  // Three points in one run: save, measure the state at the end of the first
+  // pass, then restore and replay. If replay lands on a different hash, rollback
+  // netplay cannot work no matter how fast the core gets, so this is worth
+  // knowing before optimising anything else.
+  if (config.rb_on)
+  {
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::duration d) {
+      return std::chrono::duration<double, std::milli>(d).count();
+    };
+
+    if (s_frame == config.rb_at)
+    {
+      // The first call runs with an empty buffer, so PointerWrap measures,
+      // grows and then saves again -- it does the work twice plus a >100 MiB
+      // allocation. Rollback would be saving into a warm buffer every frame, so
+      // the second timing is the one that matters; both are reported.
+      const auto start = Clock::now();
+      config.rb_size = State::SaveToBuffer(system, config.rb_buffer);
+      const auto cold = Clock::now() - start;
+      const auto warm_start = Clock::now();
+      config.rb_size = State::SaveToBuffer(system, config.rb_buffer);
+      const auto elapsed = Clock::now() - warm_start;
+      std::fprintf(stderr,
+                   "[rollback] frame %llu: saved %.2f MiB in %.2f ms warm "
+                   "(%.2f ms cold, incl. measure+alloc)\n",
+                   static_cast<unsigned long long>(s_frame),
+                   double(config.rb_size) / (1024.0 * 1024.0), ms(elapsed), ms(cold));
+      std::fflush(stderr);
+    }
+    else if (!config.rb_replaying && s_frame == config.rb_at + config.rb_len)
+    {
+      config.rb_hash = rest_hash;
+      const auto start = Clock::now();
+      const bool ok = State::LoadFromBuffer(system, {config.rb_buffer.data(), config.rb_size});
+      const auto elapsed = Clock::now() - start;
+      config.rb_replaying = true;
+      // The frame counter does not rewind, so rewind the input script instead.
+      config.rb_input_offset = config.rb_len;
+      std::fprintf(stderr,
+                   "[rollback] frame %llu: restored in %.2f ms (%s); replaying %llu frames\n",
+                   static_cast<unsigned long long>(s_frame), ms(elapsed), ok ? "ok" : "FAILED",
+                   static_cast<unsigned long long>(config.rb_len));
+      std::fflush(stderr);
+    }
+    else if (config.rb_replaying && s_frame == config.rb_at + 2 * config.rb_len)
+    {
+      const bool match = rest_hash == config.rb_hash;
+      std::fprintf(stderr, "[rollback] replay %s: game-memory hash %08x vs %08x\n",
+                   match ? "MATCHED" : "DIVERGED", rest_hash, config.rb_hash);
+      std::fprintf(stderr, "[rollback] %s\n",
+                   match ? "restore + replay reproduces state exactly -- rollback is viable"
+                         : "restore + replay does NOT reproduce state -- rollback is blocked");
+      std::fflush(stderr);
+      config.rb_on = false;
+    }
+  }
 
   // Backstop poll. The core polls far more finely; this catches a change made
   // by anything that runs outside the native run loop entirely.
