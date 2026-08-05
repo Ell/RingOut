@@ -456,6 +456,7 @@ void StaticRecompCore::Run()
 
   if (!m_module_active && m_fallback_jit)
   {
+    m_fallback_jit_used = true;
     m_fallback_jit->Run();
     return;
   }
@@ -684,6 +685,7 @@ void StaticRecompCore::Run()
         }
         if (m_fallback_jit)
         {
+          m_fallback_jit_used = true;
           m_fallback_jit->Run();
         }
         else

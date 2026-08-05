@@ -347,8 +347,17 @@ void StaticRecompCore::LoadModule()
 
 void StaticRecompCore::ClearCache()
 {
-  if (m_fallback_jit)
+  // Jit64::ClearCache memsets its entire code space: measured 14-16 ms on every
+  // call, and ~106 ms on the first. A savestate load calls this unconditionally
+  // (JitInterface::DoState), which makes it ~70% of a rollback restore. Skipped
+  // when the fallback has not run since the last clear, because then its cache
+  // is already empty and the memset is pure cost. The flag is set again the
+  // instant it runs, so a populated cache is still cleared exactly as before.
+  if (m_fallback_jit && m_fallback_jit_used)
+  {
     m_fallback_jit->ClearCache();
+    m_fallback_jit_used = false;
+  }
 
   if (!m_module)
     return;

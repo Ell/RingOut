@@ -114,6 +114,14 @@ enum SnapshotSkip : u32
   SKIP_PAD = 1 << 1,    // MEM1 above GetRamSizeReal(): padding to the fastmem arena
   SKIP_VIDEO = 1 << 2,  // texture/EFB caches; also skips the backend's RAM writeback
   SKIP_ARAM = 1 << 3,   // 16 MiB audio RAM
+  // Skip the JIT cache invalidation a state load normally forces. Dolphin has
+  // to invalidate because an arbitrary savestate may carry different code in
+  // guest RAM. A ROLLBACK restore cannot: the snapshot was taken seconds ago in
+  // this same session, so the code is byte-identical and the compiled blocks are
+  // still valid. Clearing costs 14-16 ms (Jit64 memsets its whole code space),
+  // which is ~70% of a restore. Only safe for rollback -- never for loading a
+  // state from disk.
+  SKIP_JITCLEAR = 1 << 4,
 };
 u32 SnapshotSkipMask();
 

@@ -173,6 +173,9 @@ private:
   const StaticRecompModuleDesc* m_module = nullptr;
   bool m_module_active = false;
   std::unique_ptr<JitBase> m_fallback_jit;
+  // Whether the fallback JIT has run since its cache was last cleared. See
+  // ClearCache: clearing an already-empty Jit64 code space still costs 14-16 ms.
+  bool m_fallback_jit_used = false;
 
   u64 m_native_dispatches = 0;
   u64 m_fallback_steps = 0;

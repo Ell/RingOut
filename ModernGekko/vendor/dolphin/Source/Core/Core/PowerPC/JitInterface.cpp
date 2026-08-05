@@ -3,6 +3,8 @@
 
 #include "Core/PowerPC/JitInterface.h"
 
+#include "Core/State.h"
+
 #include <string>
 #include <unordered_set>
 
@@ -47,7 +49,11 @@ void JitInterface::SetStaticRecompModuleSource(StaticRecompModuleSource source)
 
 void JitInterface::DoState(PointerWrap& p)
 {
-  if (m_jit && p.IsReadMode())
+  // A rollback restore reloads code that is byte-identical to what is already
+  // compiled, so the invalidation is dead work there -- and it is expensive
+  // (Jit64 memsets its entire code space, 14-16 ms). See State::SKIP_JITCLEAR;
+  // it must stay on for any state that did not come from this session.
+  if (m_jit && p.IsReadMode() && (State::SnapshotSkipMask() & State::SKIP_JITCLEAR) == 0)
     m_jit->ClearCache();
 }
 

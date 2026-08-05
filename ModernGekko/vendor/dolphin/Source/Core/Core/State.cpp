@@ -107,6 +107,8 @@ u32 SnapshotSkipMask()
       result |= SKIP_VIDEO;
     if (text.find("aram") != std::string::npos)
       result |= SKIP_ARAM;
+    if (text.find("jitclear") != std::string::npos)
+      result |= SKIP_JITCLEAR;
     std::fprintf(stderr, "[state] snapshot skip mask 0x%X from \"%s\"\n", result, spec);
     return result;
   }();
