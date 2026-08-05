@@ -92,7 +92,14 @@ echo "    disc id: $DISC_ID"
 echo "==> 2/3  Recompiling the game executable (several minutes)"
 rm -rf "$HERE/work"
 mkdir -p "$HERE/work"
-"$HERE/tools/dolrecomp" --gamecube "$HERE/game/sys/main.dol" -j"$(nproc)" "$HERE/work/out"
+# --idle-pc is not optional. Loop back-edges are compiled as native gotos, which
+# is where most of the recompiler's speed comes from -- but the OS idle spin
+# loop must stay a dispatcher return, or the host never sees the guest idling
+# and idle-skip silently stops working. 0x80185DEC is that loop in SOULCALIBUR
+# II (GRSEAF). A wrong address for some other disc is harmless: it only forces
+# one extra back-edge through the dispatcher, which is always valid.
+"$HERE/tools/dolrecomp" --gamecube "$HERE/game/sys/main.dol" --idle-pc 0x80185DEC \
+    -j"$(nproc)" "$HERE/work/out"
 # gen_module_tables.py reads main.dol from alongside the generated sources.
 cp "$HERE/game/sys/main.dol" "$HERE/work/out/generated/main.dol"
 

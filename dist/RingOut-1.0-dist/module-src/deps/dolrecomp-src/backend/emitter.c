@@ -3,6 +3,9 @@
 
 #include "emitter.h"
 
+/* Defined below, next to the refund state it reads. */
+static void emit_exc_check_return(FILE* out, const char* indent);
+
 #include <stdlib.h>
 
 static u32 cr_field_shift(u8 crf) {
@@ -82,6 +85,20 @@ static void emit_fcompare(FILE* out, const PPCInst* inst) {
     fprintf(out, "        else                     cr_bits = 0x1u;\n");
     fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (cr_bits << %u);\n",
             shift, shift);
+    /* A FLOAT compare also sets FPSCR's FPCC (bits 12-15); nothing was doing
+     * that, so lockstep saw the interpreter carrying compare results in FPSCR
+     * that we did not. Cleared then set, per the architecture: "the FPCC field
+     * is set to reflect the comparison". Integer compares must NOT touch FPSCR,
+     * which is why this lives here and not in emit_compare_s32.
+     *
+     * This deliberately does NOT match Dolphin's interpreter, which does
+     *   fpscr.FPRF = (fpscr.FPRF & ~FPCC_MASK) | compare_value;
+     * where FPRF is a 5-bit BitField holding 0..31 while FPCC_MASK is 0xF << 12,
+     * so the mask clears nothing and the result is OR-ed into the old value.
+     * Copying that would leave stale FPCC bits the hardware clears, and the game
+     * reads FPSCR (two mffs sites). Lockstep will keep reporting these; the
+     * divergence is on the reference side. */
+    fprintf(out, "        ctx->fpscr = (ctx->fpscr & ~(0xFu << 12)) | (cr_bits << 12);\n");
     fprintf(out, "    }\n");
 }
 
@@ -246,7 +263,7 @@ static void emit_psq_load(FILE* out, const PPCInst* inst, bool indexed,
     fprintf(out, "        ppc_psq_load(ctx, %uu, ea, %s, %uu, %s, 0x%08Xu);\n",
             inst->rD, inst->w ? "true" : "false", inst->i,
             indexed ? "true" : "false", inst->address);
-    fprintf(out, "        if (ctx->exception) return;\n");
+    emit_exc_check_return(out, "        ");
     if (update) {
         fprintf(out, "        ctx->gpr[%u] = ea;\n", inst->rA);
     }
@@ -266,7 +283,7 @@ static void emit_psq_store(FILE* out, const PPCInst* inst, bool indexed,
     fprintf(out, "        ppc_psq_store(ctx, %uu, ea, %s, %uu, %s, 0x%08Xu);\n",
             inst->rS, inst->w ? "true" : "false", inst->i,
             indexed ? "true" : "false", inst->address);
-    fprintf(out, "        if (ctx->exception) return;\n");
+    emit_exc_check_return(out, "        ");
     if (update) {
         fprintf(out, "        ctx->gpr[%u] = ea;\n", inst->rA);
     }
@@ -304,6 +321,51 @@ static void emit_branch_condition(FILE* out, u8 bo, u8 bi) {
     }
 }
 
+/* Cycles a chunk may run natively across loop back-edges before handing control
+ * back. Sized around the old per-dispatch cadence: the chassis used to regain
+ * control at least once per block, and a block is a few cycles, so this is a
+ * deliberate relaxation -- large enough that a hot loop stops paying dispatcher
+ * overhead per iteration, small enough that interrupt latency stays in the same
+ * ballpark as a CachedInterpreter block. */
+#define DOLRECOMP_LOOP_BUDGET 1000
+
+/* Back-edges to this address keep returning to the dispatcher. The chassis
+ * recognises the guest's OS idle spin loop by PC and calls CoreTiming::Idle()
+ * to fast-forward to the next event instead of burning real time spinning --
+ * worth roughly 2x on this game. A native loop never surfaces its PC, so the
+ * skip would silently stop happening: measured, the idle PC really is a
+ * back-edge target here. 0 = no idle PC, every back-edge stays native. */
+static u32 s_idle_pc = 0;
+
+/* Cycles charged for the remainder of the current instruction's block: every
+ * instruction after this one, up to the end of the block.
+ *
+ * A block charges its whole cost up front at its leader, so an exception that
+ * leaves mid-block has charged CoreTiming for work that never ran -- events then
+ * fire early. Measured: the FP-unavailable exit in the FP context-save prologue
+ * at 0x80019F84 charged 367 cycles having executed five instructions.
+ *
+ * The faulting instruction itself stays charged, which matches the interpreter:
+ * SingleStepInner has a single exit and returns that instruction's opinfo cycles.
+ */
+/* Thread-local: codegen.c emits chunks on N worker threads (-jN), so a plain
+ * file-static is shared between them and one chunk's value lands in another's
+ * output. That produced refunds of 1 and 7 cycles inside a 367-cycle block. */
+static _Thread_local u32 s_block_suffix = 0;
+
+/* `if (ctx->exception) return;` plus the refund. */
+static void emit_exc_check_return(FILE* out, const char* indent) {
+    if (s_block_suffix != 0)
+        fprintf(out, "%sif (ctx->exception) { ctx->downcount += %u; return; }\n",
+                indent, s_block_suffix);
+    else
+        fprintf(out, "%sif (ctx->exception) return;\n", indent);
+}
+
+void emit_set_idle_pc(u32 pc) {
+    s_idle_pc = pc;
+}
+
 static bool branch_target_is_local(u32 func_start, u32 func_end, u32 target) {
     return target >= func_start && target < func_end && ((target - func_start) & 3u) == 0;
 }
@@ -317,9 +379,30 @@ static void emit_direct_branch(FILE* out, const PPCInst* inst, bool local_target
         fprintf(out, "            return;\n");
         return;
     }
-    if (local_backward) {
+    /* The idle loop must keep reaching the chassis, or idle-skip dies with it. */
+    if (local_backward && s_idle_pc != 0 && inst->branch_target == s_idle_pc) {
         fprintf(out, "            ctx->pc = 0x%08Xu;\n", inst->branch_target);
         fprintf(out, "            return;\n");
+        return;
+    }
+    if (local_backward) {
+        /* Loop back-edge. Returning to the dispatcher here is what made every
+         * loop iteration a full round-trip: measured, 52.8% of all dispatches
+         * (73.3M of 138.8M in a 1200-frame run) are exactly this.
+         *
+         * Staying native needs a bound, or the module could spin arbitrarily long
+         * without CoreTiming regaining control and external interrupts would be
+         * delivered late. The branch target is a local branch target, so it is a
+         * leader and charges ctx->downcount every iteration -- the counter always
+         * moves, and the budget is reached in bounded time. Past the budget we
+         * hand control back exactly as before, so this only ever shortens the
+         * time between dispatches, never lengthens it beyond DOLRECOMP_LOOP_BUDGET
+         * cycles. */
+        fprintf(out, "            if (ctx->downcount <= -%d) {\n", DOLRECOMP_LOOP_BUDGET);
+        fprintf(out, "                ctx->pc = 0x%08Xu;\n", inst->branch_target);
+        fprintf(out, "                return;\n");
+        fprintf(out, "            }\n");
+        fprintf(out, "            goto label_%08X;\n", inst->branch_target);
     } else if (local_target) {
         fprintf(out, "            goto label_%08X;\n", inst->branch_target);
     } else {
@@ -439,6 +522,56 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu) {
         "    return dolrecomp_f32_to_bits((f32)value);\n"
         "}\n"
         "\n"
+        "#if defined(__GNUC__) || defined(__clang__)\n"
+        "#define DOLRECOMP_FPRF_FI static inline __attribute__((always_inline))\n"
+        "#else\n"
+        "#define DOLRECOMP_FPRF_FI static inline\n"
+        "#endif\n"
+        "\n"
+        // FPRF (FPSCR bits 12-16: class, <, >, =, ?) after an arithmetic result.
+        // always_inline, not plain inline: these are a handful of bit tests, but
+        // the compiler declines to inline them into 16 KB chunk functions and a
+        // profile of real play showed dolrecomp_classify_s as an out-of-line call
+        // costing ~3% of the CPU thread. The harness workload exercises FP far
+        // less and reported the cost as noise -- measure on the workload you care
+        // about.
+        // The plain arithmetic below is emitted as C rather than routed through a
+        // runtime helper, so nothing was maintaining these bits -- lockstep caught
+        // native holding fpscr=0x4 where the interpreter had 0x4004/0xc004. The
+        // game reads FPSCR (two mffs sites), so it is observable, not cosmetic.
+        // ppc_fma / fres / frsqrte / ps_res / ps_rsqrte already set it themselves.
+        // Classification mirrors classify_f64 / classify_f32 in cpu.c exactly.
+        "DOLRECOMP_FPRF_FI u32 dolrecomp_classify_d(f64 value) {\n"
+        "    u64 bits = dolrecomp_f64_to_bits(value);\n"
+        "    u64 sign = bits >> 63;\n"
+        "    u64 exponent = bits & 0x7FF0000000000000ull;\n"
+        "    u64 fraction = bits & 0x000FFFFFFFFFFFFFull;\n"
+        "    if (exponent == 0x7FF0000000000000ull)\n"
+        "        return fraction ? 0x11u : (sign ? 0x09u : 0x05u);\n"
+        "    if (exponent == 0)\n"
+        "        return fraction ? (sign ? 0x18u : 0x14u) : (sign ? 0x12u : 0x02u);\n"
+        "    return sign ? 0x08u : 0x04u;\n"
+        "}\n"
+        "\n"
+        "DOLRECOMP_FPRF_FI u32 dolrecomp_classify_s(f32 value) {\n"
+        "    u32 bits = dolrecomp_f32_to_bits(value);\n"
+        "    u32 sign = bits >> 31;\n"
+        "    u32 exponent = bits & 0x7F800000u;\n"
+        "    u32 fraction = bits & 0x007FFFFFu;\n"
+        "    if (exponent == 0x7F800000u)\n"
+        "        return fraction ? 0x11u : (sign ? 0x09u : 0x05u);\n"
+        "    if (exponent == 0)\n"
+        "        return fraction ? (sign ? 0x18u : 0x14u) : (sign ? 0x12u : 0x02u);\n"
+        "    return sign ? 0x08u : 0x04u;\n"
+        "}\n"
+        "\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_d(CPUState* ctx, f64 value) {\n"
+        "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_d(value) << 12);\n"
+        "}\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_s(CPUState* ctx, f32 value) {\n"
+        "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_s(value) << 12);\n"
+        "}\n"
+        "\n"
         ,
         emit_cpu_label(cpu),
         emit_cpu_macro(cpu),
@@ -464,8 +597,15 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         return;
     }
 
-    if (ppc_op_uses_fpu(inst->op))
-        fprintf(out, "    if (!ppc_fp_available(ctx, 0x%08Xu)) return;\n", inst->address);
+    if (ppc_op_uses_fpu(inst->op)) {
+        if (s_block_suffix != 0) {
+            fprintf(out,
+                    "    if (!ppc_fp_available(ctx, 0x%08Xu)) { ctx->downcount += %u; return; }\n",
+                    inst->address, s_block_suffix);
+        } else {
+            fprintf(out, "    if (!ppc_fp_available(ctx, 0x%08Xu)) return;\n", inst->address);
+        }
+    }
 
     switch (inst->op) {
     case PPC_OP_MULLI:
@@ -942,21 +1082,25 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         // so a later psq_st reads the correct second lane (fixes warped geometry).
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] + ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSUBS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] - ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FMULS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] * ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rC);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FDIVS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] / ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FRES:
@@ -984,21 +1128,25 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_FADD:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] + ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSUB:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] - ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FMUL:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] * ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rC);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FDIV:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] / ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FRSQRTE:
@@ -1053,6 +1201,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         // frsp broadcasts to both lanes too (Dolphin: ps[FD].Fill(rounded)).
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)ctx->fpr[%u];\n",
                 inst->rD, inst->rD, inst->rB);
+        fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSEL:
@@ -1125,6 +1274,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1135,6 +1285,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] - (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1145,6 +1296,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rC);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rC);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1155,6 +1307,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] / (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1193,6 +1346,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         }
         fprintf(out, "        ctx->fpr[%u] = dolrecomp_ps_round(ps0);\n", inst->rD);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round(ps1);\n", inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
         break;
@@ -1236,6 +1390,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rA, inst->rB);
         fprintf(out, "      f64 d1 = dolrecomp_ps_round(ctx->ps1[%u]);\n", inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1244,6 +1399,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->fpr[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1253,6 +1409,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->fpr[%u]);\n",
                 inst->rA, inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1262,6 +1419,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1271,6 +1429,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->fpr[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1280,6 +1439,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
 
@@ -1515,7 +1675,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         emit_xform_ea(out, inst->rA, inst->rB, false);
         fprintf(out, ";\n");
         fprintf(out, "        ppc_dcbz_l(ctx, ea, 0x%08Xu);\n", inst->address);
-        fprintf(out, "        if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "        ");
         fprintf(out, "    }\n");
         break;
 
@@ -1692,7 +1852,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_MFTB:
         fprintf(out, "    ctx->gpr[%u] = ppc_mftb(ctx, %uu, 0x%08Xu);\n",
                 inst->rD, inst->spr, inst->address);
-        fprintf(out, "    if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "    ");
         break;
 
     case PPC_OP_MFSPR:
@@ -1706,7 +1866,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         case 269:
             fprintf(out, "    ctx->gpr[%u] = ppc_mftb(ctx, %uu, 0x%08Xu);\n",
                     inst->rD, inst->spr, inst->address);
-            fprintf(out, "    if (ctx->exception) return;\n");
+            emit_exc_check_return(out, "    ");
             break;
         case 912: fprintf(out, "    ctx->gpr[%u] = ctx->gqr[0];\n", inst->rD); break;
         case 913: fprintf(out, "    ctx->gpr[%u] = ctx->gqr[1];\n", inst->rD); break;
@@ -1753,7 +1913,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
 
     case PPC_OP_TLBIE:
         fprintf(out, "    ppc_tlbie(ctx, ctx->gpr[%u], 0x%08Xu);\n", inst->rB, inst->address);
-        fprintf(out, "    if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "    ");
         break;
 
     case PPC_OP_SYNC:
@@ -1769,7 +1929,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         emit_xform_ea(out, inst->rA, inst->rB, false);
         fprintf(out, ";\n");
         fprintf(out, "        u32 value = ppc_eciwx(ctx, ea, 0x%08Xu);\n", inst->address);
-        fprintf(out, "        if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "        ");
         fprintf(out, "        ctx->gpr[%u] = value;\n", inst->rD);
         fprintf(out, "    }\n");
         break;
@@ -1781,7 +1941,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, ";\n");
         fprintf(out, "        ppc_ecowx(ctx, ea, ctx->gpr[%u], 0x%08Xu);\n",
                 inst->rS, inst->address);
-        fprintf(out, "        if (ctx->exception) return;\n");
+        emit_exc_check_return(out, "        ");
         fprintf(out, "    }\n");
         break;
 
@@ -1925,18 +2085,28 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
             leader[(inst->branch_target - func_addr) / 4u] = 1;
         }
     }
+    /* Per-instruction cost of the REST of its block, for the exception refund.
+     * Walked with exactly the same block bounds the charge uses, so the refund
+     * can never exceed what was charged. */
+    u32* suffix = (u32*)calloc(count ? count : 1u, sizeof(u32));
+
     for (i = 0; i < count; i++) {
-        u32 j;
+        u32 j, last;
         if (!leader[i])
             continue;
+        last = i;
         for (j = i;;) {
             block_cost[i] += inst_cycle_cost(&insts[j]);
+            last = j;
             if (inst_ends_block(&insts[j]))
                 break;
             j++;
             if (j >= count || leader[j])
                 break;
         }
+        /* Walk back from the end so suffix[j] = cost of everything after j. */
+        for (j = last + 1u; j-- > i;)
+            suffix[j] = (j == last) ? 0u : suffix[j + 1u] + inst_cycle_cost(&insts[j + 1u]);
     }
 
     fprintf(out, "void func_%08X(CPUState* ctx) {\n", func_addr);
@@ -1963,11 +2133,14 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
             if (block_cost[i] != 0)
                 fprintf(out, "    ctx->downcount -= %u;\n", block_cost[i]);
         }
+        s_block_suffix = suffix[i];
         emit_instruction_with_range(out, &insts[i], func_addr, func_end);
     }
+    s_block_suffix = 0;
 
     free(leader);
     free(block_cost);
+    free(suffix);
 
     fprintf(out, "    ctx->pc = 0x%08Xu;\n", func_end);
     fprintf(out, "}\n\n");

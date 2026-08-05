@@ -17,6 +17,8 @@ void print_usage(const char* argv0) {
     fprintf(stderr, "  --cpu gekko|broadway|espresso  Select CPU profile (default: broadway)\n");
     fprintf(stderr, "  --gamecube                     GameCube mode (no title ID required)\n");
     fprintf(stderr, "  --rel-base <addr>              Override first virtual load address for REL codegen\n");
+    fprintf(stderr, "  --idle-pc <addr>               Guest PC of the OS idle spin loop; its back-edge stays\n");
+    fprintf(stderr, "                                 a dispatcher return so the host can still idle-skip\n");
     fprintf(stderr, "  --map <path>                   Load optional function names from a linker MAP\n");
     fprintf(stderr, "  --setup                        Download titles database and optionally install wit\n");
     fprintf(stderr, "\n");
@@ -148,6 +150,15 @@ int parse_cli(int argc, char** argv, CliOptions* opts) {
 
         if (strcmp(arg, "--gamecube") == 0 || strcmp(arg, "-gc") == 0) {
             opts->gamecube_mode = 1;
+            continue;
+        }
+
+        if (strcmp(arg, "--idle-pc") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: --idle-pc needs a guest address\n");
+                return 0;
+            }
+            opts->idle_pc = (u32)strtoul(argv[++i], NULL, 0);
             continue;
         }
 

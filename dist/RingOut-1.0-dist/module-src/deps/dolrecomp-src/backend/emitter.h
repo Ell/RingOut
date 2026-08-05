@@ -20,6 +20,10 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu);
 // emit a single recompiled function as C code
 void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr);
 
+/* Guest PC of an OS idle spin loop, if the host skips it (see --idle-pc).
+ * Back-edges to it are emitted as dispatcher returns so the host still sees it. */
+void emit_set_idle_pc(u32 pc);
+
 // emit a single instruction as C code
 void emit_instruction(FILE* out, const PPCInst* inst);
 
