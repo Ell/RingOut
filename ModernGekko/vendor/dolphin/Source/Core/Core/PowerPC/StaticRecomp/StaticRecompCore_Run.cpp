@@ -9,6 +9,7 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/CPU.h"
 #include "Common/FileUtil.h"
+#include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/ConfigManager.h"
@@ -55,10 +56,74 @@ namespace
 constexpr u32 SYNC_EXCEPTION_MASK = ~static_cast<u32>(
     EXCEPTION_EXTERNAL_INT | EXCEPTION_DECREMENTER | EXCEPTION_PERFORMANCE_MONITOR);
 
+// Resolve movie <fno> to an ffmpeg input inside the game's own movie.afs.
+//
+// The loose movie<n>.sfd files this player was written against are *verbatim
+// byte ranges* of that archive, which every package already ships in
+// game/files/ -- so there is nothing to extract and nothing extra to
+// distribute. AFS is four fields deep: "AFS\0", a little-endian entry count,
+// then (offset, size) pairs. ffmpeg's own subfile protocol takes the range, so
+// the decode is byte-identical to decoding an extracted file (verified: same
+// md5 over the first frames of movie2).
+//
+// Returns false if no archive holds this entry; out is then untouched.
+bool FindMovieInAfs(int fno, std::string* out)
+{
+  std::string archive;
+  if (const char* env = std::getenv("STATICRECOMP_FMV_AFS"))
+  {
+    archive = env;
+  }
+  else
+  {
+    // Both shipped packages put userdata/ and game/ side by side, so the user
+    // path locates the archive without the runtime having to plumb the game
+    // root down into the CPU core.
+    const std::string candidates[] = {
+        File::GetUserPath(D_USER_IDX) + "../game/files/movie.afs",  // shipped layout
+        "game/files/movie.afs",                                     // beside the working dir
+        "dist/RingOut-1.0-deck/game/files/movie.afs",               // development tree
+    };
+    for (const std::string& c : candidates)
+    {
+      if (File::Exists(c))
+      {
+        archive = c;
+        break;
+      }
+    }
+  }
+  if (archive.empty())
+    return false;
+
+  File::IOFile f(archive, "rb");
+  if (!f)
+    return false;
+  u8 magic[4] = {};
+  u32 count = 0;
+  if (!f.ReadBytes(magic, sizeof(magic)) || std::memcmp(magic, "AFS\0", 4) != 0)
+    return false;
+  if (!f.ReadArray(&count, 1) || fno < 0 || static_cast<u32>(fno) >= count)
+    return false;
+  u32 toc[2] = {};  // offset, size
+  if (!f.Seek(8 + static_cast<u64>(fno) * 8, File::SeekOrigin::Begin) ||
+      !f.ReadArray(toc, 2) || toc[1] == 0)
+    return false;
+
+  // end is exclusive, matching the protocol's own documented usage.
+  char url[1024];
+  std::snprintf(url, sizeof(url), "subfile,,start,%llu,end,%llu,,:%s",
+                static_cast<unsigned long long>(toc[0]),
+                static_cast<unsigned long long>(toc[0]) + toc[1], archive.c_str());
+  *out = url;
+  return true;
+}
+
 // --- FMV HLE native player -------------------------------------------------
-// Decodes a Sofdec movie (extracted to <dir>/movie<fno>.sfd) with ffmpeg into
-// raw ARGB8888 frames on a reader thread; the CnvFrm hook pops one frame per
-// call (the game invokes it once per displayed frame -> natural pacing).
+// Decodes a Sofdec movie (from the game's movie.afs, or an extracted
+// <dir>/movie<fno>.sfd) with ffmpeg into raw ARGB8888 frames on a reader
+// thread; the CnvFrm hook pops one frame per call (the game invokes it once per
+// displayed frame -> natural pacing).
 // ffmpeg -pix_fmt argb emits bytes A,R,G,B == GameCube big-endian ARGB8888,
 // so frames copy straight into the guest destination buffer.
 class FmvPlayer
@@ -113,35 +178,48 @@ public:
           break;
         }
       }
-      if (base.empty())
-      {
-        ERROR_LOG_FMT(POWERPC,
-                      "FMV takeover: movie{}.sfd not found in any known location; "
-                      "set STATICRECOMP_FMV_DIR to the folder holding the .sfd files",
-                      m_fno);
-        m_fno = -1;   // give the movie back to the game's own decoder
-        return;
-      }
     }
-    char cmd[768];
+
+    // No loose file: read the movie in place out of the game's movie.afs. This
+    // is the normal path -- extracted .sfd files are a development convenience,
+    // and expecting them is why the takeover silently never engaged in any
+    // shipped package or profiling run.
+    std::string input;
+    if (!base.empty())
+    {
+      input = base + "/movie" + std::to_string(m_fno) + ".sfd";
+    }
+    else if (!FindMovieInAfs(m_fno, &input))
+    {
+      ERROR_LOG_FMT(POWERPC,
+                    "FMV takeover: movie{} found neither as a loose .sfd nor in a "
+                    "movie.afs; set STATICRECOMP_FMV_DIR (folder of .sfd files) or "
+                    "STATICRECOMP_FMV_AFS (path to movie.afs)",
+                    m_fno);
+      m_fno = -1;   // give the movie back to the game's own decoder
+      return;
+    }
+
+    char cmd[1280];
     // cmd.exe does not treat '...' as quoting -- it would pass the quotes
     // through as part of the path -- so the argument is double-quoted there.
 #ifdef _WIN32
-    std::snprintf(cmd, sizeof(cmd),
-                  "ffmpeg -v error -i \"%s/movie%d.sfd\" -f rawvideo -pix_fmt argb -",
-                  base.c_str(), m_fno);
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt argb -",
+                  input.c_str());
 #else
-    std::snprintf(cmd, sizeof(cmd),
-                  "ffmpeg -v error -i '%s/movie%d.sfd' -f rawvideo -pix_fmt argb -",
-                  base.c_str(), m_fno);
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -v error -i '%s' -f rawvideo -pix_fmt argb -",
+                  input.c_str());
 #endif
     m_pipe = RINGOUT_POPEN(cmd, RINGOUT_POPEN_MODE);
     m_stop = false;
     m_open = true;
     if (m_pipe)
       m_reader = std::thread([this] { Reader(); });
-    std::fprintf(stderr, "[fmv-hle] player: movie%d %ux%u pipe=%s\n", m_fno, w, h,
-                 m_pipe ? "ok" : "FAILED");
+    // Print the resolved input, not just the movie number: "which file did it
+    // actually open" is the one thing that was missing every time this silently
+    // fell back to the game's own decoder.
+    std::fprintf(stderr, "[fmv-hle] player: movie%d %ux%u pipe=%s src=%s\n", m_fno, w, h,
+                 m_pipe ? "ok" : "FAILED", input.c_str());
   }
 
   // Copy the next decoded frame into out (m_frame_bytes). Reuses the last frame
