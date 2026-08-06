@@ -205,12 +205,19 @@ struct State
   int netplay_mode = 0;
   int netplay_port = 2626;
 
-  // The address to join, held as four octets rather than a string because there
-  // is no text entry here: the deck package ships this menu and nothing else,
-  // and in Game Mode the only input is a pad. Space enters an edit mode where
+  // The address to join. The TEXT is authoritative and the octets are only the
+  // editing affordance, because the frontend accepts a hostname and this row
+  // cannot represent one -- Tailscale's MagicDNS names are the common case.
+  // Holding octets as the truth meant an unparseable address silently became
+  // 127.0.0.1 the moment a session started from this menu.
+  //
+  // There is no text entry here and none to be had on a pad: the deck package
+  // ships this menu and nothing else. So Space enters an edit mode where
   // Left/Right pick an octet and Up/Down change it -- which is why the octet
   // index lives in state, and why Up/Down must be intercepted before the
-  // generic row movement while it is set. -1 means "not editing".
+  // generic row movement while it is set. -1 means "not editing". Entering the
+  // edit is what replaces a hostname, and it takes a deliberate keypress.
+  std::string netplay_addr_text = "127.0.0.1";
   std::array<int, 4> netplay_addr = {127, 0, 0, 1};
   int netplay_addr_octet = -1;
   bool netplay_addr_seeded = false;
@@ -668,11 +675,12 @@ constexpr std::array<FilterEntry, 8> kFilters = {{
 // config -- and the menu already reads and writes the sibling
 // netplay-request.ini out of the same directory.
 //
-// Anything unparseable leaves the default alone: a hostname is perfectly valid
-// in config.ini (the frontend accepts one) but cannot be shown on a row that
-// edits four octets, so it is left for the frontend to use and simply not
-// displayed here.
-void SeedNetplayAddress(std::array<int, 4>* addr)
+// A hostname is perfectly valid there -- the frontend accepts one, and a
+// Tailscale MagicDNS name is exactly that -- so the text is kept whatever it
+// says and only ALSO parsed into octets when it happens to be a dotted quad.
+// Displaying it unchanged is what stops a name the row cannot represent from
+// being quietly replaced by the octets' default.
+void SeedNetplayAddress(std::string* text, std::array<int, 4>* addr)
 {
   std::ifstream config(File::GetUserPath(D_USER_IDX) + "config.ini");
   if (!config)
@@ -683,18 +691,33 @@ void SeedNetplayAddress(std::array<int, 4>* addr)
     const auto eq = line.find('=');
     if (eq == std::string::npos || line.compare(0, eq, "address") != 0)
       continue;
+    std::string value = line.substr(eq + 1);
+    while (!value.empty() && (value.back() == '\r' || value.back() == ' '))
+      value.pop_back();
+    const auto first = value.find_first_not_of(' ');
+    if (first == std::string::npos)
+      return;
+    value = value.substr(first);
+    *text = value;
+
     std::array<int, 4> parsed{};
-    int consumed = 0;
-    if (std::sscanf(line.c_str() + eq + 1, " %d.%d.%d.%d%n", &parsed[0],
-                    &parsed[1], &parsed[2], &parsed[3], &consumed) == 4)
+    char trailing = 0;
+    // The %c catches "1.2.3.4.5" and "1.2.3.4x", which sscanf would otherwise
+    // accept by matching only the first four numbers.
+    if (std::sscanf(value.c_str(), "%d.%d.%d.%d%c", &parsed[0], &parsed[1],
+                    &parsed[2], &parsed[3], &trailing) == 4 &&
+        std::ranges::all_of(parsed, [](int v) { return v >= 0 && v <= 255; }))
     {
-      const bool in_range = std::ranges::all_of(
-          parsed, [](int v) { return v >= 0 && v <= 255; });
-      if (in_range)
-        *addr = parsed;
+      *addr = parsed;
     }
     return;
   }
+}
+
+std::string PlainAddress(const std::array<int, 4>& addr)
+{
+  return std::to_string(addr[0]) + '.' + std::to_string(addr[1]) + '.' +
+         std::to_string(addr[2]) + '.' + std::to_string(addr[3]);
 }
 
 // Renders the address as a.b.c.d, and while it is being edited marks the octet
@@ -717,7 +740,8 @@ std::string FormatAddress(const std::array<int, 4>& addr, int editing_octet)
 }
 
 std::string ItemValue(Item item, int state_slot, int netplay_mode,
-                      int netplay_port, const std::array<int, 4>& netplay_addr,
+                      int netplay_port, const std::string& netplay_addr_text,
+                      const std::array<int, 4>& netplay_addr,
                       int netplay_addr_octet)
 {
   switch (item)
@@ -750,8 +774,12 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
   case Item::NetplayAddress:
     // Only a joiner dials anything; a host binds a port and waits. Showing an
     // address on the host row would suggest it decides who connects.
-    return netplay_mode == 2 ? FormatAddress(netplay_addr, netplay_addr_octet)
-                             : "-";
+    if (netplay_mode != 2)
+      return "-";
+    // Octets only while editing; otherwise the text, which may be a hostname.
+    return netplay_addr_octet >= 0
+               ? FormatAddress(netplay_addr, netplay_addr_octet)
+               : netplay_addr_text;
   case Item::NetplayPort:
     return netplay_mode == 0 ? "-" : std::to_string(netplay_port);
   case Item::NetplayStart:
@@ -1293,7 +1321,7 @@ void QuitOnceResumed(const std::function<void()>& quit_callback)
 // process's emulation session: the core is torn down, then the runner reads
 // this, deletes it, and brings up the lobby. Netplay cannot be entered in
 // place -- the lobby runs before the core boots.
-bool WriteNetplayRequest(int mode, int port, const std::array<int, 4>& addr)
+bool WriteNetplayRequest(int mode, int port, const std::string& addr)
 {
   const std::string path = File::GetUserPath(D_USER_IDX) + "netplay-request.ini";
   std::ofstream out(path, std::ios::trunc);
@@ -1304,9 +1332,10 @@ bool WriteNetplayRequest(int mode, int port, const std::array<int, 4>& addr)
       << "port = " << port << '\n';
   // Only meaningful to a joiner, and writing it unconditionally would let a
   // stale address from an earlier join override the host path's own settings.
-  if (mode == 2)
-    out << "address = " << addr[0] << '.' << addr[1] << '.' << addr[2] << '.'
-        << addr[3] << '\n';
+  // Empty is left out entirely so the runner falls back to the configured one
+  // rather than being handed nothing to dial.
+  if (mode == 2 && !addr.empty())
+    out << "address = " << addr << '\n';
   out.close();
   return static_cast<bool>(out);
 }
@@ -1329,8 +1358,16 @@ Action DecideAction(Item item, State& state, bool* needs_config_save)
     // Space starts editing; the arrows then belong to the octets until Space
     // ends it. Inert unless joining, matching what the row displays -- only a
     // joiner dials an address.
+    //
+    // Starting an edit is also what commits the octets over a hostname the row
+    // cannot show. That is deliberate and takes a keypress on this exact row:
+    // the alternative, converting on sight, is how a MagicDNS name would get
+    // silently replaced by whatever the octets happened to hold.
     if (state.netplay_mode == 2)
+    {
       state.netplay_addr_octet = 0;
+      state.netplay_addr_text = PlainAddress(state.netplay_addr);
+    }
     return Action::None;
   case Item::NetplayStart:
     // Off means the row is inert, so Enter cannot restart the game by accident
@@ -1370,9 +1407,11 @@ void Toggle()
   }
   if (seed_address)
   {
+    std::string seeded_text = "127.0.0.1";
     std::array<int, 4> seeded = {127, 0, 0, 1};
-    SeedNetplayAddress(&seeded);
+    SeedNetplayAddress(&seeded_text, &seeded);
     std::lock_guard<std::mutex> guard(s_state.mutex);
+    s_state.netplay_addr_text = seeded_text;
     s_state.netplay_addr = seeded;
   }
 
@@ -1426,7 +1465,7 @@ void OnKey(Key key)
   std::function<void()> quit_callback;
   int netplay_mode_snapshot = 0;
   int netplay_port_snapshot = 2626;
-  std::array<int, 4> netplay_addr_snapshot = {127, 0, 0, 1};
+  std::string netplay_addr_snapshot = "127.0.0.1";
 
   // Deferred work. NOTHING below may call into Config/Core/InputConfig while
   // the menu mutex is held: those can block on the CPU thread while the video
@@ -1536,6 +1575,8 @@ void OnKey(Key key)
             // Wrap rather than clamp: 0 to 255 is then one press, and an octet
             // has no meaningful end to stop at the way a port range does.
             octet = ((octet + dir * step) % 256 + 256) % 256;
+            // The octets are now what the user means, so they become the text.
+            s_state.netplay_addr_text = PlainAddress(s_state.netplay_addr);
             break;
           }
           case Key::Activate:
@@ -1646,7 +1687,7 @@ void OnKey(Key key)
     quit_callback = s_state.quit_callback;
     netplay_mode_snapshot = s_state.netplay_mode;
     netplay_port_snapshot = s_state.netplay_port;
-    netplay_addr_snapshot = s_state.netplay_addr;
+    netplay_addr_snapshot = s_state.netplay_addr_text;
   }
 
   // Everything below runs with the mutex released, so these engine calls can
@@ -1956,7 +1997,9 @@ void Draw()
       for (const Item item : TabItems(tab))
         rows.emplace_back(ItemLabel(item),
                           ItemValue(item, state_slot, s_state.netplay_mode,
-                                    s_state.netplay_port, s_state.netplay_addr,
+                                    s_state.netplay_port,
+                                    s_state.netplay_addr_text,
+                                    s_state.netplay_addr,
                                     s_state.netplay_addr_octet),
                           false);
       break;
