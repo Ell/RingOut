@@ -35,6 +35,11 @@
 #include "UICommon/UICommon.h"
 #include "runtime/dolphin_runtime_internal.hpp"
 
+#include <SDL3/SDL.h>
+#include <imgui.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_sdlrenderer3.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -264,6 +269,106 @@ void AssignPads(NetPlay::NetPlayServer &server,
   Log("controllers: " + (summary.empty() ? std::string("none") : summary));
 }
 
+const char *GameStatusText(NetPlay::SyncIdentifierComparison status) {
+  switch (status) {
+  case NetPlay::SyncIdentifierComparison::SameGame:
+    return "ready";
+  case NetPlay::SyncIdentifierComparison::DifferentHash:
+    return "different dump";
+  case NetPlay::SyncIdentifierComparison::DifferentDiscNumber:
+    return "different disc";
+  case NetPlay::SyncIdentifierComparison::DifferentRevision:
+    return "different revision";
+  case NetPlay::SyncIdentifierComparison::DifferentRegion:
+    return "different region";
+  case NetPlay::SyncIdentifierComparison::DifferentGame:
+    return "different game";
+  default:
+    return "checking ...";
+  }
+}
+
+// SDL3 + ImGui lobby. The build already compiles the ImGui SDL3 backends into
+// this binary (they were there for the fork's lobby), so this needs no new
+// dependency.
+class LobbyWindow {
+public:
+  bool Open(WindowSystem window_system) {
+#if defined(__linux__)
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER,
+                window_system == WindowSystem::Wayland ? "wayland" : "x11");
+#endif
+    if (!SDL_Init(SDL_INIT_VIDEO))
+      return false;
+    const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    m_window = SDL_CreateWindow("Ring Out — Netplay Lobby",
+                                static_cast<int>(760 * scale),
+                                static_cast<int>(520 * scale),
+                                SDL_WINDOW_RESIZABLE |
+                                    SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    if (!m_window)
+      return false;
+    m_renderer = SDL_CreateRenderer(m_window, nullptr);
+    if (!m_renderer)
+      return false;
+    SDL_SetRenderVSync(m_renderer, 1);
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.IniFilename = nullptr;   // do not litter the user dir
+    ImGui::StyleColorsDark();
+    ImGui::GetStyle().ScaleAllSizes(scale);
+    ImGui_ImplSDL3_InitForSDLRenderer(m_window, m_renderer);
+    ImGui_ImplSDLRenderer3_Init(m_renderer);
+    m_open = true;
+    return true;
+  }
+
+  ~LobbyWindow() { Close(); }
+
+  void Close() {
+    if (!m_open)
+      return;
+    ImGui_ImplSDLRenderer3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(m_renderer);
+    SDL_DestroyWindow(m_window);
+    SDL_Quit();
+    m_renderer = nullptr;
+    m_window = nullptr;
+    m_open = false;
+  }
+
+  bool Frame() {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+      ImGui_ImplSDL3_ProcessEvent(&event);
+      if (event.type == SDL_EVENT_QUIT ||
+          event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        return false;
+    }
+    ImGui_ImplSDLRenderer3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    return true;
+  }
+
+  void Present() {
+    ImGui::Render();
+    SDL_SetRenderDrawColor(m_renderer, 18, 20, 28, 255);
+    SDL_RenderClear(m_renderer);
+    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), m_renderer);
+    SDL_RenderPresent(m_renderer);
+  }
+
+private:
+  SDL_Window *m_window = nullptr;
+  SDL_Renderer *m_renderer = nullptr;
+  bool m_open = false;
+};
+
 // Poll until the predicate holds, the connection dies, or we run out of
 // patience. Headless runs must never block forever: a hung lobby in a script is
 // indistinguishable from a slow one.
@@ -279,6 +384,164 @@ bool WaitFor(SessionUI &ui, NetPlay::NetPlayClient &client,
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   return false;
+}
+
+// Interactive lobby. Returns true when the game should boot, false to quit.
+//
+// The host assigns pads automatically whenever the player set changes, rather
+// than offering a drag-and-drop mapping UI: the map starts all-zero and an
+// unassigned player sends no input at all, so a sensible default matters far
+// more than the ability to rearrange it.
+bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
+                    SessionUI &ui, NetPlay::NetPlayClient &client,
+                    NetPlay::NetPlayServer *server,
+                    const std::string &boot_path) {
+  LobbyWindow window;
+  if (!window.Open(runtime_config.window_system)) {
+    Log("could not open the lobby window; falling back to auto-start");
+    return true;
+  }
+
+  size_t last_player_count = 0;
+  unsigned buffer = 5;
+  if (options.buffer != "auto") {
+    try {
+      buffer = static_cast<unsigned>(std::stoul(options.buffer));
+    } catch (const std::exception &) {
+    }
+  }
+
+  while (true) {
+    if (!window.Frame())
+      return false;
+    if (ui.ConnectionLost() || !client.IsConnected()) {
+      window.Close();
+      Log("connection lost while in the lobby");
+      return false;
+    }
+
+    const std::vector<const NetPlay::Player *> players = client.GetPlayers();
+
+    // Reassign pads when somebody joins or leaves.
+    if (server && players.size() != last_player_count) {
+      last_player_count = players.size();
+      AssignPads(*server, players);
+    }
+
+    // OnMsgStartGame only signals; StartGame() is what arms netplay and
+    // produces the boot data.
+    if (ui.TakeStartRequest())
+      client.StartGame(boot_path);
+    if (auto boot_data = ui.TakeBootData()) {
+      detail::SetBootSessionData(std::move(boot_data));
+      window.Close();
+      return true;
+    }
+
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Ring Out Netplay", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+
+    if (server)
+      ImGui::Text("Hosting on port %u", unsigned{server->GetPort()});
+    else
+      ImGui::Text("Connected to %s:%u", options.address.c_str(),
+                  unsigned{options.port});
+    ImGui::Separator();
+
+    const NetPlay::PadMappingArray &map = client.GetPadMapping();
+    if (ImGui::BeginTable("players", 4,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
+      ImGui::TableSetupColumn("Player");
+      ImGui::TableSetupColumn("Ping");
+      ImGui::TableSetupColumn("Controller");
+      ImGui::TableSetupColumn("Game");
+      ImGui::TableHeadersRow();
+      for (const NetPlay::Player *player : players) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        const bool is_local = client.IsLocalPlayer(player->pid);
+        ImGui::Text("%s%s%s", player->name.c_str(), is_local ? "  (you)" : "",
+                    player->IsHost() ? "  [host]" : "");
+        ImGui::TableNextColumn();
+        ImGui::Text("%u ms", player->ping);
+        ImGui::TableNextColumn();
+        int pad = 0;
+        for (size_t i = 0; i < map.size(); ++i) {
+          if (map[i] == player->pid) {
+            pad = static_cast<int>(i) + 1;
+            break;
+          }
+        }
+        if (pad)
+          ImGui::Text("Port %d", pad);
+        else
+          ImGui::TextDisabled("none");
+        ImGui::TableNextColumn();
+        const bool ok =
+            player->game_status == NetPlay::SyncIdentifierComparison::SameGame;
+        if (ok)
+          ImGui::TextUnformatted(GameStatusText(player->game_status));
+        else
+          ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "%s",
+                             GameStatusText(player->game_status));
+      }
+      ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    if (server) {
+      // Input delay in frames. Higher hides more jitter at the cost of
+      // responsiveness; this is the delay-based knob, and it is the host's.
+      int b = static_cast<int>(buffer);
+      ImGui::SetNextItemWidth(220);
+      if (ImGui::SliderInt("Input buffer (frames)", &b, 1, 20)) {
+        buffer = static_cast<unsigned>(b);
+        server->AdjustPadBufferSize(buffer);
+      }
+      ImGui::TextDisabled("About %d ms of delay at 60 fps.",
+                          static_cast<int>(buffer * 1000 / 60));
+    } else {
+      ImGui::TextDisabled("The host controls the input buffer.");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (server) {
+      const bool everyone_has_game = client.DoAllPlayersHaveGame();
+      const bool enough = players.size() >= 1;
+      const bool can_start = everyone_has_game && enough;
+      ImGui::BeginDisabled(!can_start);
+      if (ImGui::Button("Start game", ImVec2(160, 40)))
+        server->RequestStartGame();
+      ImGui::EndDisabled();
+      if (!everyone_has_game) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
+                           "Waiting: not everyone has this game.");
+      }
+    } else {
+      ImGui::TextUnformatted("Waiting for the host to start ...");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Quit", ImVec2(110, 40))) {
+      window.Close();
+      return false;
+    }
+
+    const std::string error = ui.Error();
+    if (!error.empty()) {
+      ImGui::Spacing();
+      ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s", error.c_str());
+    }
+
+    ImGui::End();
+    window.Present();
+  }
 }
 
 } // namespace
@@ -389,7 +652,63 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   Log("connected as '" + options.nickname + "'");
 
   const std::chrono::seconds lobby_timeout(options.lobby_timeout);
+  const std::string boot_path = game->GetFilePath();
   int result = 0;
+
+  // Interactive lobby when there is a screen to draw it on. Headless keeps the
+  // flag-driven auto-start below, which is what the scripted two-instance tests
+  // use -- they must not start needing a human to click Start.
+  if (!runtime_config.headless) {
+    if (!RunLobbyWindow(runtime_config, options, ui, *client, server.get(),
+                        boot_path)) {
+      Log("lobby closed");
+      client->Stop();
+      client.reset();
+      server.reset();
+      detail::SetExternalUICommon(false);
+      UICommon::Shutdown();
+      return 0;
+    }
+    // RunLobbyWindow only returns true once StartGame has armed netplay and
+    // the boot data has been handed to the runtime.
+    if (!NetPlay::IsNetPlayRunning()) {
+      Log("netplay did not arm; refusing to boot");
+      client->Stop();
+      client.reset();
+      server.reset();
+      detail::SetExternalUICommon(false);
+      UICommon::Shutdown();
+      return static_cast<int>(NetplayExitCode::Failed);
+    }
+    Log("netplay armed; booting");
+    auto created = Runtime::Create(std::move(runtime_config));
+    if (!created) {
+      Log("initialization failed: " + created.error->message);
+      result = 1;
+    } else {
+      ui.SetRuntime(created.runtime.get());
+      const RuntimeRunResult run_result = created.runtime->Run();
+      ui.SetRuntime(nullptr);
+      if (run_result.error) {
+        Log("run failed: " + run_result.error->message);
+        result = 1;
+      }
+      created.runtime.reset();
+    }
+    if (ui.Desynced()) {
+      Log("session ended DESYNCED at frame " + std::to_string(ui.DesyncFrame()));
+      result = 1;
+    } else if (result == 0) {
+      Log("session ended cleanly, no desync reported");
+    }
+    client->Stop();
+    client->StopGame();
+    client.reset();
+    server.reset();
+    detail::SetExternalUICommon(false);
+    UICommon::Shutdown();
+    return result;
+  }
 
   if (server) {
     const size_t expected = std::max<size_t>(options.players, 1);

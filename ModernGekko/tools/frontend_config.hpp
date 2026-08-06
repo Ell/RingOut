@@ -41,6 +41,16 @@ ReadConfiguredController(const std::filesystem::path &user_directory);
 std::vector<std::string>
 ReadConfiguredControllers(const std::filesystem::path &user_directory);
 bool ControllerConfigExists(const std::filesystem::path &user_directory);
+// True when the user directory already has a GameCube pad profile.
+bool GCPadConfigExists(const std::filesystem::path &user_directory);
+// Write a keyboard GCPadNew.ini. This is the default for a GameCube title: the
+// existing generator only ever wrote WiimoteNew.ini, a leftover from this
+// tree's Wii lineage, so a fresh user directory had no GC pad at all and the
+// game was unplayable without hand-writing one. key_set selects between two
+// disjoint layouts so two local instances can share one keyboard.
+enum class KeyboardLayout { Player1, Player2 };
+bool WriteKeyboardGCPadConfig(const std::filesystem::path &user_directory,
+                              KeyboardLayout layout, std::string *message);
 bool GenerateControllerConfig(const std::filesystem::path &user_directory,
                               std::span<const std::string> controllers,
                               std::string *message);

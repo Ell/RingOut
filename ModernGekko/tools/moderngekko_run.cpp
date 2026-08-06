@@ -42,6 +42,10 @@ void Usage() {
                "       [--netplay-players <n>]   (host: machines to wait for, "
                "default 2)\n"
                "       [--netplay-timeout <s>]   (lobby wait, default 120)\n"
+               "       [--keyboard <1|2>]        (rewrite the pad profile as "
+               "keyboard;\n"
+               "                                  1 = arrows+ZXCV, 2 = "
+               "IJKL+BNM)\n"
                "       With no --game, boots the path in "
                "<user-dir>/default-game.txt.\n";
 }
@@ -110,6 +114,7 @@ int RunMain(int argc, char **argv) {
   std::vector<std::string> netplay_controllers;
   std::optional<unsigned> netplay_players;
   std::optional<unsigned> netplay_timeout;
+  std::optional<int> keyboard_layout;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value = [&](const char *option) -> const char * {
@@ -180,6 +185,13 @@ int RunMain(int argc, char **argv) {
         return 2;
       }
       netplay_timeout = static_cast<unsigned>(timeout);
+    } else if (arg == "--keyboard") {
+      const std::string layout_value = value("--keyboard");
+      if (layout_value != "1" && layout_value != "2") {
+        std::cerr << "--keyboard must be 1 or 2\n";
+        return 2;
+      }
+      keyboard_layout = layout_value == "1" ? 1 : 2;
     }
     else if (arg == "--help" || arg == "-h") {
       Usage();
@@ -207,6 +219,24 @@ int RunMain(int argc, char **argv) {
   }
   config.graphics.internal_resolution_scale = frontend_config.dolphin_scale;
   config.show_fps_in_title = frontend_config.show_fps_in_title;
+
+  // --keyboard rewrites the pad profile, so it overrides an existing one; the
+  // implicit default below only ever fills in a missing profile. Layout 2 is a
+  // disjoint key set, which is what lets two local netplay peers share one
+  // keyboard -- unavoidable there, since input must work without focus and so
+  // both instances see every key.
+  if (keyboard_layout) {
+    std::string keyboard_message;
+    const auto layout = *keyboard_layout == 1
+                            ? moderngekko::frontend::KeyboardLayout::Player1
+                            : moderngekko::frontend::KeyboardLayout::Player2;
+    if (!moderngekko::frontend::WriteKeyboardGCPadConfig(
+            config.user_directory, layout, &keyboard_message)) {
+      std::cerr << "keyboard configuration: " << keyboard_message << '\n';
+      return 2;
+    }
+    std::cout << "controller: " << keyboard_message << '\n';
+  }
 
   if (!netplay_role && !frontend_config.controller.empty()) {
     std::string controller_message;
@@ -283,6 +313,13 @@ int RunMain(int argc, char **argv) {
             : netplay_controllers;
     if (options.controllers.empty() && !frontend_config.controller.empty())
       options.controllers.push_back(frontend_config.controller);
+    // This list is an SDL gamepad selection, and netplay used to refuse to
+    // start without one. That predates the keyboard pad profile: with no
+    // gamepad plugged in the list is empty, and a keyboard player would be
+    // turned away from netplay entirely. The GC pad profile is what actually
+    // decides whether input reaches the game, and it always exists now.
+    if (options.controllers.empty())
+      options.controllers.push_back("Keyboard");
     if (options.controllers.empty()) {
       std::cerr << "netplay requires at least one selected controller\n";
       return 2;
@@ -310,6 +347,14 @@ int RunMain(int argc, char **argv) {
         std::move(config), std::move(frontend_config), std::move(options));
   }
 
+  // Runtime::Create takes the config by move, so anything needed after the
+  // session ends has to be kept here. The in-game menu's "Start Netplay" needs
+  // both: the user directory to find the request it wrote, and the whole config
+  // to bring the lobby up. Reading config.user_directory after the move silently
+  // yields an empty path, which resolves the request file relative to the
+  // working directory and makes the restart look like it never fired.
+  const moderngekko::RuntimeConfig session_config = config;
+
   auto created = moderngekko::Runtime::Create(std::move(config));
   if (!created) {
     std::cerr << "initialization failed: " << created.error->message << '\n';
@@ -335,6 +380,64 @@ int RunMain(int argc, char **argv) {
   if (result.error) {
     std::cerr << "runtime failed: " << result.error->message << '\n';
     return 1;
+  }
+
+  // The in-game menu cannot join a session in place -- the lobby runs before
+  // the core boots and NetPlay_Enable happens inside NetPlayClient::StartGame.
+  // So "Start Netplay" writes a request and quits, and the session is rebuilt
+  // here, in this process, once the runtime has been torn down.
+  {
+    const std::filesystem::path request_path =
+        session_config.user_directory / "netplay-request.ini";
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(request_path, ec)) {
+      std::string mode;
+      int port = 0;
+      {
+        std::ifstream request(request_path);
+        std::string line;
+        while (std::getline(request, line)) {
+          const auto eq = line.find('=');
+          if (eq == std::string::npos)
+            continue;
+          auto trim = [](std::string s) {
+            const auto b = s.find_first_not_of(" \t\r");
+            const auto e = s.find_last_not_of(" \t\r");
+            return b == std::string::npos ? std::string()
+                                          : s.substr(b, e - b + 1);
+          };
+          const std::string key = trim(line.substr(0, eq));
+          const std::string value = trim(line.substr(eq + 1));
+          if (key == "mode")
+            mode = value;
+          else if (key == "port")
+            port = std::atoi(value.c_str());
+        }
+      }
+      // Delete before acting: a request that survives a crash would trap the
+      // user in a relaunch loop with no way back to single player.
+      std::filesystem::remove(request_path, ec);
+
+      if (mode == "host" || mode == "join") {
+        created.runtime.reset();   // release the single-runtime guard
+
+        moderngekko::frontend::NetplayOptions netplay;
+        netplay.role = mode == "host"
+                           ? moderngekko::frontend::NetplayRole::Host
+                           : moderngekko::frontend::NetplayRole::Join;
+        netplay.address = frontend_config.netplay_address;
+        netplay.port = port > 0 ? static_cast<std::uint16_t>(port)
+                                : frontend_config.netplay_port;
+        netplay.nickname = frontend_config.netplay_nickname;
+        netplay.buffer = frontend_config.netplay_buffer;
+        netplay.controllers = frontend_config.controllers;
+        if (netplay.controllers.empty())
+          netplay.controllers.push_back("Keyboard");
+        std::cerr << "netplay: restarting from the in-game menu\n";
+        return moderngekko::frontend::RunNetplayLobby(
+            session_config, std::move(frontend_config), std::move(netplay));
+      }
+    }
   }
   return 0;
 }

@@ -20,6 +20,8 @@
 
 #include <imgui.h>
 
+#include <fstream>
+
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
 #include "Common/IniFile.h"
@@ -84,6 +86,9 @@ enum class Item
   SaveState,
   LoadState,
   AutoResume,
+  NetplayMode,
+  NetplayPort,
+  NetplayStart,
   Reset,
   Quit,
   // Shared
@@ -139,9 +144,12 @@ const std::vector<Item>& TabItems(Tab tab)
       Item::LensFlares,       Item::Filter,      Item::Fullscreen,       Item::Apply};
   static const std::vector<Item> audio = {Item::Volume, Item::Muted, Item::AudioLatency,
                                           Item::FillGaps, Item::Apply};
-  static const std::vector<Item> system = {Item::Speed,      Item::StateSlot, Item::SaveState,
-                                           Item::LoadState,  Item::AutoResume,
-                                           Item::Apply,      Item::Reset,     Item::Quit};
+  static const std::vector<Item> system = {Item::Speed,        Item::StateSlot,
+                                           Item::SaveState,    Item::LoadState,
+                                           Item::AutoResume,   Item::NetplayMode,
+                                           Item::NetplayPort,  Item::NetplayStart,
+                                           Item::Apply,        Item::Reset,
+                                           Item::Quit};
   static const std::vector<Item> none = {};
 
   switch (tab)
@@ -182,6 +190,14 @@ struct State
   int state_slot = 1;
   std::function<void()> fullscreen_callback;
   std::function<void()> quit_callback;
+
+  // Netplay cannot be joined in place: the lobby runs before the core boots and
+  // NetPlay_Enable happens inside NetPlayClient::StartGame, so entering a
+  // session means starting one from scratch. These rows therefore compose a
+  // request, and Start writes it out and quits -- the runner picks it up and
+  // brings up the lobby. 0 = off, 1 = host, 2 = join.
+  int netplay_mode = 0;
+  int netplay_port = 2626;
 
   // Row 0 is always the tab selector; rows 1.. are that tab's entries.
   Tab tab = Tab::System;
@@ -229,8 +245,20 @@ int RowCount(const State& state)
 // So state changes are handed to a dedicated worker. It blocks instead, the
 // host thread keeps pumping events, and the deadlock cannot form. Rapid toggles
 // are latest-wins, which is exactly right for pause/resume.
-std::mutex s_core_state_mutex;
-std::condition_variable s_core_state_cv;
+// Deliberately leaked, and they must stay that way.
+//
+// CoreStateWorker is detached and parks in s_core_state_cv.wait() forever. If
+// these were ordinary statics, process exit would destroy them while the worker
+// is still waiting -- and glibc's pthread_cond_destroy blocks when a waiter is
+// present. That is precisely how quitting from the in-game menu wedged the
+// process: the main thread sat in exit() -> pthread_cond_destroy while the
+// worker sat in pthread_cond_wait, which reads from outside as "emulation
+// shutdown hangs" and has nothing to do with the CPU thread.
+//
+// References rather than accessor functions so the nine existing uses read
+// unchanged.
+std::mutex& s_core_state_mutex = *new std::mutex;
+std::condition_variable& s_core_state_cv = *new std::condition_variable;
 bool s_core_state_want_paused = false;
 bool s_core_state_pending = false;
 bool s_core_state_worker_started = false;
@@ -567,6 +595,12 @@ const char* ItemLabel(Item item)
     return "Load State";
   case Item::AutoResume:
     return "Auto-Resume";
+  case Item::NetplayMode:
+    return "Netplay";
+  case Item::NetplayPort:
+    return "Netplay Port";
+  case Item::NetplayStart:
+    return "Start Netplay";
   case Item::Reset:
     return "Reset Game";
   case Item::Quit:
@@ -602,10 +636,27 @@ constexpr std::array<FilterEntry, 8> kFilters = {{
     {"Invert", "invert"},
 }};
 
-std::string ItemValue(Item item, int state_slot)
+std::string ItemValue(Item item, int state_slot, int netplay_mode,
+                      int netplay_port)
 {
   switch (item)
   {
+  case Item::NetplayMode:
+    switch (netplay_mode)
+    {
+    case 1:
+      return "HOST";
+    case 2:
+      return "JOIN";
+    default:
+      return "OFF";
+    }
+  case Item::NetplayPort:
+    return netplay_mode == 0 ? "-" : std::to_string(netplay_port);
+  case Item::NetplayStart:
+    // Deliberately blunt about the cost: this is not a pause-menu toggle, the
+    // session has to be built from boot.
+    return netplay_mode == 0 ? "-" : "RESTARTS GAME";
   case Item::Widescreen:
     return Config::Get(Config::GFX_WIDESCREEN_HACK) ? "ON" : "OFF";
   case Item::InternalRes:
@@ -901,6 +952,16 @@ bool AdjustItem(Item item, int direction, State& state)
 {
   switch (item)
   {
+  case Item::NetplayMode:
+    state.netplay_mode = std::clamp(state.netplay_mode + direction, 0, 2);
+    break;
+  case Item::NetplayPort:
+    // Ports are not worth paging one at a time; step by 1 and let the value
+    // wrap inside the ephemeral range most people will use.
+    state.netplay_port = std::clamp(state.netplay_port + direction, 1024, 65535);
+    break;
+  case Item::NetplayStart:
+    break;   // an action, not a value
   case Item::Widescreen:
     SetWidescreen(!Config::Get(Config::GFX_WIDESCREEN_HACK));
     break;
@@ -1069,7 +1130,52 @@ enum class Action
   Reset,
   SaveState,
   LoadState,
+  StartNetplay,
 };
+
+// Quit, but not before the core is actually running again.
+//
+// Shutdown joins the CPU thread. While the menu is open that thread is paused,
+// and CloseAndResume only *queues* the resume on the state worker -- so quitting
+// straight after it races the resume and wedges the process, main thread in
+// futex_wait and CPU thread parked. That is a real bug in the stock "Quit Game"
+// row too, not just here: it hangs identically, which is why the fix lives in a
+// helper both call.
+//
+// The wait runs on a detached thread for the reason documented on the state
+// worker: the host thread is the X11/Wayland event loop, and blocking it while
+// the video thread waits on a swapchain image closes the deadlock loop. The
+// bound means a core that never resumes still quits rather than hanging forever.
+void QuitOnceResumed(const std::function<void()>& quit_callback)
+{
+  std::thread([quit_callback] {
+    auto& system = Core::System::GetInstance();
+    for (int i = 0; i < 300 && Core::GetState(system) != Core::State::Running; ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (Core::GetState(system) != Core::State::Running)
+      std::fprintf(stderr, "[menu] core did not resume; quitting anyway\n");
+    quit_callback();
+  }).detach();
+}
+
+// Hand the netplay request to the runner and let it restart into the lobby.
+//
+// A file rather than a callback because the decision has to outlive this
+// process's emulation session: the core is torn down, then the runner reads
+// this, deletes it, and brings up the lobby. Netplay cannot be entered in
+// place -- the lobby runs before the core boots.
+bool WriteNetplayRequest(int mode, int port)
+{
+  const std::string path = File::GetUserPath(D_USER_IDX) + "netplay-request.ini";
+  std::ofstream out(path, std::ios::trunc);
+  if (!out)
+    return false;
+  out << "[Netplay]\n"
+      << "mode = " << (mode == 1 ? "host" : "join") << '\n'
+      << "port = " << port << '\n';
+  out.close();
+  return static_cast<bool>(out);
+}
 
 Action DecideAction(Item item, State& state, bool* needs_config_save)
 {
@@ -1085,6 +1191,10 @@ Action DecideAction(Item item, State& state, bool* needs_config_save)
     return Action::Reset;
   case Item::Quit:
     return Action::Quit;
+  case Item::NetplayStart:
+    // Off means the row is inert, so Enter cannot restart the game by accident
+    // while somebody is paging past it.
+    return state.netplay_mode == 0 ? Action::None : Action::StartNetplay;
   case Item::Apply:
     // Settings already take effect as they are changed; this flushes them to
     // disk and gives an explicit confirm step.
@@ -1150,6 +1260,8 @@ void OnKey(Key key)
   int slot = 1;
   std::function<void()> fullscreen_callback;
   std::function<void()> quit_callback;
+  int netplay_mode_snapshot = 0;
+  int netplay_port_snapshot = 2626;
 
   // Deferred work. NOTHING below may call into Config/Core/InputConfig while
   // the menu mutex is held: those can block on the CPU thread while the video
@@ -1303,6 +1415,8 @@ void OnKey(Key key)
     slot = s_state.state_slot;
     fullscreen_callback = s_state.fullscreen_callback;
     quit_callback = s_state.quit_callback;
+    netplay_mode_snapshot = s_state.netplay_mode;
+    netplay_port_snapshot = s_state.netplay_port;
   }
 
   // Everything below runs with the mutex released, so these engine calls can
@@ -1392,6 +1506,20 @@ void OnKey(Key key)
     CloseAndResume();
     Core::System::GetInstance().GetProcessorInterface().ResetButton_Tap();
     break;
+  case Action::StartNetplay:
+    // No auto-resume snapshot: a netplay session starts from boot on every
+    // peer, so restoring this machine's save would desync it immediately.
+    if (!quit_callback)
+      break;
+    if (!WriteNetplayRequest(netplay_mode_snapshot, netplay_port_snapshot))
+    {
+      std::fprintf(stderr, "[netplay] could not write the request file\n");
+      break;
+    }
+    std::fprintf(stderr, "[netplay] restarting into the lobby\n");
+    CloseAndResume();
+    QuitOnceResumed(quit_callback);
+    break;
   case Action::Quit:
     if (!quit_callback)
       break;
@@ -1420,7 +1548,11 @@ void OnKey(Key key)
     }
     else
     {
-      quit_callback();
+      // Same paused-core teardown hazard as StartNetplay: the menu is open, so
+      // the CPU thread is parked and a straight quit_callback() here wedges
+      // shutdown. Resume first, then quit once it has taken.
+      CloseAndResume();
+      QuitOnceResumed(quit_callback);
     }
     break;
   case Action::SaveState:
@@ -1579,7 +1711,10 @@ void Draw()
       break;
     default:
       for (const Item item : TabItems(tab))
-        rows.emplace_back(ItemLabel(item), ItemValue(item, state_slot), false);
+        rows.emplace_back(ItemLabel(item),
+                          ItemValue(item, state_slot, s_state.netplay_mode,
+                                    s_state.netplay_port),
+                          false);
       break;
     }
   }

@@ -279,6 +279,84 @@ bool ControllerConfigExists(const fs::path &user_directory) {
   return fs::is_regular_file(user_directory / "Config" / "WiimoteNew.ini", ec);
 }
 
+bool GCPadConfigExists(const fs::path &user_directory) {
+  std::error_code ec;
+  return fs::is_regular_file(user_directory / "Config" / "GCPadNew.ini", ec);
+}
+
+bool WriteKeyboardGCPadConfig(const fs::path &user_directory,
+                              KeyboardLayout layout, std::string *message) {
+  // Dolphin's Linux keyboard/mouse device is the X master pointer/keyboard
+  // pair, exposed by the XInput2 backend under the pointer's name. The game
+  // runs under XWayland here, so this works on a Wayland session too.
+  constexpr const char *kDevice = "XInput2/0/Virtual core pointer";
+
+  // Two disjoint layouts, so one keyboard can drive two local instances --
+  // which is exactly what a two-peer netplay session on one machine needs, and
+  // is unavoidable there: input has to keep working without window focus, so
+  // both instances see every key.
+  struct Keys {
+    const char *up, *down, *left, *right;
+    const char *a, *b, *x, *y, *z, *l, *r, *start;
+  };
+  const Keys keys = (layout == KeyboardLayout::Player1)
+                        ? Keys{"Up", "Down", "Left", "Right", "Z", "X",
+                               "C", "V", "F", "A", "S", "Return"}
+                        : Keys{"I", "K", "J", "L", "B", "N",
+                               "M", "comma", "H", "G", "T", "Y"};
+
+  const fs::path destination = user_directory / "Config" / "GCPadNew.ini";
+  std::error_code ec;
+  fs::create_directories(destination.parent_path(), ec);
+  if (ec) {
+    if (message)
+      *message = "can't create controller config directory: " + ec.message();
+    return false;
+  }
+  std::ofstream output(destination, std::ios::trunc);
+  if (!output) {
+    if (message)
+      *message = "can't write " + destination.string();
+    return false;
+  }
+
+  // Only port 1 is mapped. Under netplay each machine supplies one pad and the
+  // host's mapping decides which in-game port it drives, so a local port 2
+  // would be wrong there; for single player the game only needs port 1.
+  output << "[GCPad1]\n"
+         << "Device = " << kDevice << '\n'
+         << "Buttons/A = `" << keys.a << "`\n"
+         << "Buttons/B = `" << keys.b << "`\n"
+         << "Buttons/X = `" << keys.x << "`\n"
+         << "Buttons/Y = `" << keys.y << "`\n"
+         << "Buttons/Z = `" << keys.z << "`\n"
+         << "Buttons/Start = `" << keys.start << "`\n"
+         << "Triggers/L = `" << keys.l << "`\n"
+         << "Triggers/R = `" << keys.r << "`\n"
+         << "D-Pad/Up = `" << keys.up << "`\n"
+         << "D-Pad/Down = `" << keys.down << "`\n"
+         << "D-Pad/Left = `" << keys.left << "`\n"
+         << "D-Pad/Right = `" << keys.right << "`\n"
+         // The stick as well as the D-pad: this game reads movement from the
+         // analog stick, and a D-pad-only binding leaves the character rooted.
+         << "Main Stick/Up = `" << keys.up << "`\n"
+         << "Main Stick/Down = `" << keys.down << "`\n"
+         << "Main Stick/Left = `" << keys.left << "`\n"
+         << "Main Stick/Right = `" << keys.right << "`\n";
+  output.close();
+  if (!output) {
+    if (message)
+      *message = "can't write " + destination.string();
+    return false;
+  }
+  if (message)
+    *message = std::string("keyboard mapped (") +
+               (layout == KeyboardLayout::Player1 ? "arrows + ZXCV"
+                                                 : "IJKL + BNM") +
+               ")";
+  return true;
+}
+
 bool GenerateControllerConfig(const fs::path &user_directory,
                               std::span<const std::string> controllers,
                               std::string *message) {
@@ -384,12 +462,26 @@ bool GenerateControllerConfig(const fs::path &user_directory,
 bool EnsureControllerConfig(const fs::path &user_directory,
                             std::span<const std::string> controllers,
                             std::string *message) {
+  // A GameCube title needs GCPadNew.ini, and nothing here ever wrote one. Give
+  // a fresh user directory a keyboard pad so the game is playable with no
+  // hardware at all; an existing profile is never touched.
+  if (!GCPadConfigExists(user_directory)) {
+    std::string keyboard_message;
+    if (WriteKeyboardGCPadConfig(user_directory, KeyboardLayout::Player1,
+                                 &keyboard_message) &&
+        message)
+      *message = keyboard_message;
+  }
   if (ControllerConfigExists(user_directory)) {
-    if (message)
+    if (message && message->empty())
       *message = "using existing controller profile";
     return true;
   }
-  return GenerateControllerConfig(user_directory, controllers, message);
+  // The Wiimote profile is optional for a GameCube game: failing to map an SDL
+  // gamepad must not stop a keyboard player from booting.
+  std::string ignored;
+  GenerateControllerConfig(user_directory, controllers, &ignored);
+  return true;
 }
 
 bool EnsureControllerConfig(const fs::path &user_directory,
