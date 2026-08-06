@@ -19,22 +19,13 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE="ringout-deck-build"
 
 echo "==> building the toolchain image"
-podman build -t "$IMAGE" -f - "$REPO" <<'DOCKERFILE'
+# The package list lives in deck-deps.txt because CI installs the same set into
+# a debian:12 job container; see the header there.
+DEPS="$(grep -v '^#' "$REPO/.github/scripts/deck-deps.txt" | grep -v '^[[:space:]]*$' | tr '\n' ' ')"
+podman build -t "$IMAGE" -f - "$REPO" <<DOCKERFILE
 FROM debian:12
-
-# Dolphin vendors most of its dependencies under Externals/ and falls back to
-# them when a system copy is absent, so this list is deliberately the minimum:
-# the things that must come from the host because they talk to the display,
-# audio or input stack.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build pkg-config git ca-certificates \
-        python3 \
-        libx11-dev libxrandr-dev libxi-dev libxkbcommon-dev \
-        libwayland-dev wayland-protocols \
-        libgl1-mesa-dev libegl1-mesa-dev \
-        libasound2-dev libpulse-dev \
-        libudev-dev libevdev-dev libusb-1.0-0-dev \
-        libsystemd-dev libbluetooth-dev libcurl4-openssl-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        $DEPS \\
     && rm -rf /var/lib/apt/lists/*
 DOCKERFILE
 

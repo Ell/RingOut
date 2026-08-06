@@ -1,0 +1,95 @@
+name: Steam Deck build
+
+# The Deck package is the one release that ships PREBUILT binaries: SteamOS
+# mounts /usr read-only and its compilers have no C library headers, so nothing
+# can be built on the device. That makes the build environment part of the
+# product -- the runtime has to be linked against a glibc older than SteamOS's
+# ~2.37, because binaries run forward across glibc versions but never backward.
+#
+# So this job runs inside debian:12 (glibc 2.36) rather than on the ubuntu
+# runner's own image, which is far too new. It is the same base build-deck.sh
+# uses locally via podman, and package-deck.sh checks the resulting floor rather
+# than trusting it.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'ModernGekko/**'
+      # The packaging scripts and the shipped scaffolding are part of what this
+      # workflow produces, so a change to them has to trigger it -- see the same
+      # note in windows.yml, where leaving them out meant a packaging fix looked
+      # green against the previous run's result.
+      - '.github/workflows/deck.yml'
+      - '.github/scripts/build-deck.sh'
+      - '.github/scripts/package-deck.sh'
+      - '.github/scripts/deck-deps.txt'
+      - 'dist/RingOut-1.0-deck/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:12
+    timeout-minutes: 120
+
+    steps:
+      # actions/checkout needs git present, or it silently falls back to a
+      # tarball download and the working tree is not a repository. debian:12 is
+      # a bare base image, so this has to come first -- before the dependency
+      # list itself is available to read.
+      - name: Bootstrap checkout dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        # Read from the shared list so this cannot drift from the local podman
+        # image that build-deck.sh builds.
+        run: |
+          deps=$(grep -v '^#' .github/scripts/deck-deps.txt | grep -v '^[[:space:]]*$')
+          echo "$deps"
+          apt-get install -y --no-install-recommends $deps
+
+      - name: Configure
+        # Qt and the tests pull in toolchain the container does not have, and the
+        # runtime is headless-capable, so both are off -- same set as build-deck.sh.
+        run: >
+          cmake -S ModernGekko -B build-deck -GNinja
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_QT=OFF
+          -DENABLE_TESTS=OFF
+          -DENABLE_ANALYTICS=OFF
+          -DENABLE_AUTOUPDATE=OFF
+
+      - name: Build runtime
+        run: cmake --build build-deck --target moderngekko-run
+
+      - name: Package
+        # NATIVE=1 because this job IS the Debian 12 environment; there is no
+        # podman on the runner and none is needed. The script resolves the
+        # runtime's library closure with this container's ldd, which is the
+        # whole point of running the job in here.
+        run: NATIVE=1 .github/scripts/package-deck.sh
+
+      - name: Upload release
+        uses: actions/upload-artifact@v4
+        with:
+          name: ringout-steamdeck-x86_64
+          path: dist/RingOut-1.0-steamdeck-x86_64.zip
+          if-no-files-found: error
+          compression-level: 0   # already compressed
+
+      # A failed configure/build leaves the useful detail in these logs rather
+      # than in the step output.
+      - name: Upload CMake logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deck-cmake-logs
+          path: |
+            build-deck/CMakeFiles/CMakeConfigureLog.yaml
+            build-deck/CMakeCache.txt
+          if-no-files-found: ignore

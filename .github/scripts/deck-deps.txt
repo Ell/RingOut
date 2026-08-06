@@ -1,0 +1,39 @@
+# Debian 12 build dependencies for the Steam Deck / SteamOS runtime.
+#
+# Shared deliberately: build-deck.sh bakes these into its podman image and
+# .github/workflows/deck.yml installs them into its debian:12 job container.
+# Kept in one file so the two cannot drift -- a package added for a local build
+# and forgotten in CI fails only on the runner, minutes into a build.
+#
+# Dolphin vendors most of its dependencies under Externals/ and falls back to
+# them when a system copy is absent, so this list is deliberately the minimum:
+# the things that must come from the host because they talk to the display,
+# audio or input stack.
+build-essential
+# zip/unzip are for package-deck.sh, which runs inside this same environment in
+# CI. unzip is not optional there: the package is verified by unpacking it and
+# checking the executable bit survived.
+zip
+unzip
+cmake
+ninja-build
+pkg-config
+git
+ca-certificates
+python3
+libx11-dev
+libxrandr-dev
+libxi-dev
+libxkbcommon-dev
+libwayland-dev
+wayland-protocols
+libgl1-mesa-dev
+libegl1-mesa-dev
+libasound2-dev
+libpulse-dev
+libudev-dev
+libevdev-dev
+libusb-1.0-0-dev
+libsystemd-dev
+libbluetooth-dev
+libcurl4-openssl-dev
