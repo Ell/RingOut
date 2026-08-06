@@ -369,6 +369,71 @@ private:
   bool m_open = false;
 };
 
+enum class PortErrorChoice {
+  Quit,
+  Retry,
+  Join,
+};
+
+// A busy port is the one failure that is both common and recoverable, and
+// locally it almost always means "the other instance is already hosting" --
+// which makes joining it the thing the user actually wanted. Exiting the
+// process instead, with the reason on a stderr nobody is reading, is a dead end
+// from a menu-launched session: the game is already torn down, so there is
+// nothing to fall back to.
+PortErrorChoice ShowPortError(WindowSystem window_system, std::uint16_t port,
+                              const std::string &address) {
+  LobbyWindow window;
+  if (!window.Open(window_system))
+    return PortErrorChoice::Quit;   // headless or no display: caller logs and exits
+
+  while (true) {
+    if (!window.Frame()) {
+      window.Close();
+      return PortErrorChoice::Quit;
+    }
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin("Netplay", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
+                       "Could not host on port %u.", unsigned{port});
+    ImGui::TextWrapped(
+        "Something else is already using it -- most often another copy of the "
+        "game already hosting on this machine.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    PortErrorChoice choice = PortErrorChoice::Quit;
+    bool chosen = false;
+    if (ImGui::Button("Join that host instead", ImVec2(230, 40))) {
+      choice = PortErrorChoice::Join;
+      chosen = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Try again", ImVec2(140, 40))) {
+      choice = PortErrorChoice::Retry;
+      chosen = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Quit", ImVec2(110, 40))) {
+      choice = PortErrorChoice::Quit;
+      chosen = true;
+    }
+    ImGui::Spacing();
+    ImGui::TextDisabled("Joining connects to %s:%u.", address.c_str(),
+                        unsigned{port});
+    ImGui::End();
+    window.Present();
+    if (chosen) {
+      window.Close();
+      return choice;
+    }
+  }
+}
+
 // Poll until the predicate holds, the connection dies, or we run out of
 // patience. Headless runs must never block forever: a hung lobby in a script is
 // indistinguishable from a slow one.
@@ -605,19 +670,42 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   std::unique_ptr<NetPlay::NetPlayServer> server;
   std::unique_ptr<NetPlay::NetPlayClient> client;
 
-  if (options.role == NetplayRole::Host) {
+  // Hosting can fail on a busy port, which is recoverable: offer to join the
+  // host that already owns it, or retry. Headless keeps the old behaviour --
+  // a script has nobody to ask and wants the exit code.
+  while (options.role == NetplayRole::Host) {
     Log("hosting on port " + std::to_string(options.port));
     ui.SetHosting(true);
     server =
         std::make_unique<NetPlay::NetPlayServer>(options.port, false, &ui, direct);
-    if (!server->is_connected) {
-      Log("could not open port " + std::to_string(options.port) +
-          " (already in use?)");
-      server.reset();
+    if (server->is_connected)
+      break;
+
+    Log("could not open port " + std::to_string(options.port) +
+        " (already in use?)");
+    server.reset();
+    if (runtime_config.headless) {
       detail::SetExternalUICommon(false);
       UICommon::Shutdown();
       return static_cast<int>(NetplayExitCode::Failed);
     }
+    const PortErrorChoice choice =
+        ShowPortError(runtime_config.window_system, options.port, options.address);
+    if (choice == PortErrorChoice::Quit) {
+      detail::SetExternalUICommon(false);
+      UICommon::Shutdown();
+      return static_cast<int>(NetplayExitCode::Failed);
+    }
+    if (choice == PortErrorChoice::Join) {
+      Log("joining the existing host instead");
+      options.role = NetplayRole::Join;
+      ui.SetHosting(false);
+      break;
+    }
+    // Retry: the other instance may have shut down since.
+  }
+
+  if (options.role == NetplayRole::Host) {
     // Fixed-delay, not host input authority: both peers run the same inputs on
     // the same frame, which is the model the determinism work validated.
     server->SetHostInputAuthority(false);
