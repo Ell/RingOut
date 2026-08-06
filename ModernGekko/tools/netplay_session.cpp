@@ -635,6 +635,17 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   Config::SetBase(Config::NETPLAY_NETWORK_MODE, std::string("fixeddelay"));
   Config::SetBase(Config::NETPLAY_USE_INDEX, false);
 
+  // Stock clock for netplay, on every peer. Dolphin does sync the host's
+  // overclock through its settings layer, so this is not strictly required for
+  // agreement -- but the factor rescales CoreTiming's cycle conversion, and the
+  // recompiler's cycle accounting (downcount charged at block leaders, the
+  // mid-block exception refund) plus every determinism result were established
+  // at 1.0. Forcing it here means the host cannot advertise anything else.
+  Config::SetBase(Config::MAIN_OVERCLOCK_ENABLE, false);
+  Config::SetBase(Config::MAIN_OVERCLOCK, 1.0f);
+  Config::SetBase(Config::MAIN_VI_OVERCLOCK_ENABLE, false);
+  Config::SetBase(Config::MAIN_VI_OVERCLOCK, 1.0f);
+
   // Dolphin drops all input, pipe included, whenever the render window lacks
   // focus, and it defaults to off. That is wrong for netplay in two ways: a
   // peer that loses focus mid-match silently sends neutral input while its

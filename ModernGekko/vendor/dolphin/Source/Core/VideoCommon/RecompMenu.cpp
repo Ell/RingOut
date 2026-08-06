@@ -20,9 +20,11 @@
 
 #include <imgui.h>
 
+#include <cmath>
 #include <fstream>
 
 #include "Common/Config/Config.h"
+#include "Core/NetPlay/NetPlayProto.h"
 #include "Common/FileUtil.h"
 #include "Common/IniFile.h"
 #include "Core/Cheats/ActionReplay.h"
@@ -82,6 +84,7 @@ enum class Item
   FillGaps,
   // System
   Speed,
+  Overclock,
   StateSlot,
   SaveState,
   LoadState,
@@ -144,7 +147,8 @@ const std::vector<Item>& TabItems(Tab tab)
       Item::LensFlares,       Item::Filter,      Item::Fullscreen,       Item::Apply};
   static const std::vector<Item> audio = {Item::Volume, Item::Muted, Item::AudioLatency,
                                           Item::FillGaps, Item::Apply};
-  static const std::vector<Item> system = {Item::Speed,        Item::StateSlot,
+  static const std::vector<Item> system = {Item::Speed,        Item::Overclock,
+                                           Item::StateSlot,
                                            Item::SaveState,    Item::LoadState,
                                            Item::AutoResume,   Item::NetplayMode,
                                            Item::NetplayPort,  Item::NetplayStart,
@@ -595,6 +599,8 @@ const char* ItemLabel(Item item)
     return "Load State";
   case Item::AutoResume:
     return "Auto-Resume";
+  case Item::Overclock:
+    return "CPU Overclock";
   case Item::NetplayMode:
     return "Netplay";
   case Item::NetplayPort:
@@ -651,6 +657,21 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
     default:
       return "OFF";
     }
+  case Item::Overclock:
+  {
+    // Netplay takes the host's factor and pushes it to every peer through its
+    // settings layer, so a local value here would be silently overridden and
+    // the row would be lying. It is also the wrong thing to expose there: the
+    // factor rescales CoreTiming's cycle conversion, and the recompiler's cycle
+    // accounting and every determinism result were validated at 1.0.
+    if (NetPlay::IsNetPlayRunning())
+      return "OFF (netplay)";
+    if (!Config::Get(Config::MAIN_OVERCLOCK_ENABLE))
+      return "OFF";
+    const int percent =
+        static_cast<int>(std::lround(Config::Get(Config::MAIN_OVERCLOCK) * 100.0f));
+    return std::to_string(percent) + "%";
+  }
   case Item::NetplayPort:
     return netplay_mode == 0 ? "-" : std::to_string(netplay_port);
   case Item::NetplayStart:
@@ -952,6 +973,34 @@ bool AdjustItem(Item item, int direction, State& state)
 {
   switch (item)
   {
+  case Item::Overclock:
+  {
+    // Refuse rather than change something netplay will overwrite anyway.
+    if (NetPlay::IsNetPlayRunning())
+      break;
+    // A curated ladder, not a free slider: the interesting settings are a few
+    // steps either side of stock, and underclocking matters as much as
+    // overclocking -- some GameCube titles are bound by an unnecessarily fast
+    // CPU starving the GPU. Index 0 is off (factor exactly 1.0, enable false)
+    // so "no overclock" is a real state and not 100% with the machinery live.
+    static constexpr std::array<float, 8> kFactors = {1.0f, 0.5f,  0.75f, 1.25f,
+                                                      1.5f, 2.0f,  3.0f,  4.0f};
+    const bool enabled = Config::Get(Config::MAIN_OVERCLOCK_ENABLE);
+    const float current = Config::Get(Config::MAIN_OVERCLOCK);
+    int index = 0;
+    if (enabled)
+    {
+      for (size_t i = 1; i < kFactors.size(); ++i)
+      {
+        if (std::fabs(kFactors[i] - current) < 0.001f)
+          index = static_cast<int>(i);
+      }
+    }
+    index = std::clamp(index + direction, 0, static_cast<int>(kFactors.size()) - 1);
+    Config::SetBase(Config::MAIN_OVERCLOCK_ENABLE, index != 0);
+    Config::SetBase(Config::MAIN_OVERCLOCK, kFactors[index]);
+    break;
+  }
   case Item::NetplayMode:
     state.netplay_mode = std::clamp(state.netplay_mode + direction, 0, 2);
     break;
