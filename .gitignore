@@ -88,6 +88,9 @@ compile_commands.json
 /dist/RingOut-1.0-dist/userdata/
 # prebuilt dolrecomp binary (unstripped, leaks build paths) -- setup.sh builds it
 /dist/RingOut-1.0-dist/tools/
+# setup.sh's build tree: where the user's own ISO is extracted and recompiled.
+# CMake/ninja output plus compiler-probe binaries, regenerated on every run.
+/dist/RingOut-1.0-dist/work/
 # GPL corresponding-source tarballs -- redundant now the source is in the repo
 /dist/RingOut-1.0-dist/source/
 # Steam Deck package: same rule, scaffolding only. It has no setup.sh, no

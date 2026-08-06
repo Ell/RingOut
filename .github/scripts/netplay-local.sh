@@ -13,12 +13,27 @@
 #     Dolphin opens the FIFO once and never recovers from EOF.
 # See the "driving the game" notes: each of those alone is enough to make a
 # session look broken for reasons unrelated to netplay.
+#
+# Env:
+#   HASH=1        diff per-frame guest-RAM hashes afterwards (see below)
+#   WINDOWED=1    give both peers a real window instead of running headless.
+#                 The lobby still auto-starts on --netplay-players 2, so this
+#                 needs no clicking -- it is how the in-game overlay gets
+#                 inspected inside a live session. Raise TIMEOUT with it: the
+#                 90 s default expires while you are still looking at the
+#                 lobby, and both peers then log "lobby closed".
+#   OVERCLOCK=f   preseed a CPU overclock factor on both peers before the
+#                 lobby runs. RunNetplayLobby is supposed to force stock clock
+#                 on every peer, so this is the test of it: set 3.0 here and
+#                 the session should still come out at 1.0.
+#   TIMEOUT=s     lobby timeout per peer (default 90)
 set -u
 P=/mnt/hera/projects/soulcalibur
 W="${1:-/tmp/netplay-local}"
 PLAY="${2:-60}"
 PORT="${3:-2626}"
 PKG="$P/dist/RingOut-1.0-deck"
+TIMEOUT="${TIMEOUT:-90}"
 
 pre="$(pgrep -x moderngekko-run 2>/dev/null | wc -l)"
 if [ "$pre" != "0" ]; then
@@ -54,7 +69,15 @@ Main Stick/Down = `Axis MAIN Y +`
 Main Stick/Left = `Axis MAIN X -`
 Main Stick/Right = `Axis MAIN X +`
 EOF
-  printf '[Input]\nBackgroundInput = True\n' > "$d/user/Config/Dolphin.ini"
+  # OVERCLOCK preseeds a factor the lobby is expected to override, so that
+  # "netplay forces stock clock" can be tested rather than assumed.
+  if [ -n "${OVERCLOCK:-}" ]; then
+    printf '[Core]\nOverclock = %s\nOverclockEnable = True\n' "$OVERCLOCK" \
+      > "$d/user/Config/Dolphin.ini"
+    printf '[Input]\nBackgroundInput = True\n' >> "$d/user/Config/Dolphin.ini"
+  else
+    printf '[Input]\nBackgroundInput = True\n' > "$d/user/Config/Dolphin.ini"
+  fi
   setsid bash -c 'exec 9<>"'"$d"'/user/Pipes/ctrl"; exec sleep 7200' \
     >/dev/null 2>&1 &
   echo $! > "$d/holder.pid"
@@ -75,7 +98,9 @@ launch() {
   if [ "${HASH:-0}" = "1" ]; then
     hash_env=(RINGOUT_DETERMINISM_LOG="$d/hash.log")
   fi
-  ( cd "$PKG" && exec env "${hash_env[@]}" ./bin/moderngekko-run --headless \
+  local -a mode=(--headless)
+  [ "${WINDOWED:-0}" = "1" ] && mode=()
+  ( cd "$PKG" && exec env "${hash_env[@]}" ./bin/moderngekko-run "${mode[@]}" \
       --user-dir "$d/user" --game ./game --module ./bin/gGRSEAF_recomp.so \
       --controller "Standard Controller" "$@" ) > "$d/log.txt" 2>&1 &
   echo $! > "$d/pid"
@@ -83,10 +108,10 @@ launch() {
 }
 
 launch host  --netplay-host --netplay-port "$PORT" --netplay-players 2 \
-             --nickname Host  --buffer 5 --netplay-timeout 90
+             --nickname Host  --buffer 5 --netplay-timeout "$TIMEOUT"
 sleep 4
 launch guest --netplay-join 127.0.0.1 --netplay-port "$PORT" \
-             --nickname Guest --netplay-timeout 90
+             --nickname Guest --netplay-timeout "$TIMEOUT"
 
 # Wait for both to report booting, then let them run.
 # "netplay armed" is the load-bearing string, not "booting". NetPlay_Enable
