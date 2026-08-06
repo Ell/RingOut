@@ -90,6 +90,7 @@ enum class Item
   LoadState,
   AutoResume,
   NetplayMode,
+  NetplayAddress,
   NetplayPort,
   NetplayStart,
   Reset,
@@ -151,6 +152,7 @@ const std::vector<Item>& TabItems(Tab tab)
                                            Item::StateSlot,
                                            Item::SaveState,    Item::LoadState,
                                            Item::AutoResume,   Item::NetplayMode,
+                                           Item::NetplayAddress,
                                            Item::NetplayPort,  Item::NetplayStart,
                                            Item::Apply,        Item::Reset,
                                            Item::Quit};
@@ -202,6 +204,22 @@ struct State
   // brings up the lobby. 0 = off, 1 = host, 2 = join.
   int netplay_mode = 0;
   int netplay_port = 2626;
+
+  // The address to join, held as four octets rather than a string because there
+  // is no text entry here: the deck package ships this menu and nothing else,
+  // and in Game Mode the only input is a pad. Space enters an edit mode where
+  // Left/Right pick an octet and Up/Down change it -- which is why the octet
+  // index lives in state, and why Up/Down must be intercepted before the
+  // generic row movement while it is set. -1 means "not editing".
+  std::array<int, 4> netplay_addr = {127, 0, 0, 1};
+  int netplay_addr_octet = -1;
+  bool netplay_addr_seeded = false;
+
+  // Consecutive presses in the same direction step further each time. Without
+  // it an octet moves by one per press and reaching 192 from 127 is 65 of them,
+  // which is not a thing anyone will do twice.
+  int netplay_addr_run = 0;
+  int netplay_addr_run_dir = 0;
 
   // Row 0 is always the tab selector; rows 1.. are that tab's entries.
   Tab tab = Tab::System;
@@ -603,6 +621,8 @@ const char* ItemLabel(Item item)
     return "CPU Overclock";
   case Item::NetplayMode:
     return "Netplay";
+  case Item::NetplayAddress:
+    return "Join Address";
   case Item::NetplayPort:
     return "Netplay Port";
   case Item::NetplayStart:
@@ -642,8 +662,63 @@ constexpr std::array<FilterEntry, 8> kFilters = {{
     {"Invert", "invert"},
 }};
 
+// Seeds the join address from the frontend's config.ini, which is where the
+// runner persists it after a session. Read here rather than plumbed in from the
+// frontend because the platform layer that owns this menu has no view of that
+// config -- and the menu already reads and writes the sibling
+// netplay-request.ini out of the same directory.
+//
+// Anything unparseable leaves the default alone: a hostname is perfectly valid
+// in config.ini (the frontend accepts one) but cannot be shown on a row that
+// edits four octets, so it is left for the frontend to use and simply not
+// displayed here.
+void SeedNetplayAddress(std::array<int, 4>* addr)
+{
+  std::ifstream config(File::GetUserPath(D_USER_IDX) + "config.ini");
+  if (!config)
+    return;
+  std::string line;
+  while (std::getline(config, line))
+  {
+    const auto eq = line.find('=');
+    if (eq == std::string::npos || line.compare(0, eq, "address") != 0)
+      continue;
+    std::array<int, 4> parsed{};
+    int consumed = 0;
+    if (std::sscanf(line.c_str() + eq + 1, " %d.%d.%d.%d%n", &parsed[0],
+                    &parsed[1], &parsed[2], &parsed[3], &consumed) == 4)
+    {
+      const bool in_range = std::ranges::all_of(
+          parsed, [](int v) { return v >= 0 && v <= 255; });
+      if (in_range)
+        *addr = parsed;
+    }
+    return;
+  }
+}
+
+// Renders the address as a.b.c.d, and while it is being edited marks the octet
+// the arrows are pointing at with >< around it. Something has to say which of
+// the four is live -- there is no caret to move and no highlight below row
+// granularity, so the marker is in the text itself.
+std::string FormatAddress(const std::array<int, 4>& addr, int editing_octet)
+{
+  std::string out;
+  for (int i = 0; i < 4; ++i)
+  {
+    if (i != 0)
+      out += '.';
+    if (i == editing_octet)
+      out += '>' + std::to_string(addr[i]) + '<';
+    else
+      out += std::to_string(addr[i]);
+  }
+  return out;
+}
+
 std::string ItemValue(Item item, int state_slot, int netplay_mode,
-                      int netplay_port)
+                      int netplay_port, const std::array<int, 4>& netplay_addr,
+                      int netplay_addr_octet)
 {
   switch (item)
   {
@@ -672,6 +747,11 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
         static_cast<int>(std::lround(Config::Get(Config::MAIN_OVERCLOCK) * 100.0f));
     return std::to_string(percent) + "%";
   }
+  case Item::NetplayAddress:
+    // Only a joiner dials anything; a host binds a port and waits. Showing an
+    // address on the host row would suggest it decides who connects.
+    return netplay_mode == 2 ? FormatAddress(netplay_addr, netplay_addr_octet)
+                             : "-";
   case Item::NetplayPort:
     return netplay_mode == 0 ? "-" : std::to_string(netplay_port);
   case Item::NetplayStart:
@@ -1213,7 +1293,7 @@ void QuitOnceResumed(const std::function<void()>& quit_callback)
 // process's emulation session: the core is torn down, then the runner reads
 // this, deletes it, and brings up the lobby. Netplay cannot be entered in
 // place -- the lobby runs before the core boots.
-bool WriteNetplayRequest(int mode, int port)
+bool WriteNetplayRequest(int mode, int port, const std::array<int, 4>& addr)
 {
   const std::string path = File::GetUserPath(D_USER_IDX) + "netplay-request.ini";
   std::ofstream out(path, std::ios::trunc);
@@ -1222,6 +1302,11 @@ bool WriteNetplayRequest(int mode, int port)
   out << "[Netplay]\n"
       << "mode = " << (mode == 1 ? "host" : "join") << '\n'
       << "port = " << port << '\n';
+  // Only meaningful to a joiner, and writing it unconditionally would let a
+  // stale address from an earlier join override the host path's own settings.
+  if (mode == 2)
+    out << "address = " << addr[0] << '.' << addr[1] << '.' << addr[2] << '.'
+        << addr[3] << '\n';
   out.close();
   return static_cast<bool>(out);
 }
@@ -1240,6 +1325,13 @@ Action DecideAction(Item item, State& state, bool* needs_config_save)
     return Action::Reset;
   case Item::Quit:
     return Action::Quit;
+  case Item::NetplayAddress:
+    // Space starts editing; the arrows then belong to the octets until Space
+    // ends it. Inert unless joining, matching what the row displays -- only a
+    // joiner dials an address.
+    if (state.netplay_mode == 2)
+      state.netplay_addr_octet = 0;
+    return Action::None;
   case Item::NetplayStart:
     // Off means the row is inert, so Enter cannot restart the game by accident
     // while somebody is paging past it.
@@ -1266,6 +1358,24 @@ bool IsOpen()
 
 void Toggle()
 {
+  // Read the persisted join address before taking the lock -- same rule the
+  // rest of this file follows for file I/O. Once per process: the runner only
+  // rewrites config.ini on its way out to the lobby, and by then this process
+  // is quitting anyway.
+  bool seed_address = false;
+  {
+    std::lock_guard<std::mutex> guard(s_state.mutex);
+    seed_address = !s_state.netplay_addr_seeded;
+    s_state.netplay_addr_seeded = true;
+  }
+  if (seed_address)
+  {
+    std::array<int, 4> seeded = {127, 0, 0, 1};
+    SeedNetplayAddress(&seeded);
+    std::lock_guard<std::mutex> guard(s_state.mutex);
+    s_state.netplay_addr = seeded;
+  }
+
   bool open_now;
   {
     std::lock_guard<std::mutex> guard(s_state.mutex);
@@ -1276,6 +1386,11 @@ void Toggle()
       s_state.selected = 0;
       s_state.tab = Tab::System;
     }
+    // Never reopen mid-edit: selection resets to the tab row above, so an octet
+    // index left over from last time would point at a row nobody is on.
+    s_state.netplay_addr_octet = -1;
+    s_state.netplay_addr_run = 0;
+    s_state.netplay_addr_run_dir = 0;
   }
 
   // Escape pauses. The pause itself is handed to the worker thread -- doing it
@@ -1311,6 +1426,7 @@ void OnKey(Key key)
   std::function<void()> quit_callback;
   int netplay_mode_snapshot = 0;
   int netplay_port_snapshot = 2626;
+  std::array<int, 4> netplay_addr_snapshot = {127, 0, 0, 1};
 
   // Deferred work. NOTHING below may call into Config/Core/InputConfig while
   // the menu mutex is held: those can block on the CPU thread while the video
@@ -1375,6 +1491,70 @@ void OnKey(Key key)
     else
     {
       const int index = s_state.selected - 1;
+
+      // Editing an address octet takes over all four arrows: Up/Down would
+      // otherwise walk off the row mid-edit and leave the octet marker behind
+      // on a row nobody is on. Space ends the edit, and it is the only way out
+      // that keeps Esc meaning "close the menu" everywhere.
+      bool address_edit_consumed_key = false;
+      if (s_state.netplay_addr_octet >= 0)
+      {
+        const auto& items = TabItems(s_state.tab);
+        const bool on_address_row =
+            index < static_cast<int>(items.size()) &&
+            items[index] == Item::NetplayAddress;
+        if (on_address_row)
+        {
+          address_edit_consumed_key = true;
+          switch (key)
+          {
+          case Key::Left:
+            s_state.netplay_addr_octet = (s_state.netplay_addr_octet + 3) % 4;
+            s_state.netplay_addr_run = 0;
+            s_state.netplay_addr_run_dir = 0;
+            break;
+          case Key::Right:
+            s_state.netplay_addr_octet = (s_state.netplay_addr_octet + 1) % 4;
+            s_state.netplay_addr_run = 0;
+            s_state.netplay_addr_run_dir = 0;
+            break;
+          case Key::Up:
+          case Key::Down:
+          {
+            const int dir = key == Key::Up ? 1 : -1;
+            // Held keys arrive as repeats, so a run counts them and the step
+            // grows: single presses stay precise, holding covers the range.
+            if (dir == s_state.netplay_addr_run_dir)
+              ++s_state.netplay_addr_run;
+            else
+              s_state.netplay_addr_run = 0;
+            s_state.netplay_addr_run_dir = dir;
+            const int step = s_state.netplay_addr_run < 4    ? 1
+                             : s_state.netplay_addr_run < 12 ? 5
+                                                             : 25;
+            int& octet = s_state.netplay_addr[s_state.netplay_addr_octet];
+            // Wrap rather than clamp: 0 to 255 is then one press, and an octet
+            // has no meaningful end to stop at the way a port range does.
+            octet = ((octet + dir * step) % 256 + 256) % 256;
+            break;
+          }
+          case Key::Activate:
+            s_state.netplay_addr_octet = -1;
+            s_state.netplay_addr_run = 0;
+            s_state.netplay_addr_run_dir = 0;
+            break;
+          }
+        }
+        else
+        {
+          // Selection moved off the row some other way; do not keep editing.
+          s_state.netplay_addr_octet = -1;
+        }
+      }
+
+      // The address lives in the request file and is persisted by the runner,
+      // not in Dolphin's Config, so editing it never sets needs_config_save.
+      if (!address_edit_consumed_key)
       switch (key)
       {
       case Key::Up:
@@ -1466,6 +1646,7 @@ void OnKey(Key key)
     quit_callback = s_state.quit_callback;
     netplay_mode_snapshot = s_state.netplay_mode;
     netplay_port_snapshot = s_state.netplay_port;
+    netplay_addr_snapshot = s_state.netplay_addr;
   }
 
   // Everything below runs with the mutex released, so these engine calls can
@@ -1560,7 +1741,8 @@ void OnKey(Key key)
     // peer, so restoring this machine's save would desync it immediately.
     if (!quit_callback)
       break;
-    if (!WriteNetplayRequest(netplay_mode_snapshot, netplay_port_snapshot))
+    if (!WriteNetplayRequest(netplay_mode_snapshot, netplay_port_snapshot,
+                             netplay_addr_snapshot))
     {
       std::fprintf(stderr, "[netplay] could not write the request file\n");
       break;
@@ -1640,6 +1822,16 @@ void OnEscape()
         s_state.detecting_control = nullptr;
         return;
       }
+      // An address edit is a level too: closing straight out of it would leave
+      // the octet marker set, and the row would still be in edit mode the next
+      // time the menu opened.
+      if (s_state.netplay_addr_octet >= 0)
+      {
+        s_state.netplay_addr_octet = -1;
+        s_state.netplay_addr_run = 0;
+        s_state.netplay_addr_run_dir = 0;
+        return;
+      }
       // Tabs are switched in place, so Escape always just closes the menu.
     }
   }
@@ -1714,6 +1906,7 @@ void Draw()
   int selected;
   int state_slot;
   bool detecting;
+  bool editing_address = false;
   bool cheats_enabled = false;
   // label, value, highlight-value-green
   std::vector<std::tuple<std::string, std::string, bool>> rows;
@@ -1727,6 +1920,7 @@ void Draw()
     selected = s_state.selected;
     state_slot = s_state.state_slot;
     detecting = s_state.detector != nullptr;
+    editing_address = s_state.netplay_addr_octet >= 0;
 
     switch (tab)
     {
@@ -1762,7 +1956,8 @@ void Draw()
       for (const Item item : TabItems(tab))
         rows.emplace_back(ItemLabel(item),
                           ItemValue(item, state_slot, s_state.netplay_mode,
-                                    s_state.netplay_port),
+                                    s_state.netplay_port, s_state.netplay_addr,
+                                    s_state.netplay_addr_octet),
                           false);
       break;
     }
@@ -1859,6 +2054,8 @@ void Draw()
     const char* hint = "Up/Down select   Left/Right change   Space confirm   Esc close";
     if (detecting)
       hint = "Press a key or button...   Esc cancel";
+    else if (editing_address)
+      hint = "Left/Right octet   Up/Down value   Space done";
     else if (tab_focused)
       hint = "Left/Right switch tab   Down enter list   Esc close";
     else if (tab == Tab::Controls && selected >= 1 && selected <= kControlsHeaderRows)

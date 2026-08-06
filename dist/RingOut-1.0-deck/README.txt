@@ -51,7 +51,7 @@ SETTINGS MENU TABS
             anti-aliasing, anisotropic + texture filtering, filter,
             texture packs, show FPS, free camera, fullscreen
   AUDIO     volume, mute, latency, fill audio gaps
-  SYSTEM    emulation speed, save/load state, quit
+  SYSTEM    emulation speed, CPU overclock, save/load state, netplay, quit
   CONTROLS  backend and device at the top, then rebind any pad button
             (Space to rebind, Left to clear). The Deck's pad can show up
             under more than one backend -- Steam Deck, SDL and XInput2 are
@@ -63,6 +63,26 @@ SETTINGS MENU TABS
   A word on internal resolution: the Deck renders this game comfortably at
   2x, and 2x is already well above the 1280x800 panel. Higher multipliers
   cost battery for nothing you can see.
+
+NETPLAY (SYSTEM tab)
+  Netplay          OFF / HOST / JOIN
+  Join Address     the host's IP, shown only when joining
+  Netplay Port     must match on both machines
+  Start Netplay    restarts the game into the session
+
+  One player hosts and the others join, so exactly one machine sets
+  HOST and the rest set JOIN plus that machine's IP. Starting a session
+  restarts the game -- netplay cannot be switched on mid-match, because
+  every peer has to begin from the same first frame.
+
+  Entering the address: Space starts editing, Left/Right pick which of
+  the four numbers you are on, Up/Down change it, Space finishes. Hold a
+  direction to move in larger steps. The address is remembered, so this
+  is a once-per-opponent job rather than every session.
+
+  Both machines must be on the same network, or the host's router must
+  forward the port. A CPU overclock is forced off for everyone during
+  netplay -- peers have to run at the same clock to stay in step.
 
 FILTERS (VIDEO tab, Filter row)
   Two filters are bundled and installed into userdata/Shaders on first

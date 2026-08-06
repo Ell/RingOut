@@ -392,6 +392,7 @@ int RunMain(int argc, char **argv) {
     std::error_code ec;
     if (std::filesystem::is_regular_file(request_path, ec)) {
       std::string mode;
+      std::string address;
       int port = 0;
       {
         std::ifstream request(request_path);
@@ -410,6 +411,8 @@ int RunMain(int argc, char **argv) {
           const std::string value = trim(line.substr(eq + 1));
           if (key == "mode")
             mode = value;
+          else if (key == "address")
+            address = value;
           else if (key == "port")
             port = std::atoi(value.c_str());
         }
@@ -425,7 +428,11 @@ int RunMain(int argc, char **argv) {
         netplay.role = mode == "host"
                            ? moderngekko::frontend::NetplayRole::Host
                            : moderngekko::frontend::NetplayRole::Join;
-        netplay.address = frontend_config.netplay_address;
+        // The menu writes an address only when joining. Falling back to the
+        // configured one keeps a host request -- and any older request file --
+        // behaving exactly as before.
+        netplay.address =
+            address.empty() ? frontend_config.netplay_address : address;
         netplay.port = port > 0 ? static_cast<std::uint16_t>(port)
                                 : frontend_config.netplay_port;
         netplay.nickname = frontend_config.netplay_nickname;
@@ -433,6 +440,19 @@ int RunMain(int argc, char **argv) {
         netplay.controllers = frontend_config.controllers;
         if (netplay.controllers.empty())
           netplay.controllers.push_back("Keyboard");
+        // Persist what the menu just chose, so it is the default next time and
+        // the menu can seed itself from it. Entering an address an octet at a
+        // time is tolerable once and tedious every launch. A failure here is
+        // not worth refusing the session over -- the address is already in
+        // netplay.address and this session will connect either way.
+        frontend_config.netplay_address = netplay.address;
+        frontend_config.netplay_port = netplay.port;
+        std::string save_error;
+        if (!moderngekko::frontend::SaveConfig(session_config.user_directory,
+                                               frontend_config, &save_error)) {
+          std::cerr << "netplay: could not save the address: " << save_error
+                    << '\n';
+        }
         std::cerr << "netplay: restarting from the in-game menu\n";
         return moderngekko::frontend::RunNetplayLobby(
             session_config, std::move(frontend_config), std::move(netplay));
