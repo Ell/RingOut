@@ -36,6 +36,7 @@
 #include "runtime/dolphin_runtime_internal.hpp"
 
 #include <SDL3/SDL.h>
+#include <enet/enet.h>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlrenderer3.h>
@@ -457,6 +458,84 @@ bool WaitFor(SessionUI &ui, NetPlay::NetPlayClient &client,
 // than offering a drag-and-drop mapping UI: the map starts all-zero and an
 // unassigned player sends no input at all, so a sensible default matters far
 // more than the ability to rearrange it.
+// LAN discovery beacon, host side.
+//
+// Netplay here is a direct connection -- no traversal server, no index -- so a
+// joiner otherwise has to be told the host's address out of band and type it in
+// an octet at a time. A host sitting in the lobby is doing nothing else, so it
+// announces itself once a second and the joiner's Scan row picks it up.
+//
+// ENet's socket wrapper rather than raw BSD sockets because this file and the
+// menu both compile on Windows, and enet is already a dependency of both.
+//
+// The magic string, the port and the payload layout are duplicated in
+// RecompMenu.cpp's scanner -- VideoCommon cannot include a header from tools/.
+// Change one and the other stops seeing hosts.
+constexpr enet_uint16 kDiscoveryPort = 2627;
+constexpr const char *kDiscoveryMagic = "RINGOUT1";
+
+class DiscoveryBeacon {
+public:
+  // Broadcast is not routed, so this reaches the local subnet only. That is the
+  // intended scope: over Tailscale or the internet there is no broadcast domain
+  // to find anyone on, and the address has to be typed or already saved.
+  void Start(std::uint16_t netplay_port, const std::string &nickname) {
+    m_socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+    if (m_socket == ENET_SOCKET_NULL)
+      return;
+    if (enet_socket_set_option(m_socket, ENET_SOCKOPT_BROADCAST, 1) != 0) {
+      enet_socket_destroy(m_socket);
+      m_socket = ENET_SOCKET_NULL;
+      return;
+    }
+    m_payload = std::string(kDiscoveryMagic) + ' ' +
+                std::to_string(netplay_port) + ' ' + nickname;
+  }
+
+  void Tick() {
+    if (m_socket == ENET_SOCKET_NULL)
+      return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_last < std::chrono::seconds(1))
+      return;
+    m_last = now;
+
+    // BOTH destinations, and the loopback one is not redundant: Linux does not
+    // deliver a broadcast sent out a physical interface back to sockets on the
+    // sending machine, so 255.255.255.255 alone means a joiner on the SAME
+    // machine never sees the host. Two instances on one box is a supported
+    // setup here -- it is what netplay-local.sh does -- and it is also the only
+    // way to test discovery without a second PC.
+    //   255.255.255.255 -> the LAN, via whichever interface holds the route
+    //   127.255.255.255 -> this machine
+    //
+    // ENetAddress::host is an in_addr, i.e. NETWORK byte order, so the
+    // loopback broadcast is built with htonl rather than written as a literal
+    // -- 0x7FFFFFFF spelled directly would arrive as 255.255.255.127 on a
+    // little-endian machine.
+    const enet_uint32 loopback_broadcast = ENET_HOST_TO_NET_32(0x7FFFFFFFU);
+    for (const enet_uint32 host : {ENET_HOST_BROADCAST, loopback_broadcast}) {
+      ENetAddress address{};
+      address.host = host;
+      address.port = kDiscoveryPort;
+      ENetBuffer buffer{};
+      buffer.data = const_cast<char *>(m_payload.data());
+      buffer.dataLength = m_payload.size();
+      enet_socket_send(m_socket, &address, &buffer, 1);
+    }
+  }
+
+  ~DiscoveryBeacon() {
+    if (m_socket != ENET_SOCKET_NULL)
+      enet_socket_destroy(m_socket);
+  }
+
+private:
+  ENetSocket m_socket = ENET_SOCKET_NULL;
+  std::string m_payload;
+  std::chrono::steady_clock::time_point m_last{};
+};
+
 bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
                     SessionUI &ui, NetPlay::NetPlayClient &client,
                     NetPlay::NetPlayServer *server,
@@ -466,6 +545,11 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
     Log("could not open the lobby window; falling back to auto-start");
     return true;
   }
+
+  // Only a host is findable; a joiner has nothing to announce.
+  DiscoveryBeacon beacon;
+  if (server != nullptr)
+    beacon.Start(options.port, options.nickname);
 
   size_t last_player_count = 0;
   unsigned buffer = 5;
@@ -479,6 +563,7 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
   while (true) {
     if (!window.Frame())
       return false;
+    beacon.Tick();   // rate-limits itself to once a second
     if (ui.ConnectionLost() || !client.IsConnected()) {
       window.Close();
       Log("connection lost while in the lobby");

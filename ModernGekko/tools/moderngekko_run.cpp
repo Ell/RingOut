@@ -437,6 +437,14 @@ int RunMain(int argc, char **argv) {
                                 : frontend_config.netplay_port;
         netplay.nickname = frontend_config.netplay_nickname;
         netplay.buffer = frontend_config.netplay_buffer;
+        // A session started from the in-game menu is a person walking between
+        // two machines: quit here, wait for the game to tear down, boot the
+        // other one, find the row, join. The 120 s default is a scripted-test
+        // figure and it expires in the middle of that, leaving a host that has
+        // already given up by the time the joiner arrives -- which looks like
+        // "joining does nothing" from the other end rather than a timeout.
+        // Scripted runs pass --netplay-timeout and are unaffected.
+        netplay.lobby_timeout = 600;
         netplay.controllers = frontend_config.controllers;
         if (netplay.controllers.empty())
           netplay.controllers.push_back("Keyboard");

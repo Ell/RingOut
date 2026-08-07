@@ -3,6 +3,8 @@
 
 #include "VideoCommon/RecompMenu.h"
 
+#include <enet/enet.h>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -90,6 +92,7 @@ enum class Item
   LoadState,
   AutoResume,
   NetplayMode,
+  NetplayScan,
   NetplayAddress,
   NetplayPort,
   NetplayStart,
@@ -152,6 +155,7 @@ const std::vector<Item>& TabItems(Tab tab)
                                            Item::StateSlot,
                                            Item::SaveState,    Item::LoadState,
                                            Item::AutoResume,   Item::NetplayMode,
+                                           Item::NetplayScan,
                                            Item::NetplayAddress,
                                            Item::NetplayPort,  Item::NetplayStart,
                                            Item::Apply,        Item::Reset,
@@ -221,6 +225,21 @@ struct State
   std::array<int, 4> netplay_addr = {127, 0, 0, 1};
   int netplay_addr_octet = -1;
   bool netplay_addr_seeded = false;
+
+  // LAN discovery results. A host in the lobby broadcasts once a second; Space
+  // on the Scan row listens for a couple of seconds and lists what answered, so
+  // the address never has to be typed on the same network. Written by a worker
+  // thread, hence everything here is under the same mutex as the rest.
+  struct FoundHost
+  {
+    std::string address;
+    std::string nickname;
+    int port = 2626;
+  };
+  std::vector<FoundHost> netplay_hosts;
+  int netplay_host_index = 0;
+  bool netplay_scanning = false;
+  bool netplay_scanned = false;
 
   // Consecutive presses in the same direction step further each time. Without
   // it an octet moves by one per press and reaching 192 from 127 is 65 of them,
@@ -628,6 +647,8 @@ const char* ItemLabel(Item item)
     return "CPU Overclock";
   case Item::NetplayMode:
     return "Netplay";
+  case Item::NetplayScan:
+    return "Scan for Hosts";
   case Item::NetplayAddress:
     return "Join Address";
   case Item::NetplayPort:
@@ -675,6 +696,26 @@ constexpr std::array<FilterEntry, 8> kFilters = {{
 // config -- and the menu already reads and writes the sibling
 // netplay-request.ini out of the same directory.
 //
+// True when the text is a dotted quad, in which case the octets are filled in
+// so the editor has something to work on. A hostname simply returns false and
+// leaves the octets alone -- see the note on netplay_addr_text.
+bool ParseAddress(const std::string& text, std::array<int, 4>* addr)
+{
+  std::array<int, 4> parsed{};
+  char trailing = 0;
+  // The %c rejects "1.2.3.4.5" and "1.2.3.4x", which sscanf would otherwise
+  // accept by matching the first four numbers and ignoring the rest.
+  if (std::sscanf(text.c_str(), "%d.%d.%d.%d%c", &parsed[0], &parsed[1], &parsed[2],
+                  &parsed[3], &trailing) != 4)
+  {
+    return false;
+  }
+  if (!std::ranges::all_of(parsed, [](int v) { return v >= 0 && v <= 255; }))
+    return false;
+  *addr = parsed;
+  return true;
+}
+
 // A hostname is perfectly valid there -- the frontend accepts one, and a
 // Tailscale MagicDNS name is exactly that -- so the text is kept whatever it
 // says and only ALSO parsed into octets when it happens to be a dotted quad.
@@ -699,19 +740,107 @@ void SeedNetplayAddress(std::string* text, std::array<int, 4>* addr)
       return;
     value = value.substr(first);
     *text = value;
-
-    std::array<int, 4> parsed{};
-    char trailing = 0;
-    // The %c catches "1.2.3.4.5" and "1.2.3.4x", which sscanf would otherwise
-    // accept by matching only the first four numbers.
-    if (std::sscanf(value.c_str(), "%d.%d.%d.%d%c", &parsed[0], &parsed[1],
-                    &parsed[2], &parsed[3], &trailing) == 4 &&
-        std::ranges::all_of(parsed, [](int v) { return v >= 0 && v <= 255; }))
-    {
-      *addr = parsed;
-    }
+    ParseAddress(value, addr);   // a hostname leaves the octets at their default
     return;
   }
+}
+
+// LAN discovery, joiner side. See the beacon in tools/netplay_session.cpp --
+// these three constants and the payload layout are duplicated there because
+// VideoCommon cannot include a header from tools/, so changing one without the
+// other silently stops hosts being found.
+constexpr enet_uint16 kDiscoveryPort = 2627;
+constexpr const char* kDiscoveryMagic = "RINGOUT1";
+constexpr int kDiscoveryListenMs = 2500;   // beacons are 1 s apart, so this
+                                           // catches two from every host
+
+// Blocking; runs on a worker. Returns what answered within the listen window,
+// one entry per address.
+std::vector<State::FoundHost> ScanForHosts()
+{
+  std::vector<State::FoundHost> found;
+
+  // enet_initialize is WSAStartup on Windows and a no-op elsewhere. Netplay is
+  // by definition not running when this is used -- the session has not been
+  // built yet -- so nothing else has done it. Never deinitialize: the pairing
+  // is refcounted by Winsock and tearing it down under a later session is worse
+  // than leaking one init for the life of the process.
+  static std::once_flag enet_once;
+  std::call_once(enet_once, [] { enet_initialize(); });
+
+  ENetSocket socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+  if (socket == ENET_SOCKET_NULL)
+    return found;
+  // REUSEADDR so a second copy on this machine can still scan while the first
+  // is bound -- two local instances is exactly how this gets tested.
+  enet_socket_set_option(socket, ENET_SOCKOPT_REUSEADDR, 1);
+
+  ENetAddress bind_address{};
+  bind_address.host = ENET_HOST_ANY;
+  bind_address.port = kDiscoveryPort;
+  if (enet_socket_bind(socket, &bind_address) != 0)
+  {
+    enet_socket_destroy(socket);
+    return found;
+  }
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(kDiscoveryListenMs);
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               deadline - std::chrono::steady_clock::now())
+                               .count();
+    if (remaining <= 0)
+      break;
+
+    enet_uint32 condition = ENET_SOCKET_WAIT_RECEIVE;
+    if (enet_socket_wait(socket, &condition, static_cast<enet_uint32>(remaining)) != 0)
+      break;
+    if ((condition & ENET_SOCKET_WAIT_RECEIVE) == 0)
+      continue;
+
+    char raw[256] = {};
+    ENetBuffer buffer{};
+    buffer.data = raw;
+    buffer.dataLength = sizeof(raw) - 1;
+    ENetAddress from{};
+    const int received = enet_socket_receive(socket, &from, &buffer, 1);
+    if (received <= 0)
+      continue;
+
+    // "RINGOUT1 <port> <nickname>". The magic is checked before anything is
+    // believed -- 2627 is an ordinary UDP port and anyone may send to it.
+    std::string payload(raw, static_cast<size_t>(received));
+    const std::string prefix = std::string(kDiscoveryMagic) + ' ';
+    if (payload.rfind(prefix, 0) != 0)
+      continue;
+    payload = payload.substr(prefix.size());
+    const auto space = payload.find(' ');
+    if (space == std::string::npos)
+      continue;
+
+    State::FoundHost host;
+    host.port = std::atoi(payload.substr(0, space).c_str());
+    if (host.port <= 0 || host.port > 65535)
+      continue;
+    host.nickname = payload.substr(space + 1);
+    // The sender's address comes from the socket, so a host never has to know
+    // (or lie about) which of its own interfaces the joiner can reach.
+    char ip[64] = {};
+    if (enet_address_get_host_ip(&from, ip, sizeof(ip)) != 0)
+      continue;
+    host.address = ip;
+
+    const bool already = std::ranges::any_of(found, [&](const State::FoundHost& h) {
+      return h.address == host.address;
+    });
+    if (!already)
+      found.push_back(std::move(host));
+  }
+
+  enet_socket_destroy(socket);
+  return found;
 }
 
 std::string PlainAddress(const std::array<int, 4>& addr)
@@ -742,7 +871,10 @@ std::string FormatAddress(const std::array<int, 4>& addr, int editing_octet)
 std::string ItemValue(Item item, int state_slot, int netplay_mode,
                       int netplay_port, const std::string& netplay_addr_text,
                       const std::array<int, 4>& netplay_addr,
-                      int netplay_addr_octet)
+                      int netplay_addr_octet,
+                      const std::vector<State::FoundHost>& netplay_hosts,
+                      int netplay_host_index, bool netplay_scanning,
+                      bool netplay_scanned)
 {
   switch (item)
   {
@@ -771,6 +903,18 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
         static_cast<int>(std::lround(Config::Get(Config::MAIN_OVERCLOCK) * 100.0f));
     return std::to_string(percent) + "%";
   }
+  case Item::NetplayScan:
+    if (netplay_mode != 2)
+      return "-";
+    if (netplay_scanning)
+      return "SCANNING...";
+    if (!netplay_scanned)
+      return "SPACE TO SCAN";
+    if (netplay_hosts.empty())
+      return "NONE FOUND";
+    return netplay_hosts[netplay_host_index].nickname + "  (" +
+           std::to_string(netplay_host_index + 1) + "/" +
+           std::to_string(netplay_hosts.size()) + ")";
   case Item::NetplayAddress:
     // Only a joiner dials anything; a host binds a port and waits. Showing an
     // address on the host row would suggest it decides who connects.
@@ -1109,6 +1253,21 @@ bool AdjustItem(Item item, int direction, State& state)
     Config::SetBase(Config::MAIN_OVERCLOCK, kFactors[index]);
     break;
   }
+  case Item::NetplayScan:
+  {
+    // Picking a host is the whole point of having scanned, so selecting one
+    // fills in the address and port rather than merely naming it.
+    if (state.netplay_mode != 2 || state.netplay_hosts.empty())
+      break;
+    const int count = static_cast<int>(state.netplay_hosts.size());
+    state.netplay_host_index =
+        (state.netplay_host_index + direction % count + count) % count;
+    const State::FoundHost& host = state.netplay_hosts[state.netplay_host_index];
+    state.netplay_addr_text = host.address;
+    state.netplay_port = host.port;
+    ParseAddress(host.address, &state.netplay_addr);
+    break;
+  }
   case Item::NetplayMode:
     state.netplay_mode = std::clamp(state.netplay_mode + direction, 0, 2);
     break;
@@ -1288,6 +1447,7 @@ enum class Action
   SaveState,
   LoadState,
   StartNetplay,
+  ScanHosts,
 };
 
 // Quit, but not before the core is actually running again.
@@ -1354,6 +1514,10 @@ Action DecideAction(Item item, State& state, bool* needs_config_save)
     return Action::Reset;
   case Item::Quit:
     return Action::Quit;
+  case Item::NetplayScan:
+    // Only a joiner looks for anyone, and the listen blocks for seconds -- so
+    // OnKey runs it on a worker after unlocking, like every other slow action.
+    return state.netplay_mode == 2 ? Action::ScanHosts : Action::None;
   case Item::NetplayAddress:
     // Space starts editing; the arrows then belong to the octets until Space
     // ends it. Inert unless joining, matching what the row displays -- only a
@@ -1777,6 +1941,40 @@ void OnKey(Key key)
     CloseAndResume();
     Core::System::GetInstance().GetProcessorInterface().ResetButton_Tap();
     break;
+  case Action::ScanHosts:
+  {
+    // Off-thread: the listen blocks for seconds and this is the host thread,
+    // which also has to keep drawing the menu (the core is paused, so Draw only
+    // happens via PumpFrame from here). Blocking would freeze the overlay and
+    // look exactly like the crash this menu has been mistaken for before.
+    {
+      std::lock_guard<std::mutex> guard(s_state.mutex);
+      if (s_state.netplay_scanning)
+        break;                       // already looking; ignore the repeat
+      s_state.netplay_scanning = true;
+    }
+    // Detached, and it always finishes on its own within the listen window --
+    // it never waits on a condition variable, which is what made the old
+    // CoreStateWorker wedge process exit.
+    std::thread([] {
+      std::vector<State::FoundHost> found = ScanForHosts();
+      std::lock_guard<std::mutex> guard(s_state.mutex);
+      s_state.netplay_hosts = std::move(found);
+      s_state.netplay_host_index = 0;
+      s_state.netplay_scanning = false;
+      s_state.netplay_scanned = true;
+      // Adopt the first host straight away; scanning and then having to press
+      // Right once to apply the only result would be a pointless extra step.
+      if (!s_state.netplay_hosts.empty())
+      {
+        const State::FoundHost& host = s_state.netplay_hosts.front();
+        s_state.netplay_addr_text = host.address;
+        s_state.netplay_port = host.port;
+        ParseAddress(host.address, &s_state.netplay_addr);
+      }
+    }).detach();
+    break;
+  }
   case Action::StartNetplay:
     // No auto-resume snapshot: a netplay session starts from boot on every
     // peer, so restoring this machine's save would desync it immediately.
@@ -2000,7 +2198,11 @@ void Draw()
                                     s_state.netplay_port,
                                     s_state.netplay_addr_text,
                                     s_state.netplay_addr,
-                                    s_state.netplay_addr_octet),
+                                    s_state.netplay_addr_octet,
+                                    s_state.netplay_hosts,
+                                    s_state.netplay_host_index,
+                                    s_state.netplay_scanning,
+                                    s_state.netplay_scanned),
                           false);
       break;
     }
