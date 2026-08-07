@@ -63,13 +63,23 @@ jobs:
 
       # The release bundle carries a whole toolchain, so it is assembled here
       # rather than on a developer machine: llvm-mingw alone unpacks to ~2 GB.
+      #
+      # Only on demand or for a tag. At ~294 MB it is 59% of this private repo's
+      # 500 MB artifact allowance ON ITS OWN, so uploading one per push cannot
+      # fit however short the retention -- two pushes refill the quota, and the
+      # upload that then fails is whichever workflow happens to finish next.
+      # That is how the Steam Deck build started failing for a Windows reason.
+      # The per-push value here is the binaries, which are 6 MB and still
+      # uploaded every time.
       - name: Package release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           .github/scripts/package-windows.ps1 `
             -BinDir staging -RepoRoot (Get-Location).Path -OutDir package
 
       - name: Upload release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: ringout-windows-release
