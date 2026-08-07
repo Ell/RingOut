@@ -58,6 +58,7 @@ jobs:
         with:
           name: ringout-windows-x64
           path: staging/
+          retention-days: 14
           if-no-files-found: error
 
       # The release bundle carries a whole toolchain, so it is assembled here
@@ -77,6 +78,10 @@ jobs:
             package/RingOut-1.0-windows-x64.zip
           if-no-files-found: error
           compression-level: 0   # both are already compressed
+          # ~294 MB per push, because the bundle carries a whole toolchain. At
+          # the 90-day default that is what exhausted the repo's artifact quota
+          # and started failing OTHER workflows' uploads. Keep two weeks' worth.
+          retention-days: 14
 
       # A failed configure/build leaves the useful detail in these logs rather
       # than in the step output.
@@ -85,6 +90,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: cmake-logs
+          retention-days: 7
           path: |
             build/CMakeFiles/CMakeConfigureLog.yaml
             build/CMakeCache.txt

@@ -81,6 +81,12 @@ jobs:
           path: dist/RingOut-1.0-steamdeck-x86_64.zip
           if-no-files-found: error
           compression-level: 0   # already compressed
+          # Artifact storage is a shared, quota'd pool across every workflow in
+          # the repo, and the default retention is 90 days. This package is only
+          # 22 MB, but it was the innocent party the day the quota filled: the
+          # Windows release is ~294 MB per push, and once the pool was full THIS
+          # upload is what failed. Everything here is now bounded.
+          retention-days: 30
 
       # A failed configure/build leaves the useful detail in these logs rather
       # than in the step output.
@@ -89,6 +95,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: deck-cmake-logs
+          retention-days: 7
           path: |
             build-deck/CMakeFiles/CMakeConfigureLog.yaml
             build-deck/CMakeCache.txt
