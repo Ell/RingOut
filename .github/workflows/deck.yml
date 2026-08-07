@@ -43,7 +43,7 @@ jobs:
           apt-get install -y --no-install-recommends git ca-certificates
 
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         # Read from the shared list so this cannot drift from the local podman
@@ -75,7 +75,7 @@ jobs:
         run: NATIVE=1 .github/scripts/package-deck.sh
 
       - name: Upload release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ringout-steamdeck-x86_64
           path: dist/RingOut-1.0-steamdeck-x86_64.zip
@@ -86,7 +86,7 @@ jobs:
       # than in the step output.
       - name: Upload CMake logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deck-cmake-logs
           path: |

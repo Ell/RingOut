@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure
         # Dolphin's own CMake drives the vendored tree. Qt and the tests are the
@@ -54,7 +54,7 @@ jobs:
           Get-ChildItem staging
 
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ringout-windows-x64
           path: staging/
@@ -69,7 +69,7 @@ jobs:
             -BinDir staging -RepoRoot (Get-Location).Path -OutDir package
 
       - name: Upload release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ringout-windows-release
           path: |
@@ -82,7 +82,7 @@ jobs:
       # than in the step output.
       - name: Upload CMake logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cmake-logs
           path: |
