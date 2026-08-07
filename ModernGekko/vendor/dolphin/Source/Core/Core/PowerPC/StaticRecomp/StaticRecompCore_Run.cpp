@@ -410,7 +410,16 @@ void StaticRecompCore::OnFmvStartAfs(u32 fno, u32 patid, u32 handle)
       std::fprintf(stderr, "[fmv-hle] takeover disabled: guest RAM must stay reproducible "
                            "(netplay or determinism run); the game decodes its own movies\n");
     }
-    return;   // never armed -> Active() stays false -> every hook below is inert
+    // Stop rather than merely return. "Never armed -> Active() stays false" only
+    // holds in a fresh process, and a netplay session started from the in-game
+    // menu is NOT one: the runner rebuilds the session in place, so s_fmv is a
+    // global carrying m_fno from whatever the player watched before joining.
+    // EnsureOpen only checks m_fno, so that stale value reopened the pipe and
+    // fed ffmpeg output back into guest RAM -- on whichever peer happened to
+    // have seen a movie first. Two peers, one injecting and one not, desynced
+    // at the frame the first conversion ran (frame 2220, reproducibly).
+    s_fmv.Stop();   // resets m_fno to -1, so Active() really is false
+    return;
   }
   std::fprintf(stderr, "[fmv-hle] mwPlyStartAfs: movie fno=%u patid=%u handle=0x%08X\n",
                fno, patid, handle);
@@ -465,6 +474,14 @@ void StaticRecompCore::GuestWrite32(u32 addr, u32 value)
 // YUV->ARGB conversion. dst is double-buffered; dims are 640x368 for movie0.
 void StaticRecompCore::OnFmvCnvFrm(u32 handle, u32 desc, u32 dst)
 {
+  // This hook WRITES GUEST RAM, so it answers to the takeover gate directly
+  // rather than trusting the player's armed state. Relying on m_fno alone is
+  // what let a value left over from a previous session in the same process
+  // reopen the pipe under netplay; the cost of getting that wrong is a desync,
+  // so it is checked here as well as where the takeover is refused.
+  if (!FmvTakeoverAllowed())
+    return;
+
   const u32 w = GuestRead32(desc + 8u);   // desc[2] = width
   const u32 h = GuestRead32(desc + 12u);  // desc[3] = height
   if (w == 0 || h == 0 || w > 1024 || h > 1024)
