@@ -24,6 +24,13 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr);
  * Back-edges to it are emitted as dispatcher returns so the host still sees it. */
 void emit_set_idle_pc(u32 pc);
 
+/* Guest PC that must always be reached through the dispatcher (a run-loop hook
+   target). Repeatable; see emitter.c. */
+void emit_add_dispatch_pc(u32 pc);
+
+/* Turn local `bl` into a native goto (--chain-calls). Unproven: see emitter.c. */
+void emit_set_chain_calls(bool enable);
+
 // emit a single instruction as C code
 void emit_instruction(FILE* out, const PPCInst* inst);
 

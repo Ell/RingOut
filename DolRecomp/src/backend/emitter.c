@@ -337,6 +337,40 @@ static void emit_branch_condition(FILE* out, u8 bo, u8 bi) {
  * back-edge target here. 0 = no idle PC, every back-edge stays native. */
 static u32 s_idle_pc = 0;
 
+/* Guest PCs that must always be reached through the chassis dispatcher.
+ *
+ * Call chaining (below) turns a local `bl` into a native goto, which is a win
+ * -- but the run loop recognises certain guest functions BY PC between
+ * dispatches (the FMV HLE entry points). A call that never returns to the
+ * dispatcher is a hook that never fires, so those targets are excluded by
+ * address rather than by hoping they are always reached indirectly. */
+/* Off by default: measured at 0.75% on the 600-frame harness -- inside the
+ * noise, where native loops showed a plain -11.5% on the same instrument. Only
+ * 8% of `bl` sites are local and chainable, and the matching `blr` is indirect
+ * and still dispatches, so this halves the dispatches for a minority of calls
+ * rather than removing a class of them. Kept because the measurement is cheap
+ * to repeat on a gameplay workload, which is the case it was never tested on. */
+static bool s_chain_calls = false;
+
+void emit_set_chain_calls(bool enable) {
+    s_chain_calls = enable;
+}
+
+static u32 s_dispatch_pcs[32];
+static u32 s_dispatch_pc_count = 0;
+
+void emit_add_dispatch_pc(u32 pc) {
+    if (pc != 0 && s_dispatch_pc_count < 32)
+        s_dispatch_pcs[s_dispatch_pc_count++] = pc;
+}
+
+static bool must_reach_dispatcher(u32 pc) {
+    for (u32 i = 0; i < s_dispatch_pc_count; ++i)
+        if (s_dispatch_pcs[i] == pc)
+            return true;
+    return false;
+}
+
 /* Cycles charged for the remainder of the current instruction's block: every
  * instruction after this one, up to the end of the block.
  *
@@ -364,6 +398,8 @@ static void emit_exc_check_return(FILE* out, const char* indent) {
 
 void emit_set_idle_pc(u32 pc) {
     s_idle_pc = pc;
+    /* The idle loop is just the first member of the must-dispatch set. */
+    emit_add_dispatch_pc(pc);
 }
 
 static bool branch_target_is_local(u32 func_start, u32 func_end, u32 target) {
@@ -375,12 +411,29 @@ static void emit_direct_branch(FILE* out, const PPCInst* inst, bool local_target
 
     if (inst->lk) {
         fprintf(out, "            ctx->lr = 0x%08Xu;\n", inst->address + 4);
+        /* Call chaining. A local `bl` used to cost a full dispatcher round trip
+         * on the way IN; the matching `blr` is indirect and still dispatches, so
+         * this halves the dispatches per local call rather than removing them.
+         * A backward local call is also a loop shape, so it takes the same cycle
+         * budget as a back-edge -- without one the module could spin arbitrarily
+         * long before CoreTiming regains control. */
+        if (s_chain_calls && local_target &&
+            !must_reach_dispatcher(inst->branch_target)) {
+            if (local_backward) {
+                fprintf(out, "            if (ctx->downcount <= -%d) {\n", DOLRECOMP_LOOP_BUDGET);
+                fprintf(out, "                ctx->pc = 0x%08Xu;\n", inst->branch_target);
+                fprintf(out, "                return;\n");
+                fprintf(out, "            }\n");
+            }
+            fprintf(out, "            goto label_%08X;\n", inst->branch_target);
+            return;
+        }
         fprintf(out, "            ctx->pc = 0x%08Xu;\n", inst->branch_target);
         fprintf(out, "            return;\n");
         return;
     }
     /* The idle loop must keep reaching the chassis, or idle-skip dies with it. */
-    if (local_backward && s_idle_pc != 0 && inst->branch_target == s_idle_pc) {
+    if (local_backward && must_reach_dispatcher(inst->branch_target)) {
         fprintf(out, "            ctx->pc = 0x%08Xu;\n", inst->branch_target);
         fprintf(out, "            return;\n");
         return;

@@ -17,6 +17,11 @@ typedef struct {
     /* Guest PC of the OS idle spin loop (--idle-pc), or 0. Back-edges to it stay
      * dispatcher returns so the host can still recognise and skip it. */
     u32 idle_pc;
+    /* Guest PCs the run loop hooks by address (--dispatch-pc). Calls to these
+       must not be chained into native gotos or the hook never fires. */
+    u32 dispatch_pcs[32];
+    u32 dispatch_pc_count;
+    int chain_calls;
     int cpu_explicit;
     int rel_base_set;
     int setup_mode;
