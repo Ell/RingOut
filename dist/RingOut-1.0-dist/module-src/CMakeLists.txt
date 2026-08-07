@@ -100,6 +100,21 @@ if(MODULE_DEBUG_LINES)
   target_link_options(${MODULE_NAME} PRIVATE -g1)
 endif()
 
+# -ffp-contract=off is NOT a tuning choice, it is what makes this module
+# reproducible across machines, and netplay depends on that.
+#
+# GCC defaults to -ffp-contract=fast, so it may fuse an incidental a*b+c in the
+# emitted C into an FMA -- and whether it does depends on -march. Measured: a
+# module built -march=x86-64-v3 and one built -march=znver2 diverge in guest RAM
+# at FRAME 176. setup.sh builds with -march=native, so two desktop players on
+# different CPUs get modules that cannot stay in sync, and a Deck cannot play a
+# PC. With this flag the same two builds are byte-identical over 600 frames.
+#
+# It costs nothing measurable (7.20s vs 7.33s on a 600-frame run, i.e. inside
+# the noise and if anything faster): the guest's own FMA instructions are
+# emitted as explicit ppc_fma() calls, so auto-contraction was only ever
+# catching incidental arithmetic.
 target_compile_options(${MODULE_NAME} PRIVATE
-  ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition)
+  ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition
+  -ffp-contract=off)
 target_link_options(${MODULE_NAME} PRIVATE ${MODULE_LTO_FLAG})
