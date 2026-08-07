@@ -236,6 +236,10 @@ struct State
     std::string nickname;
     int port = 2626;
   };
+  // -1 = nothing to write. Set when the resolution row changes, consumed by
+  // OnKey after the mutex is released (this file never does file I/O under it).
+  int pending_resolution_scale = -1;
+
   std::vector<FoundHost> netplay_hosts;
   int netplay_host_index = 0;
   bool netplay_scanning = false;
@@ -690,6 +694,48 @@ constexpr std::array<FilterEntry, 8> kFilters = {{
     {"Invert", "invert"},
 }};
 
+// Persists the internal resolution to the frontend's config.ini.
+//
+// Without this the row is a lie that lasts one session: moderngekko_run does
+// `config.graphics.internal_resolution_scale = frontend_config.dolphin_scale`
+// unconditionally at boot, so config.ini wins and a scale chosen here is
+// silently reverted on the next launch. That is how a Deck sat at 3x -- a
+// 1920x1584 target on a 1280x800 panel -- with the row right there offering 2x.
+//
+// Written as a raw EFB multiple (640N x 528N), which LoadConfig accepts for any
+// N in 1..12; the labelled list only covers 1,2,3,4,6,8,12, so the odd scales
+// have no display name to use. Rewrites just the one key, leaving the rest of
+// the file (nickname, netplay address, controllers) untouched.
+void WriteFrontendResolution(int scale)
+{
+  const std::string path = File::GetUserPath(D_USER_IDX) + "config.ini";
+  std::ifstream in(path);
+  if (!in)
+    return;
+  std::vector<std::string> lines;
+  std::string line;
+  bool replaced = false;
+  while (std::getline(in, line))
+  {
+    if (line.rfind("resolution=", 0) == 0)
+    {
+      line = "resolution=" + std::to_string(640 * scale) + "x" +
+             std::to_string(528 * scale);
+      replaced = true;
+    }
+    lines.push_back(line);
+  }
+  in.close();
+  if (!replaced)
+    return;   // no key to update: leave the file alone rather than guess a layout
+
+  std::ofstream out(path, std::ios::trunc);
+  if (!out)
+    return;
+  for (const std::string& l : lines)
+    out << l << '\n';
+}
+
 // Seeds the join address from the frontend's config.ini, which is where the
 // runner persists it after a session. Read here rather than plumbed in from the
 // frontend because the platform layer that owns this menu has no view of that
@@ -933,7 +979,15 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
   case Item::Widescreen:
     return Config::Get(Config::GFX_WIDESCREEN_HACK) ? "ON" : "OFF";
   case Item::InternalRes:
-    return std::to_string(Config::Get(Config::GFX_EFB_SCALE)) + "x";
+  {
+    // A bare "3x" says nothing about what it costs. The EFB is 640x528, so
+    // showing the render target makes the choice comparable against the panel
+    // the player is actually looking at -- 3x is 1920x1584 on a 1280x800 Deck,
+    // three times the pixels it can display, which is not obvious from "3x".
+    const int scale = Config::Get(Config::GFX_EFB_SCALE);
+    return std::to_string(scale) + "x  " + std::to_string(640 * scale) + "x" +
+           std::to_string(528 * scale);
+  }
   case Item::AspectRatio:
     switch (Config::Get(Config::GFX_ASPECT_RATIO))
     {
@@ -1285,6 +1339,9 @@ bool AdjustItem(Item item, int direction, State& state)
   {
     const int scale = std::clamp(Config::Get(Config::GFX_EFB_SCALE) + direction, 1, 8);
     Config::SetBase(Config::GFX_EFB_SCALE, scale);
+    // Mirrored into config.ini once the mutex is released, or the frontend
+    // overrides it at the next boot -- see WriteFrontendResolution.
+    state.pending_resolution_scale = scale;
     break;
   }
   case Item::AspectRatio:
@@ -1630,6 +1687,7 @@ void OnKey(Key key)
   int netplay_mode_snapshot = 0;
   int netplay_port_snapshot = 2626;
   std::string netplay_addr_snapshot = "127.0.0.1";
+  int resolution_to_persist = -1;
 
   // Deferred work. NOTHING below may call into Config/Core/InputConfig while
   // the menu mutex is held: those can block on the CPU thread while the video
@@ -1852,7 +1910,12 @@ void OnKey(Key key)
     netplay_mode_snapshot = s_state.netplay_mode;
     netplay_port_snapshot = s_state.netplay_port;
     netplay_addr_snapshot = s_state.netplay_addr_text;
+    resolution_to_persist = s_state.pending_resolution_scale;
+    s_state.pending_resolution_scale = -1;
   }
+
+  if (resolution_to_persist > 0)
+    WriteFrontendResolution(resolution_to_persist);
 
   // Everything below runs with the mutex released, so these engine calls can
   // safely block without wedging the video thread inside Draw().
