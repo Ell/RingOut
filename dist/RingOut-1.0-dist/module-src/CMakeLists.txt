@@ -74,7 +74,14 @@ target_link_libraries(${MODULE_NAME} PRIVATE m)
 # Version-guarded rather than assumed, for exactly the reason the paragraph
 # above records: `auto` only exists from GCC 10 (2020), and setup.sh takes
 # whatever compiler it finds.
-if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+# -DMODULE_LTO=OFF drops LTO entirely. Needed for PGO instrumentation: the
+# instrumented objects are LTO IR, and mixing them with a non-LTO link silently
+# produces a 21 KB stub that loads and does nothing. Not for shipping -- LTO is
+# worth 5-6 minutes of link time here and was measured, not assumed.
+option(MODULE_LTO "Link the module with LTO" ON)
+if(NOT MODULE_LTO)
+  set(MODULE_LTO_FLAG -fno-lto)
+elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(MODULE_LTO_FLAG -flto=thin)
 elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 10)
   set(MODULE_LTO_FLAG -flto=auto)
