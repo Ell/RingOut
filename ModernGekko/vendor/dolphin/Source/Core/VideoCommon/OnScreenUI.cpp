@@ -3,6 +3,11 @@
 
 #include "VideoCommon/OnScreenUI.h"
 
+#include <chrono>
+#include <ctime>
+#include <filesystem>
+#include <string>
+
 #include "Common/CommonPaths.h"
 #include "Common/EnumMap.h"
 #include "Common/FileUtil.h"
@@ -414,6 +419,60 @@ void OnScreenUI::DrawChallengesAndLeaderboards()
 #endif  // USE_RETRO_ACHIEVEMENTS
 }
 
+
+// Build stamp, bottom-left, always on.
+//
+// Taken from the files' own mtimes rather than __DATE__: __DATE__ records when
+// one translation unit was compiled, so an incremental build happily reports a
+// date older than the binary -- the exact failure this exists to catch.
+//
+// It earns its place. A stale install cost most of a debugging session: a Deck
+// was launching an August 4 build out of a second copy of the package while a
+// current one sat in another directory, and the symptom was "joining netplay
+// does nothing" -- that build predated the Join Address row, so it dialled
+// 127.0.0.1. Runtime and module are shown separately because they are deployed
+// separately and have already drifted apart in practice; peers must match on
+// BOTH, and a mismatched module desyncs rather than failing outright.
+static std::string BuildStamp()
+{
+  static const std::string stamp = [] {
+    const auto when = [](const std::filesystem::path& path) -> std::string {
+      std::error_code ec;
+      const auto ftime = std::filesystem::last_write_time(path, ec);
+      if (ec)
+        return "?";
+      // file_clock -> system_clock without clock_cast, which is not available
+      // on every toolchain this builds with.
+      const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+          ftime - std::filesystem::file_time_type::clock::now() +
+          std::chrono::system_clock::now());
+      // localtime + strftime, as Common/Timer.cpp does: fmt::localtime would
+      // need <fmt/chrono.h>, which nothing else here pulls in.
+      const std::time_t tt = std::chrono::system_clock::to_time_t(sys);
+      char buf[32] = {};
+      if (const std::tm* lt = std::localtime(&tt))
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", lt);
+      return buf[0] != '\0' ? std::string(buf) : std::string("?");
+    };
+
+    std::string out = fmt::format("runtime {}", when(File::GetExePath()));
+
+    std::error_code ec;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(File::GetExeDirectory(), ec))
+    {
+      const std::string name = entry.path().filename().string();
+      if (name.ends_with("_recomp.so") || name.ends_with("_recomp.dll"))
+      {
+        out += fmt::format("   module {}", when(entry.path()));
+        break;
+      }
+    }
+    return out;
+  }();
+  return stamp;
+}
+
 void OnScreenUI::Finalize()
 {
   auto lock = GetImGuiLock();
@@ -424,6 +483,27 @@ void OnScreenUI::Finalize()
   OSD::DrawMessages();
   DrawChallengesAndLeaderboards();
   RecompMenu::Draw();
+
+  // Bottom-left: the performance stats own the top-right, and the pause menu is
+  // centred, so this corner is free and never overlaps either.
+  {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 6.0f * m_backbuffer_scale,
+                                   viewport->WorkPos.y + viewport->WorkSize.y -
+                                       6.0f * m_backbuffer_scale),
+                            ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.35f);
+    if (ImGui::Begin("BuildStamp", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                         ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+                         ImGuiWindowFlags_NoSavedSettings))
+    {
+      ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.75f, 1.0f), "%s", BuildStamp().c_str());
+    }
+    ImGui::End();
+  }
+
   ImGui::Render();
 
   // Check for font changes
