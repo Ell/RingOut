@@ -9,6 +9,11 @@
 #include "Core/Boot/Boot.h"
 #include "Core/Boot/BootManager.h"
 #include "Core/Config/GraphicsSettings.h"
+#include <ranges>
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/InputConfig.h"
+#include "Core/HW/GCPad.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/StaticRecompSettings.h"
 #include "Core/Core.h"
@@ -166,6 +171,54 @@ ModuleSource::AttachedDescriptor(const ModernGekkoModuleDesc *descriptor) {
 
 Runtime::Runtime(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
 
+
+// A pad profile names its device as a string ("SDL/0/Steam Deck Controller").
+// That string is not stable: on a Steam Deck the same physical pad enumerates as
+// "SDL/0/Steam Deck Controller" or "SDL/0/Steam Virtual Gamepad" depending on
+// whether Steam Input is in play, and Dolphin resolves a profile naming an
+// absent device to nothing at all -- every binding evaluates empty, so the game
+// sees a centred, unpressed controller and NOTHING reports an error. That is
+// what made a Deck's controller work in single player and do nothing in netplay.
+//
+// So: if the configured device is gone but a real gamepad is present, move the
+// profile onto it. Only when the configured one is genuinely absent, so an
+// explicit choice is never overridden while it still exists.
+void RebindPadsToPresentDevices() {
+  InputConfig *const config = Pad::GetConfig();
+  if (config == nullptr)
+    return;
+
+  const std::vector<std::string> available =
+      g_controller_interface.GetAllDeviceStrings();
+  // Prefer a real gamepad over the keyboard/pointer pair, which is always
+  // present and would otherwise look like a valid answer.
+  const auto gamepad = std::ranges::find_if(available, [](const std::string &d) {
+    return d.starts_with("SDL/");
+  });
+
+  for (int i = 0; i < config->GetControllerCount(); ++i) {
+    auto *const pad = config->GetController(i);
+    if (pad == nullptr)
+      continue;
+    const ciface::Core::DeviceQualifier &current = pad->GetDefaultDevice();
+    if (current.ToString().empty())
+      continue;  // port was never configured; nothing to repair
+    if (g_controller_interface.FindDevice(current) != nullptr)
+      continue;  // still there; leave it alone
+    if (gamepad == available.end()) {
+      std::fprintf(stderr,
+                   "[input] pad %d is bound to '%s', which is not connected, and no "
+                   "gamepad is available to move it to\n",
+                   i + 1, current.ToString().c_str());
+      continue;
+    }
+    std::fprintf(stderr, "[input] pad %d: '%s' is not connected; rebinding to '%s'\n",
+                 i + 1, current.ToString().c_str(), gamepad->c_str());
+    pad->SetDefaultDevice(*gamepad);
+    pad->UpdateReferences(g_controller_interface);
+  }
+}
+
 RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   std::lock_guard lock(s_runtime_mutex);
   if (s_runtime_active)
@@ -266,6 +319,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   const WindowSystemInfo wsi = impl->platform->GetWindowSystemInfo();
   UICommon::InitControllers(wsi);
   impl->controllers_initialized = true;
+  RebindPadsToPresentDevices();
   impl->platform->SetTitle(impl->title);
 
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
