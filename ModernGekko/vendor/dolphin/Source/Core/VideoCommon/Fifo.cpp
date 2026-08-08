@@ -426,8 +426,19 @@ void FifoManager::RunGpu()
     if (m_syncing_suspended)
     {
       m_syncing_suspended = false;
+      // FromThread::ANY, because RunGpu() genuinely is called from both sides:
+      // the CPU thread via CommandProcessor, and any other thread via
+      // AsyncRequests::QueueEvent. The default (FromThread::CPU) asserts when the
+      // caller is not the CPU thread --
+      //
+      //   A "SyncGPUCallback" event was scheduled from the wrong thread (CPU)
+      //
+      // which is reachable only once this branch is live, i.e. with dual-core AND
+      // a deterministic GPU thread: the netplay configuration. Single-core takes
+      // the first arm of the condition from the CPU thread and never trips it.
       m_system.GetCoreTiming().ScheduleEvent(GPU_TIME_SLOT_SIZE, m_event_sync_gpu,
-                                             GPU_TIME_SLOT_SIZE);
+                                             GPU_TIME_SLOT_SIZE,
+                                             CoreTiming::FromThread::ANY);
     }
   }
 }
