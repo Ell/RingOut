@@ -41,6 +41,19 @@ endif()
 
 set(DOLRECOMP_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+option(DOLRECOMP_ENABLE_LLVM "Build the x86-64 LLVM object backend" OFF)
+
+# Discover LLVM before creating targets so its MSVC runtime choice is uniform.
+if(DOLRECOMP_ENABLE_LLVM)
+    enable_language(CXX)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    find_package(LLVM CONFIG REQUIRED)
+    if(LLVM_PACKAGE_VERSION VERSION_LESS 19 OR LLVM_PACKAGE_VERSION VERSION_GREATER_EQUAL 21)
+        message(FATAL_ERROR "DolRecomp LLVM backend requires LLVM 19 or 20 (found ${LLVM_PACKAGE_VERSION})")
+    endif()
+endif()
+
 add_library(dr_cpu STATIC src/cpu/cpu.c)
 target_include_directories(dr_cpu PUBLIC ${DOLRECOMP_SRC})
 if(NOT WIN32)
@@ -88,6 +101,48 @@ if(NOT WIN32)
     target_link_libraries(dr_backend PUBLIC Threads::Threads)
 endif()
 
+add_library(dr_ir STATIC
+    src/ir/dolir.c
+    src/ir/dolir_builder.c
+)
+target_include_directories(dr_ir PUBLIC ${DOLRECOMP_SRC})
+target_link_libraries(dr_ir PUBLIC dr_frontend)
+
+if(DOLRECOMP_ENABLE_LLVM)
+    add_library(dr_llvm STATIC
+        src/backend/llvm/llvm_backend.cpp
+        src/backend/llvm/llvm_control_flow.cpp
+        src/backend/llvm/llvm_function_emitter.cpp
+        src/backend/llvm/llvm_memory_lowering.cpp
+        src/backend/llvm/llvm_runtime_lowering.cpp
+    )
+    target_include_directories(dr_llvm PUBLIC ${DOLRECOMP_SRC})
+    target_include_directories(dr_llvm SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(dr_llvm PUBLIC DOLRECOMP_ENABLE_LLVM=1)
+    target_compile_definitions(dr_llvm PRIVATE ${LLVM_DEFINITIONS})
+    target_link_libraries(dr_llvm PUBLIC dr_ir)
+    if(MINGW)
+        find_library(DOLRECOMP_LLVM_SHARED_IMPORT
+            NAMES LLVM-${LLVM_VERSION_MAJOR} LLVM
+            HINTS ${LLVM_LIBRARY_DIRS}
+            NO_DEFAULT_PATH)
+        if(DOLRECOMP_LLVM_SHARED_IMPORT MATCHES "[.]dll[.]a$")
+            target_link_libraries(dr_llvm PRIVATE
+                "${DOLRECOMP_LLVM_SHARED_IMPORT}")
+        else()
+            llvm_map_components_to_libnames(DOLRECOMP_LLVM_LIBS
+                Core Support Analysis Passes Target MC native nativecodegen)
+            target_link_libraries(dr_llvm PRIVATE ${DOLRECOMP_LLVM_LIBS})
+        endif()
+    elseif(TARGET LLVM)
+        target_link_libraries(dr_llvm PRIVATE LLVM)
+    else()
+        llvm_map_components_to_libnames(DOLRECOMP_LLVM_LIBS
+            Core Support Analysis Passes Target MC native nativecodegen)
+        target_link_libraries(dr_llvm PRIVATE ${DOLRECOMP_LLVM_LIBS})
+    endif()
+endif()
+
 add_library(dr_app STATIC
     src/app/cli.c
     src/app/database.c
@@ -96,7 +151,13 @@ add_library(dr_app STATIC
     src/app/pipeline.c
 )
 target_include_directories(dr_app PUBLIC ${DOLRECOMP_SRC})
-target_link_libraries(dr_app PUBLIC dr_backend dr_analysis dr_frontend dr_platform)
+target_link_libraries(dr_app PUBLIC dr_backend dr_analysis dr_frontend dr_platform dr_ir)
+if(DOLRECOMP_ENABLE_LLVM)
+    # PUBLIC so DOLRECOMP_ENABLE_LLVM reaches cli.c and pipeline.c; without it the
+    # flag parses and then reports the backend as unbuilt, because the #ifdef that
+    # gates it never sees the define.
+    target_link_libraries(dr_app PUBLIC dr_llvm)
+endif()
 
 add_executable(dolrecomp src/app/main.c)
 target_link_libraries(dolrecomp PRIVATE dr_app)

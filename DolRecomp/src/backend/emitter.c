@@ -468,6 +468,10 @@ static void emit_exc_check_return(FILE* out, const char* indent) {
         fprintf(out, "%sif (ctx->exception) return;\n", indent);
 }
 
+static int s_llvm_backend = 0;
+void emit_set_llvm_backend(int enabled) { s_llvm_backend = enabled ? 1 : 0; }
+int emit_llvm_backend_enabled(void) { return s_llvm_backend; }
+
 void emit_set_idle_pc(u32 pc) {
     s_idle_pc = pc;
     /* The idle loop is just the first member of the must-dispatch set. */

@@ -18,7 +18,8 @@ void print_usage(const char* argv0) {
     fprintf(stderr, "  --gamecube                     GameCube mode (no title ID required)\n");
     fprintf(stderr, "  --rel-base <addr>              Override first virtual load address for REL codegen\n");
     fprintf(stderr, "  --leader-cases                 Entry switch at block leaders only (EXPERIMENT)\n");
-    fprintf(stderr, "  --chain-calls                  Emit local bl as a native goto (measured no win; off)\n");
+    fprintf(stderr, "  --backend <c|llvm>            Code generator; c (default) or the LLVM object backend\n"
+        "  --chain-calls                  Emit local bl as a native goto (measured no win; off)\n");
     fprintf(stderr, "  --dispatch-pc <addr>           Guest PC the host hooks by address; calls to it stay\n");
     fprintf(stderr, "                                 dispatcher returns. Repeatable.\n");
     fprintf(stderr, "  --idle-pc <addr>               Guest PC of the OS idle spin loop; its back-edge stays\n");
@@ -178,6 +179,37 @@ int parse_cli(int argc, char** argv, CliOptions* opts) {
             }
             opts->dispatch_pcs[opts->dispatch_pc_count++] =
                 (u32)strtoul(argv[++i], NULL, 0);
+            continue;
+        }
+
+        // --backend c|llvm. The C backend is the default and carries this
+        // fork's work; llvm is the upstream object backend, available only when
+        // configured with -DDOLRECOMP_ENABLE_LLVM=ON.
+        if (strcmp(arg, "--backend") == 0 || strncmp(arg, "--backend=", 10) == 0) {
+            const char* name;
+            if (arg[9] == '=') {
+                name = arg + 10;
+            } else {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "error: --backend needs c or llvm\n");
+                    return 0;
+                }
+                name = argv[++i];
+            }
+            if (strcmp(name, "c") == 0) {
+                opts->llvm_backend = 0;
+            } else if (strcmp(name, "llvm") == 0) {
+#ifndef DOLRECOMP_ENABLE_LLVM
+                fprintf(stderr, "error: LLVM backend is not built; configure with "
+                                "-DDOLRECOMP_ENABLE_LLVM=ON\n");
+                return 0;
+#else
+                opts->llvm_backend = 1;
+#endif
+            } else {
+                fprintf(stderr, "error: unknown backend '%s'\n", name);
+                return 0;
+            }
             continue;
         }
 

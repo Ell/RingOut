@@ -23,6 +23,12 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr);
 /* Guest PC of an OS idle spin loop, if the host skips it (see --idle-pc).
  * Back-edges to it are emitted as dispatcher returns so the host still sees it. */
 void emit_set_idle_pc(u32 pc);
+// Select the LLVM object backend instead of emitting C. A setter rather than a
+// parameter because that is how this fork already threads options to the
+// emitter, and threading a new argument through emit_dol/rpx/rel_split and
+// every caller would touch far more than the feature needs.
+void emit_set_llvm_backend(int enabled);
+int emit_llvm_backend_enabled(void);
 
 /* Guest PC that must always be reached through the dispatcher (a run-loop hook
    target). Repeatable; see emitter.c. */
