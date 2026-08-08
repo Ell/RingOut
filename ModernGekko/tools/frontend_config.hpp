@@ -51,6 +51,16 @@ bool GCPadConfigExists(const std::filesystem::path &user_directory);
 enum class KeyboardLayout { Player1, Player2 };
 bool WriteKeyboardGCPadConfig(const std::filesystem::path &user_directory,
                               KeyboardLayout layout, std::string *message);
+// Write a GCPadNew.ini bound to an SDL gamepad. `device` is a fully qualified
+// Dolphin device name ("SDL/0/<pad name>"); DetectSdlGamepads produces them.
+bool WriteGamepadGCPadConfig(const std::filesystem::path &user_directory,
+                             std::string_view device, std::string *message);
+// Connected SDL gamepads, as Dolphin device names, in Dolphin's own order.
+// Empty when there is no pad -- which is the signal to fall back to a keyboard
+// profile. Enumerated rather than hardcoded: the Steam Deck's pad reaches us
+// through Steam Input as a virtual X-Box 360 controller whose SDL name is NOT
+// its evdev name, so any string written from memory is a guess.
+std::vector<std::string> DetectSdlGamepads();
 bool GenerateControllerConfig(const std::filesystem::path &user_directory,
                               std::span<const std::string> controllers,
                               std::string *message);

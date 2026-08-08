@@ -507,6 +507,16 @@ if(BUILD_TESTING)
     target_include_directories(moderngekko_frontend_config_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/tools")
     target_compile_features(moderngekko_frontend_config_test PRIVATE cxx_std_23)
+    # frontend_config.cpp enumerates gamepads through SDL. The SDL target only
+    # exists with the Dolphin runtime enabled; without it the pad detection
+    # compiles out and every caller falls back to a keyboard profile.
+    if(DEFINED _moderngekko_sdl_target)
+        target_link_libraries(moderngekko_frontend_config_test
+            PRIVATE ${_moderngekko_sdl_target})
+    else()
+        target_compile_definitions(moderngekko_frontend_config_test
+            PRIVATE MODERNGEKKO_NO_SDL_GAMEPADS)
+    endif()
     add_test(NAME moderngekko.frontend_config COMMAND moderngekko_frontend_config_test)
 
     if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)

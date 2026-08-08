@@ -6,6 +6,10 @@
 #include <fstream>
 #include <string_view>
 
+#ifndef MODERNGEKKO_NO_SDL_GAMEPADS
+#include <SDL3/SDL.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace moderngekko::frontend {
@@ -357,6 +361,115 @@ bool WriteKeyboardGCPadConfig(const fs::path &user_directory,
   return true;
 }
 
+std::vector<std::string> DetectSdlGamepads() {
+  std::vector<std::string> devices;
+#ifndef MODERNGEKKO_NO_SDL_GAMEPADS
+
+  // Refcounted, and this runs before the emulator brings up its own input, so
+  // initialising here does not disturb Dolphin's later SDL use. Quit only what
+  // we started. No video subsystem: gamepads enumerate headless, which is what
+  // Game Mode and CI both need.
+  const bool started = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+  if (!started)
+    return devices;
+
+  int count = 0;
+  SDL_JoystickID *const ids = SDL_GetGamepads(&count);
+  if (ids != nullptr) {
+    for (int i = 0; i < count; ++i) {
+      // Dolphin names a device "<source>/<id>/<name>", numbering ids per source
+      // in the order it adds them, and its SDL backend takes the name from
+      // SDL_GetGamepadName -- so enumerating in SDL's order reproduces it.
+      SDL_Gamepad *const pad = SDL_OpenGamepad(ids[i]);
+      if (pad == nullptr)
+        continue;
+      const char *const name = SDL_GetGamepadName(pad);
+      if (name != nullptr && *name != '\0')
+        devices.push_back("SDL/" + std::to_string(devices.size()) + "/" + name);
+      SDL_CloseGamepad(pad);
+    }
+    SDL_free(ids);
+  }
+
+  SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+#endif
+  return devices;
+}
+
+bool WriteGamepadGCPadConfig(const fs::path &user_directory,
+                             std::string_view device, std::string *message) {
+  if (device.empty() ||
+      device.find_first_of("\r\n") != std::string_view::npos) {
+    if (message)
+      *message = "invalid gamepad device name";
+    return false;
+  }
+
+  const fs::path destination = user_directory / "Config" / "GCPadNew.ini";
+  std::error_code ec;
+  fs::create_directories(destination.parent_path(), ec);
+  if (ec) {
+    if (message)
+      *message = "can't create controller config directory: " + ec.message();
+    return false;
+  }
+  std::ofstream output(destination, std::ios::trunc);
+  if (!output) {
+    if (message)
+      *message = "can't write " + destination.string();
+    return false;
+  }
+
+  // Input names are Dolphin's SDL gamepad names (s_sdl_button_names /
+  // s_sdl_axis_names in SDLGamepad.h), not SDL's own constants. The vertical
+  // axes read `Left Y+` for up because that backend already inverts them to
+  // match XInput -- do not "fix" the sign here.
+  //
+  // Face buttons follow the GameCube's physical layout rather than the labels:
+  // A is the big south button, B east. Z sits on the right shoulder because the
+  // GameCube has one Z; L/R are the analog triggers, and are mapped as both
+  // digital and analog so a full press registers as a click.
+  output << "[GCPad1]\n"
+         << "Device = " << device << '\n'
+         << "Buttons/A = `Button S`\n"
+            "Buttons/B = `Button E`\n"
+            "Buttons/X = `Button W`\n"
+            "Buttons/Y = `Button N`\n"
+            "Buttons/Z = `Shoulder R`\n"
+            "Buttons/Start = `Start`\n"
+            "Triggers/L = `Trigger L`\n"
+            "Triggers/R = `Trigger R`\n"
+            "Triggers/L-Analog = `Trigger L`\n"
+            "Triggers/R-Analog = `Trigger R`\n"
+            "D-Pad/Up = `Pad N`\n"
+            "D-Pad/Down = `Pad S`\n"
+            "D-Pad/Left = `Pad W`\n"
+            "D-Pad/Right = `Pad E`\n"
+            "Main Stick/Up = `Left Y+`\n"
+            "Main Stick/Down = `Left Y-`\n"
+            "Main Stick/Left = `Left X-`\n"
+            "Main Stick/Right = `Left X+`\n"
+            // Without a calibration line Dolphin assumes a square gate and the
+            // diagonals never reach full deflection.
+            "Main Stick/Calibration = 100.00 141.42 100.00 141.42 100.00 "
+            "141.42 100.00 141.42\n"
+            "C-Stick/Up = `Right Y+`\n"
+            "C-Stick/Down = `Right Y-`\n"
+            "C-Stick/Left = `Right X-`\n"
+            "C-Stick/Right = `Right X+`\n"
+            "C-Stick/Calibration = 100.00 141.42 100.00 141.42 100.00 141.42 "
+            "100.00 141.42\n";
+  output.close();
+  if (!output) {
+    if (message)
+      *message = "can't write " + destination.string();
+    return false;
+  }
+  if (message)
+    *message = "gamepad mapped (" + std::string(device) + ")";
+  return true;
+}
+
 bool GenerateControllerConfig(const fs::path &user_directory,
                               std::span<const std::string> controllers,
                               std::string *message) {
@@ -462,15 +575,32 @@ bool GenerateControllerConfig(const fs::path &user_directory,
 bool EnsureControllerConfig(const fs::path &user_directory,
                             std::span<const std::string> controllers,
                             std::string *message) {
-  // A GameCube title needs GCPadNew.ini, and nothing here ever wrote one. Give
-  // a fresh user directory a keyboard pad so the game is playable with no
-  // hardware at all; an existing profile is never touched.
+  // A GameCube title needs GCPadNew.ini, and nothing here ever wrote one. A
+  // fresh user directory gets a pad if one is connected and a keyboard
+  // otherwise; an existing profile is never touched.
+  //
+  // The keyboard used to be unconditional, which is why the Steam Deck detected
+  // no input at all in Game Mode: it has a built-in controller and no keyboard,
+  // and the CONTROLS tab that could have fixed it is behind a menu you need
+  // working input to reach.
   if (!GCPadConfigExists(user_directory)) {
-    std::string keyboard_message;
-    if (WriteKeyboardGCPadConfig(user_directory, KeyboardLayout::Player1,
-                                 &keyboard_message) &&
-        message)
-      *message = keyboard_message;
+    // An explicitly selected pad wins; otherwise ask the hardware.
+    std::vector<std::string> detected;
+    if (controllers.empty()) {
+      detected = DetectSdlGamepads();
+      controllers = detected;
+    }
+
+    std::string pad_message;
+    const bool wrote_pad =
+        !controllers.empty() &&
+        WriteGamepadGCPadConfig(user_directory, controllers.front(),
+                                &pad_message);
+    if (!wrote_pad)
+      WriteKeyboardGCPadConfig(user_directory, KeyboardLayout::Player1,
+                               &pad_message);
+    if (message)
+      *message = pad_message;
   }
   if (ControllerConfigExists(user_directory)) {
     if (message && message->empty())

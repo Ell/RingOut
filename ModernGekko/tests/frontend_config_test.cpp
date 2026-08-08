@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <span>
 #include <string>
 
 int main() {
@@ -93,6 +94,43 @@ int main() {
   if (preserved != custom || moderngekko::frontend::ReadConfiguredController(
                                  directory) != "SDL/9/Custom Controller")
     return 12;
+
+  // A named pad drives the GC pad profile, not just the Wiimote one. This is
+  // the Steam Deck case: before it, EnsureControllerConfig wrote a keyboard
+  // profile unconditionally, so a machine with a pad and no keyboard had no
+  // usable input at all.
+  const fs::path pad_directory = directory / "pad";
+  const std::string pad = "SDL/0/Test Gamepad";
+  if (!moderngekko::frontend::EnsureControllerConfig(pad_directory, pad,
+                                                     &error))
+    return 13;
+  std::ifstream pad_input(pad_directory / "Config" / "GCPadNew.ini");
+  const std::string pad_config{std::istreambuf_iterator<char>(pad_input),
+                               std::istreambuf_iterator<char>()};
+  if (!pad_config.contains("Device = SDL/0/Test Gamepad\n") ||
+      !pad_config.contains("Buttons/A = `Button S`\n") ||
+      !pad_config.contains("Main Stick/Up = `Left Y+`\n") ||
+      !pad_config.contains("C-Stick/Calibration = ") ||
+      pad_config.contains("XInput2")) {
+    return 14;
+  }
+
+  // No pad named and (in CI) none attached: the keyboard profile is still the
+  // fallback, so a desktop with no hardware keeps booting into a playable game.
+  if (moderngekko::frontend::DetectSdlGamepads().empty()) {
+    const fs::path keyboard_directory = directory / "keyboard";
+    if (!moderngekko::frontend::EnsureControllerConfig(
+            keyboard_directory, std::span<const std::string>{}, &error))
+      return 15;
+    std::ifstream keyboard_input(keyboard_directory / "Config" /
+                                 "GCPadNew.ini");
+    const std::string keyboard_config{
+        std::istreambuf_iterator<char>(keyboard_input),
+        std::istreambuf_iterator<char>()};
+    if (!keyboard_config.contains("XInput2") ||
+        keyboard_config.contains("SDL/"))
+      return 16;
+  }
 
   fs::remove_all(directory);
   return 0;

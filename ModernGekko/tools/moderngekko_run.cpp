@@ -238,10 +238,17 @@ int RunMain(int argc, char **argv) {
     std::cout << "controller: " << keyboard_message << '\n';
   }
 
-  if (!netplay_role && !frontend_config.controller.empty()) {
+  // Not gated on a controller already being configured. It used to be, so a
+  // fresh user directory with no controller= line got no GCPadNew.ini at all
+  // and the game read no input -- invisible on a desktop, where you would set a
+  // controller or pass --keyboard, and fatal on a Steam Deck in Game Mode,
+  // which has a pad, no keyboard, and no way to reach the CONTROLS tab without
+  // input already working. With an empty list EnsureControllerConfig asks the
+  // hardware and falls back to a keyboard profile.
+  if (!netplay_role) {
     std::string controller_message;
     if (!moderngekko::frontend::EnsureControllerConfig(
-            config.user_directory, frontend_config.controller,
+            config.user_directory, frontend_config.controllers,
             &controller_message)) {
       std::cerr << "controller configuration: " << controller_message << '\n';
       return 2;
