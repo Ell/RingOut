@@ -754,14 +754,30 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   // is what made this look already-handled: that runs against a live
   // SerialInterface, while SI is initialised at boot from these Config values.
   // The config is what the game sees when it probes.
+  // SetCurrent, not SetBase. The base layer is what a config load writes, and the
+  // in-game-menu route restarts into this lobby -- so a base-layer value set here
+  // was silently replaced by the one from Dolphin.ini (which has no SIDevice
+  // entries at all, hence the defaults and an empty port 2). The current layer
+  // outranks base and survives that. The launch-flag route did not show this,
+  // which is why the first fix looked verified.
   const unsigned si_ports = std::clamp<unsigned>(options.players, 1u, 4u);
   for (unsigned i = 0; i < 4u; ++i)
   {
-    Config::SetBase(Config::GetInfoForSIDevice(static_cast<int>(i)),
-                    i < si_ports ? SerialInterface::SIDEVICE_GC_CONTROLLER
-                                 : SerialInterface::SIDEVICE_NONE);
+    const auto device = i < si_ports ? SerialInterface::SIDEVICE_GC_CONTROLLER
+                                     : SerialInterface::SIDEVICE_NONE;
+    Config::SetBase(Config::GetInfoForSIDevice(static_cast<int>(i)), device);
+    Config::SetCurrent(Config::GetInfoForSIDevice(static_cast<int>(i)), device);
   }
-  Log("controllers: " + std::to_string(si_ports) + " GameCube port(s) populated");
+  // Report what the core will actually read, not what we asked for: this is the
+  // line that says whether the setting survived to boot.
+  {
+    std::string effective;
+    for (int i = 0; i < 4; ++i)
+      effective += (i ? "," : "") +
+                   std::to_string(static_cast<int>(Config::Get(Config::GetInfoForSIDevice(i))));
+    Log("controllers: " + std::to_string(si_ports) + " port(s) requested; SI devices now [" +
+        effective + "] (6 = GC controller, 0 = none)");
+  }
 
   const bool dual_core = std::getenv("RINGOUT_NETPLAY_DUALCORE") != nullptr;
   Config::SetBase(Config::MAIN_CPU_THREAD, dual_core);
@@ -1034,6 +1050,17 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     }
   }
 
+  // Diagnostic: what does THIS peer believe the pad map is? Both peers driving
+  // player 1 means each thinks it owns in-game pad 0, and only the client's own
+  // view can show that -- the host's summary is the server's view.
+  {
+    const NetPlay::PadMappingArray &m = client->GetPadMapping();
+    std::string view;
+    for (size_t i = 0; i < m.size(); ++i)
+      view += (i ? "," : "") + std::to_string(static_cast<int>(m[i]));
+    Log("pad map as seen here: [" + view + "]  my pid=" +
+        std::to_string(static_cast<int>(client->GetLocalPlayerId())));
+  }
   if (result == 0) {
     Log("netplay armed; booting");
     auto created = Runtime::Create(std::move(runtime_config));
