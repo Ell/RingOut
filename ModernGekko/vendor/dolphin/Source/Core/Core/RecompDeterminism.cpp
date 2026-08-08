@@ -18,6 +18,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/State.h"
 #include "Core/System.h"
+#include "VideoCommon/Fifo.h"
 
 #include <chrono>
 #include "InputCommon/GCPadStatus.h"
@@ -331,6 +332,19 @@ void OnFrame(Core::System& system)
   Config& config = GetConfig();
   if (!config.active)
     return;
+
+  // Quiesce the GPU before reading RAM. Under dual-core the GPU thread writes
+  // guest RAM (EFB/XFB copies) while the CPU thread runs, so a hash taken here
+  // would race it and two runs would differ whether or not the core is
+  // deterministic -- which is why this harness used to force single-core, and
+  // why it could not validate the configuration netplay actually ships.
+  //
+  // SyncGPUForRegisterAccess is the sanctioned "about to read state the GPU may
+  // have touched" call. With a deterministic GPU thread it advances the GPU on
+  // the CPU thread rather than waiting on a race, so the quiesce is itself
+  // reproducible. It perturbs timing, but identically in every run, which is all
+  // a comparison between two runs requires.
+  system.GetFifo().SyncGPUForRegisterAccess();
 
   auto& memory = system.GetMemory();
   const u8* const ram = memory.GetRAM();

@@ -280,7 +280,19 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // racy by construction and two runs would differ whether or not the core is
   // deterministic. The determinism harness therefore needs single-core, or it
   // measures its own noise.
-  Config::SetBase(Config::MAIN_CPU_THREAD, !RecompDeterminism::IsActive());
+  //
+  // RINGOUT_DETERMINISM_DUALCORE=1 lifts that, so the harness can measure the
+  // configuration netplay actually ships (dual-core + a deterministic GPU
+  // thread) instead of one it does not. It is only sound alongside the quiesce
+  // in RecompDeterminism::OnFrame -- without that the hashes race and the run
+  // measures its own noise, which is the trap this whole comment is about. Left
+  // opt-in so every previously verified result keeps its exact shape.
+  const bool determinism_dual_core =
+      RecompDeterminism::IsActive() && std::getenv("RINGOUT_DETERMINISM_DUALCORE") != nullptr;
+  Config::SetBase(Config::MAIN_CPU_THREAD,
+                  !RecompDeterminism::IsActive() || determinism_dual_core);
+  if (determinism_dual_core)
+    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE, std::string("fake-completion"));
   if (RecompDeterminism::IsActive()) {
     // Pin the clock the same way NetPlayServer does (NetPlayServer.cpp:2088):
     // the RTC is converted to timebase ticks at boot, so two runs started
