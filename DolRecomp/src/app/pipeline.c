@@ -248,6 +248,8 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
                 return 0;
             }
 
+            /* Main thread: the workers must not touch the shared entry list. */
+            emit_collect_entry_points(job->insts, job->count, job->func_addr);
             emit_chunk_prototype(header, func_addr);
             if (!function_list_add(&funcs, func_addr, func_addr + chunk_count * 4u)) {
                 smc_analysis_free(&smc);
@@ -310,6 +312,19 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
             }
             printf("    ...\n");
             printf("  full list: %s\n", smc_report_path);
+        }
+    }
+
+    /* Entry-point sidecar, beside generated_smc.txt. Written only when the
+       entry switch was reduced (--leader-cases); gen_module_tables.py bakes it
+       into the module so the chassis can tell an entry from a mid-block
+       address, instead of assuming every address in a chunk range is one. */
+    {
+        char entries_path[1024];
+        if (snprintf(entries_path, sizeof(entries_path), "%s_entries.txt", stem) <
+            (int)sizeof(entries_path)) {
+            if (!emit_write_entry_points(entries_path))
+                fprintf(stderr, "warning: could not write %s\n", entries_path);
         }
     }
 

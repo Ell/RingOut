@@ -55,6 +55,7 @@ public:
   bool IsModuleActive() const;
   bool DispatchableAt(u32 address);
   bool FastDispatchableAt(u32 address) const;
+  bool IsModuleEntry(u32 address) const;
 
   void ClearCache() override;
   void Jit(u32 em_address) override {}
@@ -199,6 +200,12 @@ private:
 
   // Lookup table optimization for O(1) chunk searches
   std::vector<int> m_chunk_lookup_table;
+  // Entry points, indexed like m_chunk_lookup_table. Empty when the module does
+  // not declare any (ABI v2, or a v3 module with a full per-instruction entry
+  // switch), and then every address inside a chunk range is entrable as before.
+  // Bit-packed on purpose: one bit per guest instruction over RAM+EXRAM is
+  // ~2.75 MB, where a byte each would be 22 MB.
+  std::vector<bool> m_entry_bitmap;
   u32 m_lookup_ram_size = 0;
   u32 m_lookup_exram_size = 0;
   int GetAddressLookupIndex(u32 address) const;

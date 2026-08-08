@@ -35,6 +35,21 @@ void StaticRecompCore::InitLookupTable(u32 ram_size, u32 exram_size)
   u32 total_instructions = (ram_size + exram_size) >> 2;
   m_chunk_lookup_table.assign(total_instructions, -1);
 
+  // Entry points (ABI v3). Read only for a v3 descriptor -- on a v2 one these
+  // fields are past the end of the struct it allocated.
+  m_entry_bitmap.clear();
+  if (m_module->abi_version >= 3u && m_module->entry_points != nullptr &&
+      m_module->num_entry_points != 0)
+  {
+    m_entry_bitmap.assign(total_instructions, false);
+    for (u32 i = 0; i < m_module->num_entry_points; ++i)
+    {
+      const int idx = GetAddressLookupIndex(m_module->entry_points[i]);
+      if (idx >= 0 && idx < static_cast<int>(m_entry_bitmap.size()))
+        m_entry_bitmap[idx] = true;
+    }
+  }
+
   for (u32 i = 0; i < m_module->num_chunk_ranges; ++i)
   {
     const auto& chunk = m_module->chunk_ranges[i];
@@ -63,10 +78,32 @@ int StaticRecompCore::ChunkIndexOf(u32 address) const
   return m_chunk_lookup_table[idx];
 }
 
+// Being inside a verified chunk is necessary but not sufficient once the module
+// declares its entry points: a guest jump-table target or a mid-block rfi resume
+// lands in range yet has no case in the entry switch, and dispatching there
+// returns without executing anything.
+//
+// BOTH predicates must ask this. DispatchableAt is the gate that chooses the
+// native path at all, and the dispatch inside it is unconditional -- the do/while
+// body runs before its condition is tested. A gate that says yes at an address
+// the loop condition then rejects dispatches there anyway, makes no progress,
+// falls out, and is re-entered at the same pc: a live spin at billions of
+// dispatches per run with zero frames and zero fallbacks. It is also what lets
+// the interpreter loop below stop at an address the module can actually enter.
+bool StaticRecompCore::IsModuleEntry(u32 address) const
+{
+  if (m_entry_bitmap.empty())
+    return true;  // Pre-v3 module: every in-range address is an entry.
+  const int idx = GetAddressLookupIndex(address);
+  return idx >= 0 && idx < static_cast<int>(m_entry_bitmap.size()) && m_entry_bitmap[idx];
+}
+
 bool StaticRecompCore::FastDispatchableAt(u32 address) const
 {
   const int index = ChunkIndexOf(address);
-  return index >= 0 && m_chunk_state[index] == CHUNK_VERIFIED;
+  if (index < 0 || m_chunk_state[index] != CHUNK_VERIFIED)
+    return false;
+  return IsModuleEntry(address);
 }
 
 bool StaticRecompCore::DispatchableAt(u32 address)
@@ -76,7 +113,7 @@ bool StaticRecompCore::DispatchableAt(u32 address)
     return false;
   if (m_chunk_state[index] == CHUNK_UNVERIFIED)
     VerifyChunk(static_cast<u32>(index));
-  return m_chunk_state[index] == CHUNK_VERIFIED;
+  return m_chunk_state[index] == CHUNK_VERIFIED && IsModuleEntry(address);
 }
 
 void StaticRecompCore::VerifyChunk(u32 index)

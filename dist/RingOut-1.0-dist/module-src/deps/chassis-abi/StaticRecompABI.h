@@ -24,7 +24,7 @@ extern "C" {
 
 #ifndef MODERNGEKKO_MODULE_ABI_H
 
-#define STATICRECOMP_ABI_VERSION 2u
+#define STATICRECOMP_ABI_VERSION 3u
 
 typedef struct StaticRecompRange
 {
@@ -67,6 +67,20 @@ typedef struct StaticRecompModuleDesc
   const StaticRecompRange* chunk_ranges;
   u32 num_chunk_ranges;
   const u64* chunk_hashes;
+
+  // Guest addresses dispatch() may be entered at (ABI v3, OPTIONAL).
+  //
+  // NULL means "every address inside chunk_ranges is an entry", which is what a
+  // full per-instruction entry switch provides and what every v2 module relies
+  // on. A module whose switch covers only block leaders MUST supply this: the
+  // chassis otherwise dispatches into a chunk at an address the switch has no
+  // case for, the chunk returns with pc untouched, and the run loop spins.
+  //
+  // Sorted ascending. The chassis turns it into a bitmap at load; membership,
+  // not range containment, then decides FastDispatchableAt, so a guest
+  // jump-table target or mid-block rfi resume goes to the interpreter instead.
+  const u32* entry_points;
+  u32 num_entry_points;
 } StaticRecompModuleDesc;
 
 // The single symbol a module must export:

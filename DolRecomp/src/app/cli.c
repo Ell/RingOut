@@ -17,6 +17,7 @@ void print_usage(const char* argv0) {
     fprintf(stderr, "  --cpu gekko|broadway|espresso  Select CPU profile (default: broadway)\n");
     fprintf(stderr, "  --gamecube                     GameCube mode (no title ID required)\n");
     fprintf(stderr, "  --rel-base <addr>              Override first virtual load address for REL codegen\n");
+    fprintf(stderr, "  --leader-cases                 Entry switch at block leaders only (EXPERIMENT)\n");
     fprintf(stderr, "  --chain-calls                  Emit local bl as a native goto (measured no win; off)\n");
     fprintf(stderr, "  --dispatch-pc <addr>           Guest PC the host hooks by address; calls to it stay\n");
     fprintf(stderr, "                                 dispatcher returns. Repeatable.\n");
@@ -153,6 +154,11 @@ int parse_cli(int argc, char** argv, CliOptions* opts) {
 
         if (strcmp(arg, "--gamecube") == 0 || strcmp(arg, "-gc") == 0) {
             opts->gamecube_mode = 1;
+            continue;
+        }
+
+        if (strcmp(arg, "--leader-cases") == 0) {
+            opts->leader_cases = 1;
             continue;
         }
 
