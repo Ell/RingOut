@@ -743,70 +743,28 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   // no desync. Offline was already dual-core, so netplay was the only mode
   // paying for this. Also clean over a ~6.5 min two-peer soak and a shorter run.
   //
-  // REVERTED TO SINGLE-CORE BY DEFAULT (2026-08-08), because opening the
-  // in-game menu during a dual-core netplay session trips a real threading
-  // violation:
+  // Dual-core with a deterministic GPU thread. Netplay used to force
+  // single-core, but Dolphin's answer to CPU/GPU interleaving is not single-core
+  // -- it is the deterministic GPU thread (Fifo.cpp, UpdateWantDeterminism),
+  // whose enabling condition ends `gpu_thread && IsDualCoreMode()`. Forcing
+  // single-core switched off the very mechanism built to make dual-core safe.
   //
-  //   A "SyncGPUCallback" event was scheduled from the wrong thread (CPU)
-  //   CoreTiming.cpp:271, ScheduleEvent
+  // Measured on the Deck over a real PC-to-Deck match: 41 -> 46 fps (+12%).
+  // Verified byte-identical across two peers over 6083 and 8847 frames with
+  // RINGOUT_DETERMINISM_DUALCORE=1, and reproducible run-to-run over 600.
   //
-  // FifoManager::RunGpu schedules that event under
-  // `!is_dual_core || m_use_deterministic_gpu_thread || m_config_sync_gpu`.
-  // Single-core took the first arm from the CPU thread and was fine; enabling
-  // dual-core AND the deterministic GPU thread takes the second arm, and the
-  // menu reaches it from a non-CPU thread. "Aux FIFO not synced" warnings come
-  // with it. A FIFO threading violation is exactly what corrupts netplay sync,
-  // so the 12% is not worth holding while this is unfixed -- and note the pad
-  // A/B and soaks that cleared it never opened the menu mid-session.
-  //
-  // RINGOUT_NETPLAY_DUALCORE=1 re-enables it for further work on that bug. The
-  // measured win is real (41 -> 46 fps on the Deck, and byte-identical guest RAM
-  // across two peers over 6083 frames with RINGOUT_DETERMINISM_DUALCORE=1), so
-  // this is a deferral, not a rejection.
-  // Plug a controller into one GameCube port per player. Dolphin defaults to a
-  // pad in port 1 and NOTHING in ports 2-4, and THIS netplay does not sync SI
-  // devices between peers (no SIDevice field in NetSettings), so every peer
-  // booted with a single controller no matter what the pad map said.
-  //
-  // The symptom was not "player 2's input is misrouted" -- it was that the game
-  // never offered versus mode at all, because SOULCALIBUR II gates it on
-  // detecting a pad in port 2. The joining peer's controller did nothing because
-  // the emulated console had no port for it.
-  //
-  // NetPlayClient::UpdateDevices does call si.ChangeDevice for mapped pads, which
-  // is what made this look already-handled: that runs against a live
-  // SerialInterface, while SI is initialised at boot from these Config values.
-  // The config is what the game sees when it probes.
-  // SetCurrent, not SetBase. The base layer is what a config load writes, and the
-  // in-game-menu route restarts into this lobby -- so a base-layer value set here
-  // was silently replaced by the one from Dolphin.ini (which has no SIDevice
-  // entries at all, hence the defaults and an empty port 2). The current layer
-  // outranks base and survives that. The launch-flag route did not show this,
-  // which is why the first fix looked verified.
-  const unsigned si_ports = std::clamp<unsigned>(options.players, 1u, 4u);
-  for (unsigned i = 0; i < 4u; ++i)
-  {
-    const auto device = i < si_ports ? SerialInterface::SIDEVICE_GC_CONTROLLER
-                                     : SerialInterface::SIDEVICE_NONE;
-    Config::SetBase(Config::GetInfoForSIDevice(static_cast<int>(i)), device);
-    Config::SetCurrent(Config::GetInfoForSIDevice(static_cast<int>(i)), device);
-  }
-  // Report what the core will actually read, not what we asked for: this is the
-  // line that says whether the setting survived to boot.
-  {
-    std::string effective;
-    for (int i = 0; i < 4; ++i)
-      effective += (i ? "," : "") +
-                   std::to_string(static_cast<int>(Config::Get(Config::GetInfoForSIDevice(i))));
-    Log("controllers: " + std::to_string(si_ports) + " port(s) requested; SI devices now [" +
-        effective + "] (6 = GC controller, 0 = none)");
-  }
-
-  const bool dual_core = std::getenv("RINGOUT_NETPLAY_DUALCORE") != nullptr;
-  Config::SetBase(Config::MAIN_CPU_THREAD, dual_core);
-  if (dual_core)
+  // This was reverted once: opening the in-game menu mid-session fired
+  // "SyncGPUCallback event scheduled from the wrong thread". That is fixed --
+  // RunGpu now schedules with FromThread::ANY, since AsyncRequests::QueueEvent
+  // calls it from off the CPU thread -- but the original assert was never
+  // reproduced locally, so the fix rests on reading the one path that schedules
+  // that event. RINGOUT_NETPLAY_SINGLECORE=1 restores the old shape and is the
+  // first thing to try if a peer ever asserts or desyncs.
+  const bool single_core = std::getenv("RINGOUT_NETPLAY_SINGLECORE") != nullptr;
+  Config::SetBase(Config::MAIN_CPU_THREAD, !single_core);
+  if (!single_core)
     Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE, std::string("fake-completion"));
-  Log(!dual_core ? "netplay: single-core (default)"
+  Log(single_core ? "netplay: single-core (forced)"
                   : "netplay: dual-core with a deterministic GPU thread");
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, true);
