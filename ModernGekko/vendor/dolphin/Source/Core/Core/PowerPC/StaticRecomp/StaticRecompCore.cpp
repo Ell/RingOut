@@ -15,6 +15,7 @@
 #include "Core/Config/StaticRecompSettings.h"
 #include "Core/Config/ConfigManager.h"
 #include "Core/HW/Memmap.h"
+#include "Core/MemTools.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/RecompDeterminism.h"
 #include "Core/System.h"
@@ -140,7 +141,17 @@ void StaticRecompCore::Init()
 #endif
   }
   if (m_fallback_jit)
+  {
+    // Jit64 emits raw host loads for fastmem and depends on a SIGSEGV handler to
+    // backpatch the ones that miss; it also faults deliberately for the BLR
+    // optimisation. Dolphin installs that handler in Core::CpuThread, which this
+    // runtime does not use -- so without this, every fastmem miss inside JIT code
+    // is a fatal segfault in anonymous executable memory, with no symbols and a
+    // broken frame chain. Whoever constructs the JIT owes it its handler.
+    if (EMM::IsExceptionHandlerSupported())
+      EMM::InstallExceptionHandler();
     m_fallback_jit->Init();
+  }
 }
 
 void StaticRecompCore::InitDeterminismWatch()
@@ -282,6 +293,8 @@ void StaticRecompCore::Shutdown()
   {
     m_fallback_jit->Shutdown();
     m_fallback_jit.reset();
+    if (EMM::IsExceptionHandlerSupported())
+      EMM::UninstallExceptionHandler();
   }
 }
 

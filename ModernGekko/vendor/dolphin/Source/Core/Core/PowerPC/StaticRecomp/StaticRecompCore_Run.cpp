@@ -846,20 +846,21 @@ void StaticRecompCore::Run()
             ++dbg_fb_count;
           }
         }
-        if (m_fallback_jit)
+        // Interpreter, NOT m_fallback_jit->Run(). Jit64::Run() enters `enter_code`,
+        // which is Dolphin's whole-emulation dispatcher -- it runs until the CPU
+        // state changes, which is why Dolphin calls it once per session. Using it
+        // to cover a single non-dispatchable address hands the entire run to the
+        // JIT and never gives this loop control back: no frame hashes, no FMV
+        // hooks, no module dispatch ever again. It presented as a hang at 0
+        // frames, and before the fault handler was installed, as a segfault in
+        // JIT-generated memory. The loop below is the only form that returns as
+        // soon as the guest reaches an address the module can enter.
+        do
         {
-          m_fallback_jit_used = true;
-          m_fallback_jit->Run();
-        }
-        else
-        {
-          do
-          {
-            ppc.downcount -= interpreter.SingleStepInner();
-            ++m_fallback_steps;
-          } while (!(m_module_active && DispatchableAt(ppc.pc)) && ppc.downcount > 0 &&
-                   *state_ptr == CPU::State::Running);
-        }
+          ppc.downcount -= interpreter.SingleStepInner();
+          ++m_fallback_steps;
+        } while (!(m_module_active && DispatchableAt(ppc.pc)) && ppc.downcount > 0 &&
+                 *state_ptr == CPU::State::Running);
       }
     } while (ppc.downcount > 0 && *state_ptr == CPU::State::Running);
   }
