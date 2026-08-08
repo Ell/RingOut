@@ -245,6 +245,26 @@ private:
 // Give every connected player one controller port, lowest player id first, so
 // the host is always pad 1 and the assignment does not depend on join order.
 // Without this the map stays all-zero and no input reaches the game.
+// What this peer will actually do with its controller. The pad map alone is not
+// enough: routing is LocalPadToInGamePad(0), and "no input reaches player 2" and
+// "both peers drive player 1" are both answered by that one number. Logged from
+// the host and the client paths alike, because only each peer's own view counts.
+void LogPadRouting(NetPlay::NetPlayClient &client) {
+  const NetPlay::PadMappingArray &m = client.GetPadMapping();
+  std::string view;
+  for (size_t i = 0; i < m.size(); ++i)
+    view += (i ? "," : "") + std::to_string(static_cast<int>(m[i]));
+  const int local_pads = std::ranges::count(m, client.GetLocalPlayerId());
+  std::string routing;
+  for (int lp = 0; lp < local_pads; ++lp)
+    routing += " local pad " + std::to_string(lp) + " -> in-game pad " +
+               std::to_string(client.LocalPadToInGamePad(lp) + 1);
+  Log("pad routing here: map=[" + view + "] my pid=" +
+      std::to_string(static_cast<int>(client.GetLocalPlayerId())) +
+      " local pads=" + std::to_string(local_pads) +
+      (routing.empty() ? std::string("  NONE - this peer sends no input") : routing));
+}
+
 void AssignPads(NetPlay::NetPlayServer &server,
                 const std::vector<const NetPlay::Player *> &players) {
   std::vector<NetPlay::PlayerId> ids;
@@ -938,6 +958,7 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
       UICommon::Shutdown();
       return static_cast<int>(NetplayExitCode::Failed);
     }
+    LogPadRouting(*client);
     Log("netplay armed; booting");
     auto created = Runtime::Create(std::move(runtime_config));
     if (!created) {
@@ -1050,18 +1071,8 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     }
   }
 
-  // Diagnostic: what does THIS peer believe the pad map is? Both peers driving
-  // player 1 means each thinks it owns in-game pad 0, and only the client's own
-  // view can show that -- the host's summary is the server's view.
-  {
-    const NetPlay::PadMappingArray &m = client->GetPadMapping();
-    std::string view;
-    for (size_t i = 0; i < m.size(); ++i)
-      view += (i ? "," : "") + std::to_string(static_cast<int>(m[i]));
-    Log("pad map as seen here: [" + view + "]  my pid=" +
-        std::to_string(static_cast<int>(client->GetLocalPlayerId())));
-  }
   if (result == 0) {
+    LogPadRouting(*client);
     Log("netplay armed; booting");
     auto created = Runtime::Create(std::move(runtime_config));
     if (!created) {
