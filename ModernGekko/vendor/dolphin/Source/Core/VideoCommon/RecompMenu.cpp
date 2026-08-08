@@ -2424,8 +2424,90 @@ void UpdateDetection()
 // Debug aid: RECOMP_MENU_AUTOOPEN=<seconds> opens the menu by itself that long
 // after the first tick, so the overlay can be verified without a keypress
 // (synthetic input does not work on native Wayland).
+// Drive the overlay from the pad, so it can be reached on a machine with no
+// keyboard. That is the Steam Deck in Game Mode, where Escape -- the only way
+// in until now -- cannot be typed at all.
+//
+// Back opens and closes; the D-pad navigates; A activates; B backs out. None of
+// Back/Guide/the stick clicks are bound by the generated GC pad profile, so
+// nothing here can fire during play. Names come from Dolphin's SDL backend
+// (s_sdl_button_names).
+//
+// Reads the device the pad is actually mapped to rather than hunting for "a
+// gamepad": if the player remapped it, that is still the one in their hands.
+void PollMenuGamepad()
+{
+  ControllerEmu::EmulatedController* const pad = GetPad();
+  if (pad == nullptr)
+    return;
+  const auto device = g_controller_interface.FindDevice(pad->GetDefaultDevice());
+  if (device == nullptr)
+    return;
+
+  // Device state is refreshed by SI on the CPU thread -- but only while the
+  // emulator is running, and opening this menu pauses it. Without pumping it
+  // here the first press would open the overlay and then nothing would move.
+  // Only while open, so this never races the CPU thread's own polling.
+  if (IsOpen())
+    g_controller_interface.UpdateInput();
+
+  struct Binding
+  {
+    const char* input;
+    Key key;
+  };
+  // Analog sticks are deliberately absent: they rest at small non-zero values
+  // and would need a deadband and repeat-rate of their own.
+  static constexpr Binding kBindings[] = {
+      {"Pad N", Key::Up},
+      {"Pad S", Key::Down},
+      {"Pad W", Key::Left},
+      {"Pad E", Key::Right},
+      {"Button S", Key::Activate},
+  };
+
+  // Edge-triggered: a held button must not repeat, or one press would run the
+  // whole way down a list. Sized for the bindings plus Back and B.
+  static bool held[std::size(kBindings) + 2] = {};
+  const auto pressed = [&](const char* name, bool* was_held) {
+    const auto* const input = device->FindInput(name);
+    const bool down = input != nullptr && input->GetState() > 0.5;
+    const bool edge = down && !*was_held;
+    *was_held = down;
+    return edge;
+  };
+
+  if (pressed("Back", &held[std::size(kBindings)]))
+  {
+    OnEscape();
+    return;
+  }
+  if (!IsOpen())
+  {
+    // Still sample the rest so a button held while opening is not seen as a
+    // fresh press on the first frame the menu is up.
+    for (std::size_t i = 0; i < std::size(kBindings); ++i)
+      pressed(kBindings[i].input, &held[i]);
+    pressed("Button E", &held[std::size(kBindings) + 1]);
+    return;
+  }
+
+  if (pressed("Button E", &held[std::size(kBindings) + 1]))
+  {
+    OnEscape();  // unwinds one level, exactly as Escape does
+    return;
+  }
+  for (std::size_t i = 0; i < std::size(kBindings); ++i)
+  {
+    if (pressed(kBindings[i].input, &held[i]))
+      OnKey(kBindings[i].key);
+  }
+}
+
 void HostTick()
 {
+  PollMenuGamepad();
+
   // Free Look's camera is driven by its own input mapping (Shift+WASDQE to move,
   // Shift+mouse to look) and needs pumping from the host thread every iteration
   // -- DolphinQt does this from its HotkeyScheduler, which NoGUI has no
