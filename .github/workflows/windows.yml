@@ -18,6 +18,9 @@ on:
       - '.github/scripts/**'
       - 'dist/RingOut-1.0-dist/**'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-2022
@@ -78,20 +81,33 @@ jobs:
           .github/scripts/package-windows.ps1 `
             -BinDir staging -RepoRoot (Get-Location).Path -OutDir package
 
-      - name: Upload release
+      - name: Publish release asset
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v7
-        with:
-          name: ringout-windows-release
-          path: |
-            package/RingOut-1.0-windows-x64-setup.exe
-            package/RingOut-1.0-windows-x64.zip
-          if-no-files-found: error
-          compression-level: 0   # both are already compressed
-          # ~294 MB per push, because the bundle carries a whole toolchain. At
-          # the 90-day default that is what exhausted the repo's artifact quota
-          # and started failing OTHER workflows' uploads. Keep two weeks' worth.
-          retention-days: 14
+        # A GitHub RELEASE asset, not an Actions artifact. This bundle is ~294 MB
+        # per build because it carries a whole toolchain, and at the 90-day
+        # artifact default it exhausted the repo's shared artifact quota -- which
+        # does not fail only the big upload, it fails EVERY workflow's uploads,
+        # including the 22 MB Deck package. Release assets are outside that pool
+        # and give a stable download URL.
+        #
+        # A real tag publishes under that tag; a manual run refreshes a rolling
+        # prerelease instead of minting junk tags. --clobber because re-uploading
+        # an existing asset name is an error, not a replace.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"; title="Ring Out $tag (Windows)"; extra=""
+          else
+            tag="windows-latest"; title="Windows build (rolling)"; extra="--prerelease"
+          fi
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" $extra --title "$title" \
+              --notes "Built from ${GITHUB_SHA}." --target "$GITHUB_SHA"
+          gh release upload "$tag" \
+            package/RingOut-1.0-windows-x64-setup.exe \
+            package/RingOut-1.0-windows-x64.zip --clobber
 
       # A failed configure/build leaves the useful detail in these logs rather
       # than in the step output.
