@@ -707,26 +707,30 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   UICommon::Init();
   detail::SetExternalUICommon(true);
 
-  // A dual-core split would let the CPU and GPU threads interleave differently
-  // on each peer; netplay needs the deterministic single-thread shape, and the
-  // StaticRecomp core is the thing being synchronised.
-  //
-  // RINGOUT_NETPLAY_DUALCORE=1 is the experiment against that: Dolphin's answer
-  // to the same problem is not single-core but a DETERMINISTIC GPU thread
+  // Netplay used to force single-core, reasoning that a dual-core split lets the
+  // CPU and GPU threads interleave differently on each peer. Dolphin's own
+  // answer to that problem is not single-core but a DETERMINISTIC GPU thread
   // (Fifo.cpp, UpdateWantDeterminism), which pre-processes the FIFO so the CPU
-  // thread's view does not depend on interleaving -- and which only engages
-  // when dual-core is on, so forcing single-core disables the very mechanism.
-  // Worth testing because the Deck is CPU-bound and the video thread is ~42% of
-  // a core the CPU thread otherwise absorbs. Unproven: Dolphin's mechanism
-  // covers FIFO ordering, and whether that is everything the StaticRecomp core
-  // needs is exactly the open question. Verdict comes from a two-peer run.
-  const bool dual_core = std::getenv("RINGOUT_NETPLAY_DUALCORE") != nullptr;
-  Config::SetBase(Config::MAIN_CPU_THREAD, dual_core);
-  if (dual_core)
-  {
+  // thread's view does not depend on interleaving. Its enabling condition ends
+  // with `gpu_thread && IsDualCoreMode()`, so forcing single-core switched off
+  // the very mechanism built to make dual-core safe.
+  //
+  // Measured on the Deck over a real PC-to-Deck match: 41 -> 46 fps (+12%),
+  // no desync. Offline was already dual-core, so netplay was the only mode
+  // paying for this. Also clean over a ~6.5 min two-peer soak and a shorter run.
+  //
+  // RINGOUT_NETPLAY_SINGLECORE=1 restores the old shape. Kept because the
+  // evidence here is Dolphin's PERIODIC desync detection, not our per-frame hash
+  // comparison: that instrument forces single-core (hashing guest RAM at a CPU
+  // frame boundary races an async GPU thread), so it cannot see this
+  // configuration at all. If a desync ever shows up in the wild, this is the
+  // first thing to flip.
+  const bool single_core = std::getenv("RINGOUT_NETPLAY_SINGLECORE") != nullptr;
+  Config::SetBase(Config::MAIN_CPU_THREAD, !single_core);
+  if (!single_core)
     Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE, std::string("fake-completion"));
-    Log("EXPERIMENT: dual-core netplay with a deterministic GPU thread");
-  }
+  Log(single_core ? "netplay: single-core (forced)"
+                  : "netplay: dual-core with a deterministic GPU thread");
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, true);
   Config::SetBase(Config::NETPLAY_SAVEDATA_WRITE, true);
