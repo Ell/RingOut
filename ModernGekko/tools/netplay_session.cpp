@@ -719,17 +719,31 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   // no desync. Offline was already dual-core, so netplay was the only mode
   // paying for this. Also clean over a ~6.5 min two-peer soak and a shorter run.
   //
-  // RINGOUT_NETPLAY_SINGLECORE=1 restores the old shape. Kept because the
-  // evidence here is Dolphin's PERIODIC desync detection, not our per-frame hash
-  // comparison: that instrument forces single-core (hashing guest RAM at a CPU
-  // frame boundary races an async GPU thread), so it cannot see this
-  // configuration at all. If a desync ever shows up in the wild, this is the
-  // first thing to flip.
-  const bool single_core = std::getenv("RINGOUT_NETPLAY_SINGLECORE") != nullptr;
-  Config::SetBase(Config::MAIN_CPU_THREAD, !single_core);
-  if (!single_core)
+  // REVERTED TO SINGLE-CORE BY DEFAULT (2026-08-08), because opening the
+  // in-game menu during a dual-core netplay session trips a real threading
+  // violation:
+  //
+  //   A "SyncGPUCallback" event was scheduled from the wrong thread (CPU)
+  //   CoreTiming.cpp:271, ScheduleEvent
+  //
+  // FifoManager::RunGpu schedules that event under
+  // `!is_dual_core || m_use_deterministic_gpu_thread || m_config_sync_gpu`.
+  // Single-core took the first arm from the CPU thread and was fine; enabling
+  // dual-core AND the deterministic GPU thread takes the second arm, and the
+  // menu reaches it from a non-CPU thread. "Aux FIFO not synced" warnings come
+  // with it. A FIFO threading violation is exactly what corrupts netplay sync,
+  // so the 12% is not worth holding while this is unfixed -- and note the pad
+  // A/B and soaks that cleared it never opened the menu mid-session.
+  //
+  // RINGOUT_NETPLAY_DUALCORE=1 re-enables it for further work on that bug. The
+  // measured win is real (41 -> 46 fps on the Deck, and byte-identical guest RAM
+  // across two peers over 6083 frames with RINGOUT_DETERMINISM_DUALCORE=1), so
+  // this is a deferral, not a rejection.
+  const bool dual_core = std::getenv("RINGOUT_NETPLAY_DUALCORE") != nullptr;
+  Config::SetBase(Config::MAIN_CPU_THREAD, dual_core);
+  if (dual_core)
     Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE, std::string("fake-completion"));
-  Log(single_core ? "netplay: single-core (forced)"
+  Log(!dual_core ? "netplay: single-core (default)"
                   : "netplay: dual-core with a deterministic GPU thread");
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, true);
