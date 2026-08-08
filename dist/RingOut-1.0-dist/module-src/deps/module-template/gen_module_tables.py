@@ -131,9 +131,31 @@ def main() -> int:
         for a, b in chunk_ranges:
             f.write(f"    0x{fnv1a64(read_range(a, b)):016X}u,\n")
         f.write("};\n")
+
+        # Entry points (ABI v3), if the recompiler reduced the entry set. The
+        # sidecar sits beside generated.h and is written only by --leader-cases;
+        # its ABSENCE is meaningful, and means "every address in a chunk range
+        # is an entry", which is what a full per-instruction switch provides.
+        entries_txt = generated_h.with_name("generated_entries.txt")
+        entries = []
+        if entries_txt.is_file():
+            for line in entries_txt.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    entries.append(int(line, 16))
+            entries = sorted(set(entries))
+        if entries:
+            f.write("static const u32 s_entry_points[] = {\n")
+            for a in entries:
+                f.write(f"    0x{a:08X}u,\n")
+            f.write("};\n")
+            f.write(f"#define MODULE_ENTRY_POINT_COUNT {len(entries)}u\n")
+        else:
+            f.write("#define MODULE_ENTRY_POINTS_NONE 1\n")
     print(
         f"module_tables.inc: {len(code_ranges)} code ranges, "
-        f"{len(smc_ranges)} smc ranges, {len(chunk_ranges)} chunk ranges (hashed)"
+        f"{len(smc_ranges)} smc ranges, {len(chunk_ranges)} chunk ranges (hashed), "
+        f"{len(entries) if entries else 0} entry points"
     )
     return 0
 

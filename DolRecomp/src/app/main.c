@@ -31,6 +31,7 @@ int main(int argc, char** argv) {
      * idle loop must stay dispatcher returns so the host can still skip it. */
     emit_set_idle_pc(opts.idle_pc);
     emit_set_chain_calls(opts.chain_calls != 0);
+    emit_set_leader_cases(opts.leader_cases != 0);
     for (u32 i = 0; i < opts.dispatch_pc_count; ++i)
         emit_add_dispatch_pc(opts.dispatch_pcs[i]);
 

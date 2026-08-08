@@ -73,7 +73,9 @@ ModernGekkoModuleStatus moderngekko_validate_module(
 {
     if (descriptor == NULL || requirements == NULL)
         return MODERNGEKKO_MODULE_NULL_DESCRIPTOR;
-    if (descriptor->abi_version != MODERNGEKKO_MODULE_ABI_VERSION)
+    // v2 too: it is this struct minus the trailing optional entry_points pair.
+    if (descriptor->abi_version != MODERNGEKKO_MODULE_ABI_VERSION &&
+        descriptor->abi_version != 2u)
         return MODERNGEKKO_MODULE_ABI_MISMATCH;
     if (descriptor->cpu_abi_version != requirements->cpu_abi_version)
         return MODERNGEKKO_MODULE_CPU_ABI_MISMATCH;

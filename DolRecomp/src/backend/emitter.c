@@ -356,6 +356,78 @@ void emit_set_chain_calls(bool enable) {
     s_chain_calls = enable;
 }
 
+/* --leader-cases: emit the chunk-entry switch only at block leaders.
+ *
+ * HYPOTHESIS TEST, not a shipping option. One case per guest instruction makes
+ * every instruction a switch-reachable join point, so the compiler must assume
+ * control can arrive there with unknown state and cannot keep guest registers
+ * in host registers across a block -- exactly the advantage Dolphin's JIT has.
+ *
+ * INCOMPLETE ON PURPOSE: an exception stores the faulting address in srr0 and
+ * rfi resumes there, mid-block, so a correct version needs leaders UNION fault
+ * sites (the refund work counts 89391 of those). This build can therefore wedge
+ * on a mid-block resume. It exists to answer "does it even help?" before that
+ * work is done -- the determinism harness detects the breakage immediately. */
+static bool s_leader_cases = false;
+
+/* Addresses the entry switch actually has a case for, accumulated across every
+ * emitted function. Only collected when the entry set is REDUCED: with the full
+ * per-instruction switch every address in a chunk is an entry, which is the
+ * assumption the chassis makes when no table is supplied. */
+static u32* s_entries = NULL;
+static u32 s_entry_count = 0;
+static u32 s_entry_cap = 0;
+
+/* MAIN THREAD ONLY. emit_function() runs on the -jN workers, so appending to a
+ * shared list from there is a data race -- it corrupted the heap and aborted the
+ * first time. The pipeline knows each chunk's instructions before it queues the
+ * job, so the entry set is collected there instead, off the workers entirely. */
+static void record_entry(u32 address) {
+    if (!s_leader_cases)
+        return;
+    if (s_entry_count == s_entry_cap) {
+        u32 cap = s_entry_cap ? s_entry_cap * 2u : 4096u;
+        u32* grown = (u32*)realloc(s_entries, cap * sizeof(u32));
+        if (!grown)
+            return;   /* the table is optional; losing it degrades, not breaks */
+        s_entries = grown;
+        s_entry_cap = cap;
+    }
+    s_entries[s_entry_count++] = address;
+}
+
+static int compare_u32(const void* a, const void* b) {
+    u32 x = *(const u32*)a, y = *(const u32*)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+int emit_write_entry_points(const char* path) {
+    FILE* out;
+    u32 i;
+    /* No file at all when the switch covers every instruction: its absence is
+     * what tells the chassis to keep treating a whole chunk range as entrable,
+     * which is what every module built before this flag existed relies on. */
+    if (!s_leader_cases)
+        return 1;
+    out = fopen(path, "w");
+    if (!out)
+        return 0;
+    qsort(s_entries, s_entry_count, sizeof(u32), compare_u32);
+    fprintf(out, "# Guest addresses the entry switch can be entered at.\n");
+    fprintf(out, "# Written only for a reduced entry set (--leader-cases).\n");
+    for (i = 0; i < s_entry_count; i++) {
+        if (i != 0 && s_entries[i] == s_entries[i - 1u])
+            continue;
+        fprintf(out, "%08X\n", s_entries[i]);
+    }
+    fclose(out);
+    return 1;
+}
+
+void emit_set_leader_cases(bool enable) {
+    s_leader_cases = enable;
+}
+
 static u32 s_dispatch_pcs[32];
 static u32 s_dispatch_pc_count = 0;
 
@@ -2118,13 +2190,14 @@ static u32 inst_cycle_cost(const PPCInst* inst) {
     }
 }
 
-void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
-    u32 i;
+/* Block leaders: the function entry, whatever follows a block-ending
+ * instruction, and every local branch target. Shared by the emitter and the
+ * entry-point collector so the switch and the table can never disagree -- if
+ * they did, the chassis would dispatch into a chunk at an address the switch
+ * has no case for. */
+static void compute_leaders(const PPCInst* insts, u32 count, u32 func_addr, u8* leader) {
     u32 func_end = func_addr + count * 4u;
-
-    u8* leader = (u8*)calloc(count ? count : 1u, sizeof(u8));
-    u32* block_cost = (u32*)calloc(count ? count : 1u, sizeof(u32));
-
+    u32 i;
     if (count)
         leader[0] = 1;
     for (i = 0; i < count; i++) {
@@ -2138,6 +2211,32 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
             leader[(inst->branch_target - func_addr) / 4u] = 1;
         }
     }
+}
+
+void emit_collect_entry_points(const PPCInst* insts, u32 count, u32 func_addr) {
+    u8* leader;
+    u32 i;
+    if (!s_leader_cases || count == 0)
+        return;
+    leader = (u8*)calloc(count, sizeof(u8));
+    if (!leader)
+        return;
+    compute_leaders(insts, count, func_addr, leader);
+    for (i = 0; i < count; i++) {
+        if (leader[i])
+            record_entry(insts[i].address);
+    }
+    free(leader);
+}
+
+void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
+    u32 i;
+    u32 func_end = func_addr + count * 4u;
+
+    u8* leader = (u8*)calloc(count ? count : 1u, sizeof(u8));
+    u32* block_cost = (u32*)calloc(count ? count : 1u, sizeof(u32));
+
+    compute_leaders(insts, count, func_addr, leader);
     /* Per-instruction cost of the REST of its block, for the exception refund.
      * Walked with exactly the same block bounds the charge uses, so the refund
      * can never exceed what was charged. */
@@ -2165,6 +2264,8 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
     fprintf(out, "void func_%08X(CPUState* ctx) {\n", func_addr);
     fprintf(out, "    switch (ctx->pc) {\n");
     for (i = 0; i < count; i++) {
+        if (s_leader_cases && !leader[i])
+            continue;
         fprintf(out, "    case 0x%08Xu: goto label_%08X;\n",
                 insts[i].address, insts[i].address);
     }

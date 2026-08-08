@@ -36,6 +36,15 @@ static const StaticRecompModuleDesc s_desc = {
     s_chunk_ranges,
     MODULE_CHUNK_RANGE_COUNT,
     s_chunk_hashes,
+#ifdef MODULE_ENTRY_POINTS_NONE
+    /* Full per-instruction entry switch: every address in a chunk range is an
+       entry, so the chassis needs no table and keeps its range behaviour. */
+    NULL,
+    0u,
+#else
+    s_entry_points,
+    MODULE_ENTRY_POINT_COUNT,
+#endif
 };
 
 #if defined(_WIN32)

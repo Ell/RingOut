@@ -31,6 +31,17 @@ void emit_add_dispatch_pc(u32 pc);
 /* Turn local `bl` into a native goto (--chain-calls). Unproven: see emitter.c. */
 void emit_set_chain_calls(bool enable);
 
+/* Chunk-entry switch at leaders only (--leader-cases). Incomplete: see emitter.c. */
+void emit_set_leader_cases(bool enable);
+
+/* Writes the entry-point sidecar. No-op (and writes nothing) unless the entry
+   set was reduced; its absence means "the whole chunk range is entrable". */
+int emit_write_entry_points(const char* path);
+
+/* Records one chunk's entry points. MAIN THREAD ONLY -- emit_function() runs on
+   the -jN workers, where appending to the shared list is a data race. */
+void emit_collect_entry_points(const PPCInst* insts, u32 count, u32 func_addr);
+
 // emit a single instruction as C code
 void emit_instruction(FILE* out, const PPCInst* inst);
 

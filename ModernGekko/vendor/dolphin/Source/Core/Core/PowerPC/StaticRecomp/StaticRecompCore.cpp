@@ -15,6 +15,7 @@
 #include "Core/Config/StaticRecompSettings.h"
 #include "Core/Config/ConfigManager.h"
 #include "Core/HW/Memmap.h"
+#include "Core/MemTools.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/RecompDeterminism.h"
 #include "Core/System.h"
@@ -127,13 +128,30 @@ void StaticRecompCore::Init()
   InitDeterminismWatch();
   m_gqr_log = std::getenv("STATICRECOMP_GQRLOG") != nullptr;
 
+  // The "interpreter fallback" is really Dolphin's JIT whenever one exists, so
+  // m_fallback_steps stays 0 on a run that fell back constantly -- read
+  // m_fallback_jit_used instead. STATICRECOMP_NO_FALLBACK_JIT forces the true
+  // interpreter, which is how you tell a module-side bug from a JIT-handoff one.
+  if (std::getenv("STATICRECOMP_NO_FALLBACK_JIT") == nullptr)
+  {
 #ifdef _M_ARM_64
-  m_fallback_jit = std::make_unique<JitArm64>(m_system);
+    m_fallback_jit = std::make_unique<JitArm64>(m_system);
 #elif defined(_M_X86_64)
-  m_fallback_jit = std::make_unique<Jit64>(m_system);
+    m_fallback_jit = std::make_unique<Jit64>(m_system);
 #endif
+  }
   if (m_fallback_jit)
+  {
+    // Jit64 emits raw host loads for fastmem and depends on a SIGSEGV handler to
+    // backpatch the ones that miss; it also faults deliberately for the BLR
+    // optimisation. Dolphin installs that handler in Core::CpuThread, which this
+    // runtime does not use -- so without this, every fastmem miss inside JIT code
+    // is a fatal segfault in anonymous executable memory, with no symbols and a
+    // broken frame chain. Whoever constructs the JIT owes it its handler.
+    if (EMM::IsExceptionHandlerSupported())
+      EMM::InstallExceptionHandler();
     m_fallback_jit->Init();
+  }
 }
 
 void StaticRecompCore::InitDeterminismWatch()
@@ -275,6 +293,8 @@ void StaticRecompCore::Shutdown()
   {
     m_fallback_jit->Shutdown();
     m_fallback_jit.reset();
+    if (EMM::IsExceptionHandlerSupported())
+      EMM::UninstallExceptionHandler();
   }
 }
 
@@ -314,8 +334,13 @@ void StaticRecompCore::LoadModule()
 
   if (!desc)
     return reject("missing or null " STATICRECOMP_GET_MODULE_SYMBOL);
-  if (desc->abi_version != STATICRECOMP_ABI_VERSION)
-    return reject(fmt::format("abi_version {} != {}", desc->abi_version, STATICRECOMP_ABI_VERSION));
+  // v2 is still accepted: it is the same struct minus the trailing optional
+  // entry_points pair, so everything before that offset is laid out identically
+  // and a v2 module keeps loading unchanged. Those two fields must not be read
+  // for a v2 descriptor -- they are past the end of what it allocated.
+  if (desc->abi_version != STATICRECOMP_ABI_VERSION && desc->abi_version != 2u)
+    return reject(fmt::format("abi_version {} is neither {} nor 2", desc->abi_version,
+                              STATICRECOMP_ABI_VERSION));
   if (desc->cpu_abi_version != GXRUNTIME_CPU_ABI_VERSION)
     return reject(fmt::format("cpu_abi_version {} != {}", desc->cpu_abi_version,
                               GXRUNTIME_CPU_ABI_VERSION));
