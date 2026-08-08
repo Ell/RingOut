@@ -56,13 +56,20 @@ jobs:
             ForEach-Object { Copy-Item $_.FullName staging/ }
           Get-ChildItem staging
 
-      - name: Upload binaries
-        uses: actions/upload-artifact@v7
-        with:
-          name: ringout-windows-x64
-          path: staging/
-          retention-days: 14
-          if-no-files-found: error
+      - name: Publish binaries
+        # Was an Actions artifact uploaded on EVERY push, which is what kept the
+        # shared quota full and failed unrelated workflows' uploads. Same rolling
+        # release as the bundle, so there is always a current Windows build with
+        # a stable URL and nothing accumulating behind it.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          7z a -tzip RingOut-windows-x64-binaries.zip ./staging/* > /dev/null
+          gh release view windows-latest >/dev/null 2>&1 || \
+            gh release create windows-latest --prerelease --title "Windows build (rolling)" \
+              --notes "Built from ${GITHUB_SHA}." --target "$GITHUB_SHA"
+          gh release upload windows-latest RingOut-windows-x64-binaries.zip --clobber
 
       # The release bundle carries a whole toolchain, so it is assembled here
       # rather than on a developer machine: llvm-mingw alone unpacks to ~2 GB.
@@ -113,6 +120,10 @@ jobs:
       # than in the step output.
       - name: Upload CMake logs on failure
         if: failure()
+        # continue-on-error: this is diagnostics. When the artifact quota is full
+        # this upload fails too, and a FAILED upload of failure logs was itself
+        # being reported as the job's failure -- hiding the real one underneath.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: cmake-logs

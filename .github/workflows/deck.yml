@@ -95,6 +95,10 @@ jobs:
       # than in the step output.
       - name: Upload CMake logs on failure
         if: failure()
+        # continue-on-error: this is diagnostics. When the artifact quota is full
+        # this upload fails too, and a FAILED upload of failure logs was itself
+        # being reported as the job's failure -- hiding the real one underneath.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: deck-cmake-logs
