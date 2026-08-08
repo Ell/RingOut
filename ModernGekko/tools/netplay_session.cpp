@@ -710,7 +710,23 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   // A dual-core split would let the CPU and GPU threads interleave differently
   // on each peer; netplay needs the deterministic single-thread shape, and the
   // StaticRecomp core is the thing being synchronised.
-  Config::SetBase(Config::MAIN_CPU_THREAD, false);
+  //
+  // RINGOUT_NETPLAY_DUALCORE=1 is the experiment against that: Dolphin's answer
+  // to the same problem is not single-core but a DETERMINISTIC GPU thread
+  // (Fifo.cpp, UpdateWantDeterminism), which pre-processes the FIFO so the CPU
+  // thread's view does not depend on interleaving -- and which only engages
+  // when dual-core is on, so forcing single-core disables the very mechanism.
+  // Worth testing because the Deck is CPU-bound and the video thread is ~42% of
+  // a core the CPU thread otherwise absorbs. Unproven: Dolphin's mechanism
+  // covers FIFO ordering, and whether that is everything the StaticRecomp core
+  // needs is exactly the open question. Verdict comes from a two-peer run.
+  const bool dual_core = std::getenv("RINGOUT_NETPLAY_DUALCORE") != nullptr;
+  Config::SetBase(Config::MAIN_CPU_THREAD, dual_core);
+  if (dual_core)
+  {
+    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE, std::string("fake-completion"));
+    Log("EXPERIMENT: dual-core netplay with a deterministic GPU thread");
+  }
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, true);
   Config::SetBase(Config::NETPLAY_SAVEDATA_WRITE, true);
