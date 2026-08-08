@@ -27,6 +27,7 @@
 
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/NetPlayServer.h"
@@ -739,6 +740,29 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   // measured win is real (41 -> 46 fps on the Deck, and byte-identical guest RAM
   // across two peers over 6083 frames with RINGOUT_DETERMINISM_DUALCORE=1), so
   // this is a deferral, not a rejection.
+  // Plug a controller into one GameCube port per player. Dolphin defaults to a
+  // pad in port 1 and NOTHING in ports 2-4, and THIS netplay does not sync SI
+  // devices between peers (no SIDevice field in NetSettings), so every peer
+  // booted with a single controller no matter what the pad map said.
+  //
+  // The symptom was not "player 2's input is misrouted" -- it was that the game
+  // never offered versus mode at all, because SOULCALIBUR II gates it on
+  // detecting a pad in port 2. The joining peer's controller did nothing because
+  // the emulated console had no port for it.
+  //
+  // NetPlayClient::UpdateDevices does call si.ChangeDevice for mapped pads, which
+  // is what made this look already-handled: that runs against a live
+  // SerialInterface, while SI is initialised at boot from these Config values.
+  // The config is what the game sees when it probes.
+  const unsigned si_ports = std::clamp<unsigned>(options.players, 1u, 4u);
+  for (unsigned i = 0; i < 4u; ++i)
+  {
+    Config::SetBase(Config::GetInfoForSIDevice(static_cast<int>(i)),
+                    i < si_ports ? SerialInterface::SIDEVICE_GC_CONTROLLER
+                                 : SerialInterface::SIDEVICE_NONE);
+  }
+  Log("controllers: " + std::to_string(si_ports) + " GameCube port(s) populated");
+
   const bool dual_core = std::getenv("RINGOUT_NETPLAY_DUALCORE") != nullptr;
   Config::SetBase(Config::MAIN_CPU_THREAD, dual_core);
   if (dual_core)
