@@ -749,8 +749,31 @@ void StaticRecompCore::Run()
           static const bool s_dispatchlog = std::getenv("STATICRECOMP_DISPATCHLOG") != nullptr;
           const u32 dispatch_from = s_dispatchlog ? m_guest.pc : 0;
 
+          const u32 dbg_pc_before = m_guest.pc;
           m_module->dispatch(&m_guest, m_guest.pc);
           ++m_native_dispatches;
+          {
+            // STATICRECOMP_SPINLOG=1: name the guest address a no-progress spin
+            // is stuck on. A module can link, load and dispatch billions of
+            // times while the guest never advances -- the run loop cannot tell
+            // "executed a block" from "returned having done nothing", so the
+            // symptom is a silent hang with a huge dispatch count and no error.
+            // This found the LLVM backend's psq_load return-type mismatch in one
+            // run after hours of hypotheses: it printed 0x80180BD4, a psq_l.
+            static const bool s_spinlog = std::getenv("STATICRECOMP_SPINLOG") != nullptr;
+            if (s_spinlog)
+            {
+              static u64 s_same = 0;
+              static u32 s_last = 0;
+              if (m_guest.pc == dbg_pc_before)
+              {
+                if (m_guest.pc == s_last) ++s_same; else { s_same = 1; s_last = m_guest.pc; }
+                if (s_same == 200000u)
+                  std::fprintf(stderr, "[spin] no progress at pc=0x%08X (200k dispatches)\n",
+                               m_guest.pc), std::fflush(stderr);
+              }
+            }
+          }
 
           if (s_dispatchlog)
           {
