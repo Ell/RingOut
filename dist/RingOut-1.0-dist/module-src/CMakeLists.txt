@@ -32,13 +32,28 @@ add_custom_command(
           "${GENERATED_DIR}/main.dol"
   COMMENT "Generating module_tables.inc")
 
+# The C backend writes chunks as .c to compile; the LLVM backend writes them as
+# .o to link. CMake accepts object files directly in a target's sources, so the
+# only difference is which glob finds anything -- and an LLVM module additionally
+# needs cpu_llvm_abi.c, because that backend CALLS the float helpers this fork's
+# C backend emits inline.
 file(GLOB CHUNK_SOURCES "${GENERATED_DIR}/chunks/*.c")
+file(GLOB CHUNK_OBJECTS "${GENERATED_DIR}/chunks/*.o")
+
+set(BACKEND_EXTRA_SOURCES "")
+if(CHUNK_OBJECTS AND NOT CHUNK_SOURCES)
+  set(BACKEND_EXTRA_SOURCES "${DOLRECOMP_SRC}/cpu/cpu_llvm_abi.c")
+  set_source_files_properties(${CHUNK_OBJECTS} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+  message(STATUS "module: linking ${GENERATED_DIR}/chunks as LLVM objects")
+endif()
 
 add_library(${MODULE_NAME} SHARED
   "${MODULE_TEMPLATE}/module_export.c"
   "${MODULE_TABLES}"
   "${DOLRECOMP_SRC}/cpu/cpu.c"
-  ${CHUNK_SOURCES})
+  ${BACKEND_EXTRA_SOURCES}
+  ${CHUNK_SOURCES}
+  ${CHUNK_OBJECTS})
 
 set_target_properties(${MODULE_NAME} PROPERTIES PREFIX "" OUTPUT_NAME "${MODULE_NAME}")
 set_source_files_properties("${MODULE_TABLES}" PROPERTIES HEADER_FILE_ONLY TRUE GENERATED TRUE)
