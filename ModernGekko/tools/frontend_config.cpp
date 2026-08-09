@@ -583,9 +583,17 @@ bool EnsureControllerConfig(const fs::path &user_directory,
   // no input at all in Game Mode: it has a built-in controller and no keyboard,
   // and the CONTROLS tab that could have fixed it is behind a menu you need
   // working input to reach.
+  // Owns whatever DetectSdlGamepads() finds. It has to outlive the block
+  // below, because `controllers` is a span and is repointed at it there: when
+  // this vector lived inside that block, the span dangled the moment the block
+  // ended and the GenerateControllerConfig call at the bottom read freed
+  // memory. That crashed at startup on any machine with a pad connected and a
+  // user directory fresh enough to have no WiimoteNew.ini -- the Steam Deck
+  // every time, a desktop never, because with no pad detected the span was
+  // left pointing at the caller's own storage.
+  std::vector<std::string> detected;
   if (!GCPadConfigExists(user_directory)) {
     // An explicitly selected pad wins; otherwise ask the hardware.
-    std::vector<std::string> detected;
     if (controllers.empty()) {
       detected = DetectSdlGamepads();
       controllers = detected;

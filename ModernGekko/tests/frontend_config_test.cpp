@@ -130,6 +130,25 @@ int main() {
     if (!keyboard_config.contains("XInput2") ||
         keyboard_config.contains("SDL/"))
       return 16;
+  } else {
+    // The same call on a machine that DOES have a pad, which is the path that
+    // segfaulted on the Steam Deck: nothing named, so the span was repointed at
+    // a vector of detected pads that then went out of scope, and the Wiimote
+    // profile written afterwards read it back. CI has no pad and can never
+    // reach this, so it only ever fires on real hardware -- which is precisely
+    // where the bug lived.
+    const fs::path detected_directory = directory / "detected";
+    if (!moderngekko::frontend::EnsureControllerConfig(
+            detected_directory, std::span<const std::string>{}, &error))
+      return 17;
+    std::ifstream detected_input(detected_directory / "Config" /
+                                 "GCPadNew.ini");
+    const std::string detected_config{
+        std::istreambuf_iterator<char>(detected_input),
+        std::istreambuf_iterator<char>()};
+    if (!detected_config.contains("SDL/") ||
+        !fs::is_regular_file(detected_directory / "Config" / "WiimoteNew.ini"))
+      return 18;
   }
 
   fs::remove_all(directory);
