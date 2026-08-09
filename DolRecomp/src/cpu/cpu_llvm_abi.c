@@ -90,3 +90,144 @@ void ppc_fcmp(CPUState* cpu, u8 crfd, f64 val_a, f64 val_b, bool ordered) {
     cpu->cr = (cpu->cr & ~(0xFu << shift)) | (cr_bits << shift);
     cpu->fpscr = (cpu->fpscr & ~(0xFu << 12)) | (cr_bits << 12);
 }
+
+// --- paired single -------------------------------------------------------
+// Every lane is computed as (f32)x OP (f32)y and then run through
+// dolrecomp_ps_round, matching emitter.c. Upstream instead multiplies in f64
+// with force_25_bit; that is a different number, so none of these bodies were
+// taken from it. FPRF is classified on lane 0 only, as the emitter does.
+#define DOLRECOMP_PS_BINARY(name, OP)                                          \
+    void name(CPUState* cpu, u8 d, u8 a, u8 b) {                               \
+        f64 lo = dolrecomp_ps_round((f32)cpu->fpr[a] OP (f32)cpu->fpr[b]);     \
+        f64 hi = dolrecomp_ps_round((f32)cpu->ps1[a] OP (f32)cpu->ps1[b]);     \
+        cpu->fpr[d] = lo;                                                      \
+        cpu->ps1[d] = hi;                                                      \
+        dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);                               \
+    }
+
+DOLRECOMP_PS_BINARY(ppc_ps_add_op, +)
+DOLRECOMP_PS_BINARY(ppc_ps_sub_op, -)
+DOLRECOMP_PS_BINARY(ppc_ps_div_op, /)
+
+// ps_madd/msub/nmadd/nmsub share one body; the backend passes the two flags
+// rather than emitting four names. Note the product is formed in f32 BEFORE the
+// addend, exactly as the emitter does -- rounding once at the end would give a
+// different result.
+void ppc_ps_madd_op(CPUState* cpu, u8 d, u8 a, u8 c, u8 b, bool subtract,
+                    bool negative) {
+    f32 lo = (f32)cpu->fpr[a] * (f32)cpu->fpr[c];
+    f32 hi = (f32)cpu->ps1[a] * (f32)cpu->ps1[c];
+    if (subtract) {
+        lo -= (f32)cpu->fpr[b];
+        hi -= (f32)cpu->ps1[b];
+    } else {
+        lo += (f32)cpu->fpr[b];
+        hi += (f32)cpu->ps1[b];
+    }
+    if (negative) {
+        lo = -lo;
+        hi = -hi;
+    }
+    cpu->fpr[d] = dolrecomp_ps_round(lo);
+    cpu->ps1[d] = dolrecomp_ps_round(hi);
+    dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);
+}
+
+// The s0/s1 forms broadcast ONE lane of c to both multiplies: s0 takes c's lane
+// 0 (fpr[c]) and s1 takes lane 1 (ps1[c]).
+void ppc_ps_madds0(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+    f64 lo = dolrecomp_ps_round((f32)cpu->fpr[a] * (f32)cpu->fpr[c] + (f32)cpu->fpr[b]);
+    f64 hi = dolrecomp_ps_round((f32)cpu->ps1[a] * (f32)cpu->fpr[c] + (f32)cpu->ps1[b]);
+    cpu->fpr[d] = lo;
+    cpu->ps1[d] = hi;
+    dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);
+}
+
+void ppc_ps_madds1(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+    f64 lo = dolrecomp_ps_round((f32)cpu->fpr[a] * (f32)cpu->ps1[c] + (f32)cpu->fpr[b]);
+    f64 hi = dolrecomp_ps_round((f32)cpu->ps1[a] * (f32)cpu->ps1[c] + (f32)cpu->ps1[b]);
+    cpu->fpr[d] = lo;
+    cpu->ps1[d] = hi;
+    dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);
+}
+
+void ppc_ps_muls0(CPUState* cpu, u8 d, u8 a, u8 c) {
+    f64 lo = dolrecomp_ps_round((f32)cpu->fpr[a] * (f32)cpu->fpr[c]);
+    f64 hi = dolrecomp_ps_round((f32)cpu->ps1[a] * (f32)cpu->fpr[c]);
+    cpu->fpr[d] = lo;
+    cpu->ps1[d] = hi;
+    dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);
+}
+
+void ppc_ps_muls1(CPUState* cpu, u8 d, u8 a, u8 c) {
+    f64 lo = dolrecomp_ps_round((f32)cpu->fpr[a] * (f32)cpu->ps1[c]);
+    f64 hi = dolrecomp_ps_round((f32)cpu->ps1[a] * (f32)cpu->ps1[c]);
+    cpu->fpr[d] = lo;
+    cpu->ps1[d] = hi;
+    dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);
+}
+
+// sum0 crosses the lanes: lane 0 is a's lane 0 + b's lane 1, and lane 1 is
+// simply c's lane 1 passed through. sum1 is the mirror image.
+void ppc_ps_sum0(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+    f64 lo = dolrecomp_ps_round((f32)cpu->fpr[a] + (f32)cpu->ps1[b]);
+    f64 hi = dolrecomp_ps_round(cpu->ps1[c]);
+    cpu->fpr[d] = lo;
+    cpu->ps1[d] = hi;
+    dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);
+}
+
+void ppc_ps_sum1(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+    f64 lo = dolrecomp_ps_round(cpu->fpr[c]);
+    f64 hi = dolrecomp_ps_round((f32)cpu->fpr[a] + (f32)cpu->ps1[b]);
+    cpu->fpr[d] = lo;
+    cpu->ps1[d] = hi;
+    dolrecomp_fprf_s(cpu, (f32)cpu->fpr[d]);
+}
+
+void ppc_ps_rsqrte_op(CPUState* cpu, u8 d, u8 b) {
+    f64 lo, hi;
+    ppc_ps_rsqrte(cpu, cpu->fpr[b], cpu->ps1[b], &lo, &hi);
+    cpu->fpr[d] = dolrecomp_ps_round(lo);
+    cpu->ps1[d] = dolrecomp_ps_round(hi);
+}
+
+// --- control -------------------------------------------------------------
+// mtfsb0/mtfsb1 refuse to touch FPSCR bits 1 and 2, which are read-only
+// summaries, exactly as the emitter does.
+void ppc_mtfsb1_op(CPUState* cpu, u8 bit) {
+    if (bit != 1u && bit != 2u)
+        cpu->fpscr |= 0x80000000u >> bit;
+}
+
+void ppc_mtfsb0_op(CPUState* cpu, u8 bit) {
+    if (bit != 1u && bit != 2u)
+        cpu->fpscr &= ~(0x80000000u >> bit);
+}
+
+// Re-arms host rounding/flush state after a control write. cpu.c already
+// exposes this; the LLVM backend just calls it under a different name.
+void ppc_fpscr_control_updated(CPUState* cpu) {
+    ppc_fpscr_updated(cpu);
+}
+
+// The cache-op selector is upstream's enum, which this fork's cpu.h does not
+// have. The backend emits these as raw immediates, so the ORDER is the contract
+// -- it must match upstream's PPCCacheControl enum, not be renumbered here.
+enum {
+    DOLRECOMP_CACHE_DCBST = 0,
+    DOLRECOMP_CACHE_DCBF  = 1,
+    DOLRECOMP_CACHE_DCBI  = 2,
+    DOLRECOMP_CACHE_ICBI  = 3,
+};
+
+// dcbst/dcbf/dcbi are no-ops in a flat memory model -- stores go straight to
+// RAM and there is no data cache to flush. icbi is NOT: the emitter routes it to
+// the interpreter so the chassis can retire the affected chunk, and that has to
+// hold here too or self-modifying code would silently keep running stale
+// translations.
+void ppc_cache_control(CPUState* cpu, u8 operation, u32 ea, u32 cia) {
+    (void)ea;
+    if (operation == DOLRECOMP_CACHE_ICBI)
+        ppc_fallback_instruction(cpu, 0x7C0007ACu, cia);
+}
