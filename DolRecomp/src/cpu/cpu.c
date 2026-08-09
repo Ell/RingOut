@@ -671,16 +671,16 @@ DOLRECOMP_PSQ_FI bool psq_check_enabled(CPUState* cpu, bool indexed, u32 cia) {
     return true;
 }
 
-void ppc_psq_load(CPUState* cpu, u8 frD, u32 ea, bool w, u8 gqr_index, bool indexed, u32 cia) {
+bool ppc_psq_load(CPUState* cpu, u8 frD, u32 ea, bool w, u8 gqr_index, bool indexed, u32 cia) {
     if (!psq_check_enabled(cpu, indexed, cia))
-        return;
+        return false;
 
     u32 gqr = cpu->gqr[gqr_index & 7u];
     s32 scale = gqr_scale(gqr >> 24);
     u8 type = (u8)((gqr >> 16) & 7u);
     u32 size = psq_type_size(type);
     if (!psq_access_is_valid(cpu, type, ea, cia))
-        return;
+        return false;
 
     cpu->fpr[frD] = psq_load_value(cpu, ea, type, scale);
     if (w) {
@@ -688,29 +688,31 @@ void ppc_psq_load(CPUState* cpu, u8 frD, u32 ea, bool w, u8 gqr_index, bool inde
     } else {
         u32 ps1_ea = ea + size;
         if (!psq_access_is_valid(cpu, type, ps1_ea, cia))
-            return;
+            return false;
         cpu->ps1[frD] = psq_load_value(cpu, ps1_ea, type, scale);
     }
+    return true;
 }
 
-void ppc_psq_store(CPUState* cpu, u8 frS, u32 ea, bool w, u8 gqr_index, bool indexed, u32 cia) {
+bool ppc_psq_store(CPUState* cpu, u8 frS, u32 ea, bool w, u8 gqr_index, bool indexed, u32 cia) {
     if (!psq_check_enabled(cpu, indexed, cia))
-        return;
+        return false;
 
     u32 gqr = cpu->gqr[gqr_index & 7u];
     s32 scale = gqr_scale(gqr >> 8);
     u8 type = (u8)(gqr & 7u);
     u32 size = psq_type_size(type);
     if (!psq_access_is_valid(cpu, type, ea, cia))
-        return;
+        return false;
 
     psq_store_value(cpu, ea, type, scale, cpu->fpr[frS]);
     if (!w) {
         u32 ps1_ea = ea + size;
         if (!psq_access_is_valid(cpu, type, ps1_ea, cia))
-            return;
+            return false;
         psq_store_value(cpu, ps1_ea, type, scale, cpu->ps1[frS]);
     }
+    return true;
 }
 
 void ppc_rfi(CPUState* cpu, u32 cia) {

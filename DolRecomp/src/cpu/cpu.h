@@ -150,8 +150,13 @@ u32 ppc_mfspr(CPUState* cpu, u16 spr, u32 cia);
 void ppc_mtspr(CPUState* cpu, u16 spr, u32 value, u32 cia);
 void ppc_rfi(CPUState* cpu, u32 cia);
 void ppc_dcbz_l(CPUState* cpu, u32 ea, u32 cia);
-void ppc_psq_load(CPUState* cpu, u8 frD, u32 ea, bool w, u8 gqr, bool indexed, u32 cia);
-void ppc_psq_store(CPUState* cpu, u8 frS, u32 ea, bool w, u8 gqr, bool indexed, u32 cia);
+// Returns false when the access raised an exception, true otherwise. The C
+// backend calls these as statements and ignores it; the LLVM backend BRANCHES on
+// the result, and while these returned void it branched on a garbage register,
+// took the failure path and returned without advancing pc -- an infinite
+// re-dispatch of the same address.
+bool ppc_psq_load(CPUState* cpu, u8 frD, u32 ea, bool w, u8 gqr, bool indexed, u32 cia);
+bool ppc_psq_store(CPUState* cpu, u8 frS, u32 ea, bool w, u8 gqr, bool indexed, u32 cia);
 u32 ppc_eciwx(CPUState* cpu, u32 ea, u32 cia);
 void ppc_ecowx(CPUState* cpu, u32 ea, u32 value, u32 cia);
 void ppc_tlbie(CPUState* cpu, u32 ea, u32 cia);
