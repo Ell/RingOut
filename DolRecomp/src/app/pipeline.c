@@ -1090,6 +1090,7 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
     if (symbols)
         printf("  symbols: %s\n", symbol_header_path);
     printf("  chunks: %s (%u files)\n", chunks_dir, file_count);
+    emit_report_ca_stats();
     return 1;
 }
 

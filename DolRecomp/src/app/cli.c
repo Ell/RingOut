@@ -18,6 +18,7 @@ void print_usage(const char* argv0) {
     fprintf(stderr, "  --gamecube                     GameCube mode (no title ID required)\n");
     fprintf(stderr, "  --rel-base <addr>              Override first virtual load address for REL codegen\n");
     fprintf(stderr, "  --leader-cases                 Entry switch at block leaders only (EXPERIMENT)\n");
+    fprintf(stderr, "  --ca-liveness                  Report provably-dead XER[CA] writes (codegen unchanged)\n");
     fprintf(stderr, "  --backend <c|llvm>            Code generator; c (default) or the LLVM object backend\n"
         "  --chain-calls                  Emit local bl as a native goto (measured no win; off)\n");
     fprintf(stderr, "  --dispatch-pc <addr>           Guest PC the host hooks by address; calls to it stay\n");
@@ -160,6 +161,11 @@ int parse_cli(int argc, char** argv, CliOptions* opts) {
 
         if (strcmp(arg, "--leader-cases") == 0) {
             opts->leader_cases = 1;
+            continue;
+        }
+
+        if (strcmp(arg, "--ca-liveness") == 0) {
+            opts->ca_liveness = 1;
             continue;
         }
 

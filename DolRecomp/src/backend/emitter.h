@@ -40,6 +40,13 @@ void emit_set_chain_calls(bool enable);
 /* Chunk-entry switch at leaders only (--leader-cases). Incomplete: see emitter.c. */
 void emit_set_leader_cases(bool enable);
 
+/* XER[CA] dead-write analysis (--ca-liveness). REPORTING ONLY: it counts how
+   many write sites a SOUND intraprocedural analysis can prove dead, which is
+   the number that decides whether eliding them is worth the risk. Emitted code
+   is identical either way. */
+void emit_set_ca_liveness(bool enable);
+void emit_report_ca_stats(void);
+
 /* Writes the entry-point sidecar. No-op (and writes nothing) unless the entry
    set was reduced; its absence means "the whole chunk range is entrable". */
 int emit_write_entry_points(const char* path);

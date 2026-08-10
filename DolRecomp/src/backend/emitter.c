@@ -7,6 +7,31 @@
 static void emit_exc_check_return(FILE* out, const char* indent);
 
 #include <stdlib.h>
+#include <string.h>
+#include <stdatomic.h>
+
+/* --ca-liveness: XER[CA] dead-write analysis. Reporting only for now -- see
+ * compute_ca_live(). emit_function() runs on the -jN workers, so the counters
+ * accumulate atomically rather than racing like the entry-point list would. */
+static bool s_ca_liveness = false;
+static _Atomic unsigned long long s_ca_defs;
+static _Atomic unsigned long long s_ca_dead;
+static _Atomic unsigned long long s_ca_uses;
+
+void emit_set_ca_liveness(bool enable) { s_ca_liveness = enable; }
+
+void emit_report_ca_stats(void) {
+    unsigned long long defs, dead, uses;
+    if (!s_ca_liveness)
+        return;
+    defs = atomic_load(&s_ca_defs);
+    dead = atomic_load(&s_ca_dead);
+    uses = atomic_load(&s_ca_uses);
+    printf("  XER[CA]: %llu write sites, %llu read sites, %llu provably dead"
+           " (%.1f%% of writes)\n",
+           defs, uses, dead,
+           defs ? 100.0 * (double)dead / (double)defs : 0.0);
+}
 
 static u32 cr_field_shift(u8 crf) {
     return 4u * (7u - (u32)crf);
@@ -2258,6 +2283,137 @@ static bool inst_ends_block(const PPCInst* inst) {
     }
 }
 
+/* ---- XER[CA] liveness ---------------------------------------------------
+ *
+ * XER[CA] is written 1.255 G times per gameplay run and read 20.2 M -- 98.4%
+ * of the writes are dead. Unlike FPRF it cannot simply be stubbed out (a
+ * RECOMP_NO_CA build produces zero frames: some early multi-word arithmetic
+ * loop depends on the carry to terminate), and unlike FPRF it cannot be made
+ * lazy for free either, because six instructions consume it as an INPUT. So
+ * the only way to skip the computation is to prove, per site, that nothing
+ * reads the value before it is overwritten.
+ *
+ * This is a backward dataflow over one function's blocks, and it is
+ * deliberately SOUND rather than aggressive: any point where control leaves
+ * the function -- a call, a return, an indirect branch, a non-local branch, a
+ * fallback to the interpreter, sc/rfi -- is treated as a reader, because the
+ * code on the other side is not being analysed. Interprocedural propagation
+ * would capture more, but a wrong answer here is silent guest-state
+ * corruption, and the measurement below decides whether that is worth it.
+ *
+ * MEASURE THE CAPTURE RATE BEFORE WIRING ANY ELISION. The 98.4%-dead figure
+ * is DYNAMIC; what this can prove STATICALLY under the escape rule is a
+ * different and probably much smaller number, and if it is small the whole
+ * idea is dead for ~1% of headroom.
+ */
+static bool inst_defs_ca(const PPCInst* inst) {
+    switch (inst->op) {
+    case PPC_OP_SUBFIC:
+    case PPC_OP_ADDIC:   case PPC_OP_ADDIC_DOT:
+    case PPC_OP_ADDC:    case PPC_OP_ADDCO:
+    case PPC_OP_ADDE:    case PPC_OP_ADDEO:
+    case PPC_OP_ADDME:   case PPC_OP_ADDMEO:
+    case PPC_OP_ADDZE:   case PPC_OP_ADDZEO:
+    case PPC_OP_SUBFC:   case PPC_OP_SUBFCO:
+    case PPC_OP_SUBFE:   case PPC_OP_SUBFEO:
+    case PPC_OP_SUBFME:  case PPC_OP_SUBFMEO:
+    case PPC_OP_SUBFZE:  case PPC_OP_SUBFZEO:
+    case PPC_OP_SRAW:    case PPC_OP_SRAWI:
+        return true;
+    case PPC_OP_MTSPR:
+        return inst->spr == 1u;      /* mtxer rewrites CA wholesale */
+    default:
+        return false;
+    }
+}
+
+static bool inst_uses_ca(const PPCInst* inst) {
+    switch (inst->op) {
+    case PPC_OP_ADDE:    case PPC_OP_ADDEO:
+    case PPC_OP_ADDME:   case PPC_OP_ADDMEO:
+    case PPC_OP_ADDZE:   case PPC_OP_ADDZEO:
+    case PPC_OP_SUBFE:   case PPC_OP_SUBFEO:
+    case PPC_OP_SUBFME:  case PPC_OP_SUBFMEO:
+    case PPC_OP_SUBFZE:  case PPC_OP_SUBFZEO:
+    case PPC_OP_MCRXR:
+        return true;
+    case PPC_OP_MFSPR:
+        return inst->spr == 1u;      /* mfxer exposes CA to the guest */
+    default:
+        return false;
+    }
+}
+
+/* Does control leave the analysed function here? Then CA must be assumed read. */
+static bool ca_escapes(const PPCInst* inst, u32 func_addr, u32 func_end) {
+    if (inst_routes_to_fallback(inst))
+        return true;
+    switch (inst->op) {
+    case PPC_OP_SC:
+    case PPC_OP_RFI:
+    case PPC_OP_BCLR:
+    case PPC_OP_BCCTR:
+        return true;
+    case PPC_OP_B:
+    case PPC_OP_BC:
+        if (inst->lk)
+            return true;             /* a call: the callee may read CA */
+        return !branch_target_is_local(func_addr, func_end, inst->branch_target);
+    default:
+        return false;
+    }
+}
+
+#define CA_LIVE_IN(k) \
+    (inst_uses_ca(&insts[k]) ? 1u \
+     : (inst_defs_ca(&insts[k]) ? 0u : live_out[k]))
+
+/* live_out[i] = is CA live immediately AFTER instruction i? */
+static void compute_ca_live(const PPCInst* insts, u32 count, u32 func_addr,
+                            u8* live_out) {
+    u32 func_end = func_addr + count * 4u;
+    bool changed = true;
+    u32 guard = 0;
+
+    memset(live_out, 0, count);
+    /* Monotone (liveness only ever turns on), so this terminates; the guard is
+     * belt-and-braces against a malformed branch target making it oscillate. */
+    while (changed && guard++ < 256u) {
+        u32 k;
+        changed = false;
+        for (k = count; k-- > 0;) {
+            const PPCInst* inst = &insts[k];
+            u8 out;
+
+            if (inst->embedded_data) {
+                out = 1u;            /* not really code; assume the worst */
+            } else if (k + 1u >= count) {
+                out = 1u;            /* falls off the end into the unknown */
+            } else if (!inst_ends_block(inst)) {
+                out = (u8)CA_LIVE_IN(k + 1u);
+            } else if (ca_escapes(inst, func_addr, func_end)) {
+                out = 1u;
+            } else {
+                out = 0u;
+                if (inst->op == PPC_OP_B || inst->op == PPC_OP_BC) {
+                    u32 t = (inst->branch_target - func_addr) / 4u;
+                    if (t < count)
+                        out |= (u8)CA_LIVE_IN(t);
+                }
+                /* A conditional bc also falls through. bo bit pattern 1z1zz is
+                 * "branch always", which does not. */
+                if (inst->op == PPC_OP_BC && (inst->bo & 0x14u) != 0x14u)
+                    out |= (u8)CA_LIVE_IN(k + 1u);
+            }
+
+            if (out != live_out[k]) {
+                live_out[k] = out;
+                changed = true;
+            }
+        }
+    }
+}
+
 static u32 inst_cycle_cost(const PPCInst* inst) {
     if (inst->embedded_data || inst_routes_to_fallback(inst))
         return 0;
@@ -2359,6 +2515,26 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
     u32* block_cost = (u32*)calloc(count ? count : 1u, sizeof(u32));
 
     compute_leaders(insts, count, func_addr, leader);
+
+    if (s_ca_liveness && count) {
+        u8* ca_live = (u8*)calloc(count, sizeof(u8));
+        if (ca_live) {
+            compute_ca_live(insts, count, func_addr, ca_live);
+            for (i = 0; i < count; i++) {
+                if (insts[i].embedded_data)
+                    continue;
+                if (inst_uses_ca(&insts[i]))
+                    atomic_fetch_add(&s_ca_uses, 1ull);
+                if (inst_defs_ca(&insts[i])) {
+                    atomic_fetch_add(&s_ca_defs, 1ull);
+                    if (!ca_live[i])
+                        atomic_fetch_add(&s_ca_dead, 1ull);
+                }
+            }
+            free(ca_live);
+        }
+    }
+
     /* Per-instruction cost of the REST of its block, for the exception refund.
      * Walked with exactly the same block bounds the charge uses, so the refund
      * can never exceed what was charged. */

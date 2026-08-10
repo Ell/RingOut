@@ -24,6 +24,7 @@ typedef struct {
     u32 dispatch_pc_count;
     int chain_calls;
     int leader_cases;
+    int ca_liveness;
     int cpu_explicit;
     int rel_base_set;
     int setup_mode;
