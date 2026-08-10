@@ -87,7 +87,16 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     set(ENABLE_EVDEV OFF CACHE BOOL "" FORCE)
     set(ENABLE_WAYLAND ON CACHE BOOL "" FORCE)
     set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
-    set(USE_SYSTEM_SDL3 OFF CACHE BOOL "" FORCE)
+    # Vendored by default, as every other dependency here is: the shipped
+    # builds must not vary with whatever SDL a build machine happens to have.
+    # But a SteamOS-native build cannot use the bundled copy -- SDL 3.4.4's
+    # X11 backend re-typedefs XGenericEventCookie, which collides with
+    # libx11 >= 1.8.12 (Debian 12 ships 1.8.4, so the container never sees it).
+    # Guarded rather than FORCEd so an explicit -DUSE_SYSTEM_SDL3=ON can win;
+    # with no -D the result is byte-identical to before.
+    if(NOT DEFINED USE_SYSTEM_SDL3)
+        set(USE_SYSTEM_SDL3 OFF CACHE BOOL "" FORCE)
+    endif()
     # SDL bundles its own copy of the macOS hidapi backend
     if(APPLE)
         set(SDL_HIDAPI OFF CACHE BOOL "" FORCE)
