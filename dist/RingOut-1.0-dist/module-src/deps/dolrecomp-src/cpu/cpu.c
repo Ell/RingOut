@@ -323,7 +323,35 @@ void ppc_program_exception(CPUState* cpu, u32 cause, u32 cia) {
 
 /* ppc_fp_available is now a static inline fast path in cpu.h. */
 
+f64 g_fprf_value;
+u8  g_fprf_kind;
+
+#ifdef RECOMP_FPRF_TRACE
+u32 g_fprf_pc;
+void ppc_fprf_trace_mffs(CPUState* cpu) {
+    static unsigned long long n;
+    fprintf(stderr, "[fprf] %llu writer=%08X fprf=%02X\n",
+            n++, g_fprf_pc, (cpu->fpscr >> 12) & 0x1Fu);
+}
+#endif
+
+/* Defined further down next to the FP helpers; forward-declared so the
+ * materialiser can sit beside the exit points that call it. */
+static u32 classify_f64(f64 value);
+static u32 classify_f32(f32 value);
+
+void ppc_fprf_materialize(CPUState* cpu) {
+    /* Classification must match dolrecomp_classify_d / _s in the generated
+     * header exactly; those are the eager path this replaces. */
+    u32 fprf = (g_fprf_kind == 1u) ? classify_f32((f32)g_fprf_value)
+                                   : classify_f64(g_fprf_value);
+    cpu->fpscr = (cpu->fpscr & ~(0x1Fu << 12)) | (fprf << 12);
+    g_fprf_kind = 0u;
+}
+
 void ppc_fallback_instruction(CPUState* cpu, u32 raw, u32 cia) {
+    /* The interpreter is about to read this state. */
+    ppc_fprf_flush(cpu);
     if (cpu->instruction_fallback) {
         cpu->instruction_fallback(cpu, raw, cia);
         return;
@@ -334,6 +362,7 @@ void ppc_fallback_instruction(CPUState* cpu, u32 raw, u32 cia) {
 }
 
 bool ppc_host_call(CPUState* cpu, u32 address) {
+    ppc_fprf_flush(cpu);
     return cpu->host_call ? cpu->host_call(cpu, address) : false;
 }
 
@@ -973,10 +1002,23 @@ static u32 classify_f32(f32 value) {
 }
 
 static void set_fprf(CPUState* cpu, u32 value) {
+    /* These helpers classify their own result, so any value the generated code
+     * left pending belongs to an EARLIER instruction and must not survive to
+     * overwrite this one at the next flush. Dropping it here is what makes the
+     * lazy path bit-exact -- without it the frame hash diverges. */
+    g_fprf_kind = 0u;
+    PPC_FPRF_TAG(0xFFFFFFFFu);
     cpu->fpscr = (cpu->fpscr & ~(0x1Fu << 12)) | ((value & 0x1Fu) << 12);
 }
 
 bool ppc_fres(CPUState* cpu, f64 value, f64* result) {
+    /* Land any deferred FPRF before this helper touches FPSCR. These all
+     * read-modify-write bits 13/14 (FI/FR), which sit INSIDE the 0x1F<<12
+     * FPRF mask, so a flush arriving afterwards would overwrite them and
+     * the frame hash diverges -- measured at frame 1280, one word at
+     * 0x804072A4 differing by exactly bit 13. Flushing on entry restores
+     * the eager ordering. */
+    ppc_fprf_flush(cpu);
     if (value == 0.0) {
         set_fp_exception(cpu, 0x04000000u);
         cpu->fpscr &= ~0x00006000u;
@@ -997,6 +1039,13 @@ bool ppc_fres(CPUState* cpu, f64 value, f64* result) {
 }
 
 bool ppc_frsqrte(CPUState* cpu, f64 value, f64* result) {
+    /* Land any deferred FPRF before this helper touches FPSCR. These all
+     * read-modify-write bits 13/14 (FI/FR), which sit INSIDE the 0x1F<<12
+     * FPRF mask, so a flush arriving afterwards would overwrite them and
+     * the frame hash diverges -- measured at frame 1280, one word at
+     * 0x804072A4 differing by exactly bit 13. Flushing on entry restores
+     * the eager ordering. */
+    ppc_fprf_flush(cpu);
     if (value < 0.0) {
         set_fp_exception(cpu, 0x00000200u);
         cpu->fpscr &= ~0x00006000u;
@@ -1022,6 +1071,13 @@ bool ppc_frsqrte(CPUState* cpu, f64 value, f64* result) {
 }
 
 void ppc_ps_res(CPUState* cpu, f64 a, f64 b, f64* result_a, f64* result_b) {
+    /* Land any deferred FPRF before this helper touches FPSCR. These all
+     * read-modify-write bits 13/14 (FI/FR), which sit INSIDE the 0x1F<<12
+     * FPRF mask, so a flush arriving afterwards would overwrite them and
+     * the frame hash diverges -- measured at frame 1280, one word at
+     * 0x804072A4 differing by exactly bit 13. Flushing on entry restores
+     * the eager ordering. */
+    ppc_fprf_flush(cpu);
     if (a == 0.0 || b == 0.0) {
         set_fp_exception(cpu, 0x04000000u);
         cpu->fpscr &= ~0x00006000u;
@@ -1036,6 +1092,13 @@ void ppc_ps_res(CPUState* cpu, f64 a, f64 b, f64* result_a, f64* result_b) {
 }
 
 void ppc_ps_rsqrte(CPUState* cpu, f64 a, f64 b, f64* result_a, f64* result_b) {
+    /* Land any deferred FPRF before this helper touches FPSCR. These all
+     * read-modify-write bits 13/14 (FI/FR), which sit INSIDE the 0x1F<<12
+     * FPRF mask, so a flush arriving afterwards would overwrite them and
+     * the frame hash diverges -- measured at frame 1280, one word at
+     * 0x804072A4 differing by exactly bit 13. Flushing on entry restores
+     * the eager ordering. */
+    ppc_fprf_flush(cpu);
     if (a == 0.0 || b == 0.0) {
         set_fp_exception(cpu, 0x04000000u);
         cpu->fpscr &= ~0x00006000u;
@@ -1085,6 +1148,13 @@ static f64 force_25_bit(f64 value) {
 
 bool ppc_fma(CPUState* cpu, f64 a, f64 c, f64 b, bool single,
              bool subtract, bool negative, f64* output) {
+    /* Land any deferred FPRF before this helper touches FPSCR. These all
+     * read-modify-write bits 13/14 (FI/FR), which sit INSIDE the 0x1F<<12
+     * FPRF mask, so a flush arriving afterwards would overwrite them and
+     * the frame hash diverges -- measured at frame 1280, one word at
+     * 0x804072A4 differing by exactly bit 13. Flushing on entry restores
+     * the eager ordering. */
+    ppc_fprf_flush(cpu);
     f64 addend = subtract ? -b : b;
     f64 result;
 
@@ -1165,6 +1235,13 @@ static f64 round_nearest_even(f64 value) {
 }
 
 bool ppc_fctiw(CPUState* cpu, f64 value, bool toward_zero, u64* output) {
+    /* Land any deferred FPRF before this helper touches FPSCR. These all
+     * read-modify-write bits 13/14 (FI/FR), which sit INSIDE the 0x1F<<12
+     * FPRF mask, so a flush arriving afterwards would overwrite them and
+     * the frame hash diverges -- measured at frame 1280, one word at
+     * 0x804072A4 differing by exactly bit 13. Flushing on entry restores
+     * the eager ordering. */
+    ppc_fprf_flush(cpu);
     f64 rounded;
     switch (toward_zero ? 1u : (cpu->fpscr & 3u)) {
     case 1: rounded = trunc(value); break;
@@ -1207,3 +1284,103 @@ bool ppc_fctiw(CPUState* cpu, f64 value, bool toward_zero, u64* output) {
               ((result == 0 && signbit(value)) ? 0x100000000ull : 0ull);
     return true;
 }
+
+/* ---------------------------------------------------------------------------
+ * Condition-register liveness counters (RECOMP_CR_STATS; see cpu.h).
+ *
+ * `pending` is the set of CR fields written but not yet read. A write to a
+ * field already in that set is a DEAD write -- the previous value never
+ * reached anything -- which is the number that decides whether eliding CR
+ * computation is worth codegen work.
+ *
+ * Deliberately not thread-safe and deliberately not atomic: this is a counting
+ * probe run on the single-threaded determinism harness, and making it atomic
+ * would change the timing it is trying to describe. It is compiled out of any
+ * normal build.
+ * ------------------------------------------------------------------------- */
+#ifdef RECOMP_CR_STATS
+static unsigned long long g_cr_writes[8];
+static unsigned long long g_cr_reads[8];
+static unsigned long long g_cr_dead[8];
+static unsigned g_cr_pending;
+
+void ppc_cr_note_write(unsigned field) {
+    field &= 7u;
+    if (g_cr_pending & (1u << field))
+        g_cr_dead[field]++;
+    g_cr_pending |= (1u << field);
+    g_cr_writes[field]++;
+}
+
+void ppc_cr_note_read(unsigned field_mask) {
+    field_mask &= 0xFFu;
+    g_cr_pending &= ~field_mask;
+    for (unsigned f = 0; f < 8u; f++)
+        if (field_mask & (1u << f))
+            g_cr_reads[f]++;
+}
+
+/* XER[CA]. Unlike the CR, the guest compiler does not get to CHOOSE whether a
+ * carry is produced: srawi, addc, subfc and friends set CA unconditionally by
+ * architecture, whether or not anything consumes it. So the dead rate here can
+ * be far higher than the CR's, and every one costs a read-modify-write of
+ * ctx->xer plus the bits that compute it -- turning a one-instruction shift
+ * into roughly seven. This is what the hot cluster at 0x8000DA8C is full of.
+ */
+static unsigned long long g_ca_writes, g_ca_reads, g_ca_dead;
+static bool g_ca_pending;
+
+void ppc_ca_note_write(void) {
+    if (g_ca_pending) g_ca_dead++;
+    g_ca_pending = true;
+    g_ca_writes++;
+}
+
+void ppc_ca_note_read(void) {
+    g_ca_pending = false;
+    g_ca_reads++;
+}
+
+/* FPRF (FPSCR bits 12-16) is recomputed and stored after EVERY FP arithmetic
+ * result -- 13334 emitted sites -- while this game reads FPSCR at two mffs
+ * sites. It was added for lockstep fidelity against Dolphin's interpreter and
+ * measured "free (within noise)", but that measurement was taken on the
+ * boot/menu harness, which carries ~0.1% of a real session's paired-single
+ * traffic. This counts it on actual gameplay.
+ */
+static unsigned long long g_fprf_writes, g_fprf_reads, g_fprf_dead;
+static bool g_fprf_pending;
+
+void ppc_fprf_note_write(void) {
+    if (g_fprf_pending) g_fprf_dead++;
+    g_fprf_pending = true;
+    g_fprf_writes++;
+}
+
+void ppc_fprf_note_read(void) {
+    g_fprf_pending = false;
+    g_fprf_reads++;
+}
+
+__attribute__((destructor))
+static void ppc_cr_report(void) {
+    unsigned long long tw = 0, tr = 0, td = 0;
+    for (unsigned f = 0; f < 8u; f++) { tw += g_cr_writes[f]; tr += g_cr_reads[f]; td += g_cr_dead[f]; }
+    if (tw == 0) return;
+    fprintf(stderr, "[cr-stats] field      writes         reads          dead   dead%%\n");
+    for (unsigned f = 0; f < 8u; f++) {
+        if (!g_cr_writes[f] && !g_cr_reads[f]) continue;
+        fprintf(stderr, "[cr-stats] cr%u   %12llu  %12llu  %12llu  %5.1f%%\n", f,
+                g_cr_writes[f], g_cr_reads[f], g_cr_dead[f],
+                g_cr_writes[f] ? 100.0 * (double)g_cr_dead[f] / (double)g_cr_writes[f] : 0.0);
+    }
+    fprintf(stderr, "[cr-stats] TOTAL %12llu  %12llu  %12llu  %5.1f%%\n",
+            tw, tr, td, 100.0 * (double)td / (double)tw);
+    fprintf(stderr, "[ca-stats] xer.CA %12llu  %12llu  %12llu  %5.1f%%\n",
+            g_ca_writes, g_ca_reads, g_ca_dead,
+            g_ca_writes ? 100.0 * (double)g_ca_dead / (double)g_ca_writes : 0.0);
+    fprintf(stderr, "[ca-stats] FPRF   %12llu  %12llu  %12llu  %5.1f%%\n",
+            g_fprf_writes, g_fprf_reads, g_fprf_dead,
+            g_fprf_writes ? 100.0 * (double)g_fprf_dead / (double)g_fprf_writes : 0.0);
+}
+#endif /* RECOMP_CR_STATS */

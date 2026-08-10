@@ -237,6 +237,90 @@ DOLRECOMP_AI void mem_write64(CPUState* cpu, u32 addr, u64 value) {
     else mem_write64_slow(cpu, addr, value);
 }
 
+/* LAZY FPRF.
+ *
+ * FPRF (FPSCR bits 12-16) classifies every FP result. Measured on gameplay it
+ * is written 3.073 G times and read 15,885 -- 100% dead -- and costs ~20 host
+ * instructions a time, 3.1% of all cycles. So do not compute it eagerly:
+ * remember the value, and classify only when someone can actually see FPSCR.
+ *
+ * The pending value lives in module globals rather than CPUState on purpose.
+ * A CPUState field would be the tidier home, but the chassis exports guest
+ * state to Dolphin through SyncOut() -- the path savestates, rollback and
+ * netplay all run on -- and hooking that needs a new module export and an ABI
+ * bump, which couples module and runtime deployment. Instead this flushes at
+ * every point control LEAVES the module, so the chassis can never observe a
+ * stale FPSCR and none of that machinery has to change:
+ *
+ *   chassis_dispatch        (module_export.c) every return to the run loop
+ *   ppc_fallback_instruction  before the interpreter sees the state
+ *   ppc_host_call             before any HLE hook runs
+ *   mffs / mcrfs              the guest reading it itself
+ *
+ * and it is DROPPED (not flushed) wherever the guest writes FPSCR explicitly
+ * (mtfsf/mtfsfi/mtfsb0/mtfsb1), because that write supersedes the pending
+ * classification of an earlier op.
+ *
+ * Correctness is exactly checkable: guest state must stay bit-identical, so
+ * the gameplay benchmark's frame hash must be unchanged.
+ */
+/* RECOMP_FPRF_TRACE: name the instruction that last wrote FPRF before each
+ * mffs, so an eager and a lazy build can be diffed to find which op the two
+ * disagree about. Off by default and expanding to nothing. */
+#ifdef RECOMP_FPRF_TRACE
+extern u32 g_fprf_pc;
+void ppc_fprf_trace_mffs(CPUState* cpu);
+#define PPC_FPRF_TAG(addr)      (g_fprf_pc = (u32)(addr))
+#define PPC_FPRF_TRACE_MFFS(c)  ppc_fprf_trace_mffs(c)
+#else
+#define PPC_FPRF_TAG(addr)      ((void)0)
+#define PPC_FPRF_TRACE_MFFS(c)  ((void)0)
+#endif
+
+extern f64 g_fprf_value;
+extern u8  g_fprf_kind;   /* 0 none, 1 single, 2 double */
+void ppc_fprf_materialize(CPUState* cpu);
+
+static inline void ppc_fprf_flush(CPUState* cpu) {
+    if (g_fprf_kind) ppc_fprf_materialize(cpu);
+}
+static inline void ppc_fprf_drop(void) { g_fprf_kind = 0u; }
+
+/* Condition-register liveness instrumentation.
+ *
+ * Every `.`-form instruction and every compare eagerly computes a CR field --
+ * about six host instructions each, into a read-modify-write of ctx->cr. If
+ * most of those fields are overwritten before anything reads them, that is
+ * pure emitted waste and eliding it is a codegen win. Nothing has ever
+ * measured which it is, and in this codebase static structure has predicted
+ * execution badly every single time (static psq sites said 92.8% GQR0; the
+ * measured truth for stores was 15.3%), so this counts at runtime.
+ *
+ * OFF BY DEFAULT AND EXPANDING TO NOTHING, so one generation serves both the
+ * shipped module and the probe: build with -DRECOMP_CR_STATS to arm it.
+ */
+#ifdef RECOMP_CR_STATS
+void ppc_cr_note_write(unsigned field);
+void ppc_cr_note_read(unsigned field_mask);
+void ppc_ca_note_write(void);
+void ppc_ca_note_read(void);
+void ppc_fprf_note_write(void);
+void ppc_fprf_note_read(void);
+#define PPC_CR_WRITE(field) ppc_cr_note_write((field))
+#define PPC_CR_READ(mask)   ppc_cr_note_read((mask))
+#define PPC_CA_WRITE()      ppc_ca_note_write()
+#define PPC_CA_READ()       ppc_ca_note_read()
+#define PPC_FPRF_WRITE()    ppc_fprf_note_write()
+#define PPC_FPRF_READ()     ppc_fprf_note_read()
+#else
+#define PPC_CR_WRITE(field) ((void)0)
+#define PPC_CR_READ(mask)   ((void)0)
+#define PPC_CA_WRITE()      ((void)0)
+#define PPC_CA_READ()       ((void)0)
+#define PPC_FPRF_WRITE()    ((void)0)
+#define PPC_FPRF_READ()     ((void)0)
+#endif
+
 // MSR.FP (PPC_BIT(18) = 0x2000). Common case (FP enabled) is a single bit test.
 static inline bool ppc_fp_available(CPUState* cpu, u32 cia) {
     if (cpu->msr & 0x00002000u)

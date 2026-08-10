@@ -10,11 +10,21 @@
 
 static int chassis_dispatch(CPUState* ctx, u32 address)
 {
-    return dolrecomp_call(ctx, address);
+    const int result = dolrecomp_call(ctx, address);
+    // Lazy FPRF: classification is deferred while native code runs, so
+    // materialise it here -- this is the one path every return to the run loop
+    // takes, and past it the chassis may export guest state to Dolphin
+    // (SyncOut) for a savestate, a rollback or the interpreter. Keeping the
+    // flush on this side means none of that machinery has to know.
+    ppc_fprf_flush(ctx);
+    return result;
 }
 
 static void chassis_on_state_loaded(CPUState* ctx)
 {
+    // The loaded FPSCR is authoritative; anything left pending belongs to the
+    // session being discarded and would overwrite it at the next flush.
+    ppc_fprf_drop();
     // Re-arm host FP rounding/flush state from the freshly loaded guest FPSCR.
     ppc_fpscr_updated(ctx);
 }
