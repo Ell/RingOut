@@ -12,6 +12,11 @@ name: Steam Deck build
 # than trusting it.
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload the release asset (default: build only)'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -78,6 +83,11 @@ jobs:
         run: NATIVE=1 .github/scripts/package-deck.sh
 
       - name: Publish release asset
+        # OPT-IN ONLY: a dispatch with publish=true. Merging to main used to
+        # publish this automatically, so "land the change" and "ship it to
+        # everyone" were one action -- and the packaging scripts are on the
+        # trigger paths, meaning a packaging fix alone would publish a build.
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
         # A GitHub RELEASE asset, not an Actions artifact. Actions artifact
         # storage is one quota'd pool shared by every workflow, and exceeding it
         # fails EVERY upload rather than the offending one -- a ~294 MB Windows
