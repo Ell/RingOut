@@ -117,3 +117,8 @@ compile_commands.json
 # stray captures at the workspace root only -- docs/ screenshots are wanted
 /*.png
 /*.obj
+
+# Disc-derived and personal build artifacts. Never publishable: the extracted
+# game, the recompiled module, and memory-card saves. Kept out of dist/ so
+# nothing globbing dist/*.zip can upload them.
+/private-artifacts/
