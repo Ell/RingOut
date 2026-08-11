@@ -195,6 +195,42 @@ try {
 }
 Remove-Item (Join-Path $OutDir 'ringout.iss') -Force -ErrorAction SilentlyContinue
 
+# --- checks ---------------------------------------------------------------
+# The staging above is an allowlist, which is the right shape -- but
+# package-deck.sh asserts the same invariants anyway, on the grounds that a
+# package shipping the disc, the save card or the module is the failure that
+# matters and should not rest on nobody having edited the allowlist. Windows
+# had no equivalent. It also ships a userdata\ subtree (GameSettings only), so
+# "no userdata" cannot be the rule here; name the sensitive files instead.
+Write-Host "==> checks"
+$forbidden = @('game', 'work', 'source', 'userdata\Config', 'userdata\GC',
+               'userdata\Logs', 'bin\gGRSEAF_recomp.so')
+foreach ($f in $forbidden) {
+    if (Test-Path (Join-Path $stage $f)) {
+        Write-Error "  FAIL: $f is in the stage"; exit 1
+    }
+}
+$leaks = Get-ChildItem $stage -Recurse -File -Include `
+    '*.gci','*.iso','*.sav','*_recomp.so','dolphin.log','RetroAchievements.ini', `
+    'TimePlayed.ini','.netrc','id_rsa','id_ed25519' -ErrorAction SilentlyContinue
+if ($leaks) {
+    Write-Error "  FAIL: disc-, save- or credential-derived files in the stage:"
+    $leaks | ForEach-Object { Write-Error "    $($_.FullName)" }
+    exit 1
+}
+# Home paths compiled into a binary or left in a text file are the privacy axis
+# the checks above do not cover; privacy-scan.sh is the Linux equivalent.
+$paths = Select-String -Path (Join-Path $stage '*') -Recurse `
+    -Pattern 'C:\\Users\\[A-Za-z0-9_-]+|/home/[a-z0-9_-]+/|/Users/[A-Za-z0-9_-]+/' `
+    -List -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -notmatch '\\toolchain\\|\\llvm-mingw|\\Externals\\' }
+if ($paths) {
+    Write-Error "  FAIL: developer paths in the stage:"
+    $paths | ForEach-Object { Write-Error "    $($_.Path): $($_.Matches[0].Value)" }
+    exit 1
+}
+Write-Host "  clean"
+
 # --- zip ------------------------------------------------------------------
 Write-Host "==> zipping"
 $zip = Join-Path $OutDir 'RingOut-1.0-windows-x64.zip'

@@ -118,6 +118,14 @@ case "$floor" in
   *) echo "  FAIL: $floor is above SteamOS's ~2.37 -- this will not start on a Deck" >&2; exit 1 ;;
 esac
 
+# The checks above are the copyright axis -- disc, save card, module. Privacy is
+# a separate axis they do not cover: a stage can be entirely free of game data
+# and still carry the builder's home directory baked into a generated file, LAN
+# addressing in a config, or an author email inside a source patch shipped for
+# GPL compliance. Run against the STAGE, never the working package -- that one
+# legitimately holds the disc, the save card and a config naming the LAN.
+"$REPO/.github/scripts/privacy-scan.sh" "$STAGE"
+
 # --- zip ------------------------------------------------------------------
 # Info-ZIP stores unix modes and unzip restores them. That matters more than it
 # looks: RingOut and bin/moderngekko-run arrive non-executable otherwise and the
