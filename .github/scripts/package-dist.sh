@@ -108,6 +108,55 @@ else
   echo "==> GPL source shipment SKIPPED (SKIP_SOURCE=1) -- do not publish this"
 fi
 
+echo "==> ABI consistency"
+# THE FAILURE THIS EXISTS FOR. This package ships a prebuilt runtime next to the
+# SOURCES the user compiles their module from, and nothing kept the two in step.
+# A 27 July runtime shipped beside 7 August module sources: the sources declared
+# STATICRECOMP_ABI_VERSION 3 (the entry-point table), the runtime predated it and
+# accepted at most 2, so setup.sh completed happily and then every launch died
+# with "native module was rejected: module ABI mismatch". The package built, it
+# scanned clean, and it could not produce a working install.
+#
+# The runtime's accepted version cannot be read back out of the binary, so this
+# checks the two things that can be: that the shipped sources ARE the repo's
+# sources, and that the binary is not older than the ABI it has to satisfy.
+ABI_PKG="$SRC/module-src/deps/chassis-abi/StaticRecompABI.h"
+ABI_REPO="$REPO/ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompABI.h"
+if ! cmp -s "$ABI_PKG" "$ABI_REPO"; then
+  echo "  FAIL: the packaged chassis ABI header differs from the repo's." >&2
+  echo "        $ABI_PKG" >&2
+  echo "        $ABI_REPO" >&2
+  exit 1
+fi
+echo "  ABI header matches the repo (v$(grep -oE 'STATICRECOMP_ABI_VERSION [0-9]+' "$ABI_PKG" | grep -oE '[0-9]+'))"
+
+# dolrecomp-src under module-src is a COPY of DolRecomp/src, and edits to one
+# not reaching the other is a trap this project has hit before -- the module
+# still links, because a .so links with undefined symbols and only fails at
+# dlopen.
+for f in cpu/cpu.c cpu/cpu.h common/types.h; do
+  if ! cmp -s "$SRC/module-src/deps/dolrecomp-src/$f" "$REPO/DolRecomp/src/$f"; then
+    echo "  FAIL: module-src/deps/dolrecomp-src/$f differs from DolRecomp/src/$f" >&2
+    exit 1
+  fi
+done
+echo "  dolrecomp-src copy is in sync"
+
+# A runtime older than the ABI header cannot know about it.
+rt_ts="$(stat -c %Y "$SRC/bin/moderngekko-run")"
+abi_ts="$(stat -c %Y "$ABI_PKG")"
+if [ "$rt_ts" -lt "$abi_ts" ]; then
+  echo "  FAIL: bin/moderngekko-run ($(date -d "@$rt_ts" +%F)) predates the ABI" >&2
+  echo "        header ($(date -d "@$abi_ts" +%F)). Rebuild the runtime:" >&2
+  echo "          cmake -S ModernGekko -B build-dist-native -GNinja \\" >&2
+  echo "            -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF -DENABLE_TESTS=OFF \\" >&2
+  echo "            -DENABLE_ANALYTICS=OFF -DENABLE_AUTOUPDATE=OFF" >&2
+  echo "          cmake --build build-dist-native --target moderngekko-run" >&2
+  echo "          cp build-dist-native/moderngekko-run $SRC/bin/" >&2
+  exit 1
+fi
+echo "  runtime is newer than the ABI header"
+
 echo "==> checks"
 # Assert rather than trust the allowlist: shipping the disc, the save card or
 # the module is the failure that matters.
