@@ -61,6 +61,12 @@ jobs:
         # shared quota full and failed unrelated workflows' uploads. Same rolling
         # release as the bundle, so there is always a current Windows build with
         # a stable URL and nothing accumulating behind it.
+        #
+        # NOT on a manual run. A dispatch is how this workflow gets exercised
+        # from a feature branch -- Windows cannot be built or tested on the
+        # maintainer's machine -- and a test run must not overwrite the rolling
+        # download that people actually fetch with a build off some branch.
+        if: github.event_name != 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -89,7 +95,14 @@ jobs:
             -BinDir staging -RepoRoot (Get-Location).Path -OutDir package
 
       - name: Publish release asset
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        # TAGS ONLY. Publishing is now a deliberate act: cut a tag. A manual run
+        # builds and packages but uploads NOTHING, so the packaging script can be
+        # exercised from a branch -- which is the only way it ever gets tested,
+        # since Windows cannot be built on the maintainer's machine -- without a
+        # branch build becoming the public download. Previously a dispatch
+        # refreshed the rolling prerelease, which meant "test the packaging" and
+        # "publish to everyone" were the same button.
+        if: startsWith(github.ref, 'refs/tags/')
         # A GitHub RELEASE asset, not an Actions artifact. This bundle is ~294 MB
         # per build because it carries a whole toolchain, and at the 90-day
         # artifact default it exhausted the repo's shared artifact quota -- which
@@ -97,9 +110,8 @@ jobs:
         # including the 22 MB Deck package. Release assets are outside that pool
         # and give a stable download URL.
         #
-        # A real tag publishes under that tag; a manual run refreshes a rolling
-        # prerelease instead of minting junk tags. --clobber because re-uploading
-        # an existing asset name is an error, not a replace.
+        # --clobber because re-uploading an existing asset name is an error,
+        # not a replace.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
