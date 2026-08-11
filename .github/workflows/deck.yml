@@ -28,6 +28,11 @@ on:
       - '.github/workflows/deck.yml'
       - '.github/scripts/build-deck.sh'
       - '.github/scripts/package-deck.sh'
+      # package-deck.sh calls both of these, so a change to either changes what
+      # this workflow produces -- the same reasoning that put the packaging
+      # script itself on this list.
+      - '.github/scripts/privacy-scan.sh'
+      - '.github/scripts/publish-release-asset.sh'
       - '.github/scripts/deck-deps.txt'
       - 'dist/RingOut-1.0-deck/**'
 

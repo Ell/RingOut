@@ -19,8 +19,14 @@ on:
       # workflow produces. Leaving them out meant a fix to the packaging script
       # pushed cleanly, triggered nothing, and looked green against the PREVIOUS
       # run's result.
+      #
+      # Named individually rather than '.github/scripts/**'. The glob woke a
+      # windows-2022 runner -- billed at 2x, ~28 minutes -- for every change to
+      # a Deck or Linux script that Windows never reads. These are the only two
+      # this job actually consumes; add to the list when that stops being true.
       - '.github/workflows/windows.yml'
-      - '.github/scripts/**'
+      - '.github/scripts/package-windows.ps1'
+      - '.github/scripts/ringout.iss'
       - 'dist/RingOut-1.0-dist/**'
 
 permissions:
