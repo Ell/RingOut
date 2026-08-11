@@ -118,5 +118,33 @@ cmake --build "$HERE/work/build"
 
 cp "$HERE/work/build/g${DISC_ID}_recomp.so" "$HERE/bin/"
 
+# The game's own artwork, taken from the disc you supplied. None of it ships in
+# this package -- it belongs to the publisher, so it is extracted here on your
+# machine, exactly as the module above is. art/banner.png is the disc banner;
+# art/icon.png is the memory-card icon, which only exists once you have saved,
+# so this is worth re-running after you have played.
+echo "==> artwork"
+python3 "$HERE/tools/gc-art.py" "$HERE" || true
+
+# A desktop entry, so the game appears in menus with its own icon rather than
+# as a shell script. Written with absolute paths because the package is run
+# from wherever it was unpacked, not installed to a prefix.
+ICON="$HERE/art/icon.png"
+[ -f "$ICON" ] || ICON="$HERE/art/banner.png"
+if [ -f "$ICON" ]; then
+    cat > "$HERE/RingOut.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Ring Out
+Comment=SOULCALIBUR II, statically recompiled
+Exec=$HERE/RingOut
+Icon=$ICON
+Terminal=false
+Categories=Game;
+DESKTOP
+    chmod +x "$HERE/RingOut.desktop"
+    echo "    RingOut.desktop -> $(basename "$ICON")"
+fi
+
 echo
 echo "Setup complete. Run ./RingOut to play."

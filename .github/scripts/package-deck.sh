@@ -64,7 +64,7 @@ fi
 echo "==> runtime: $RUNTIME"
 
 rm -rf "$WORK"
-mkdir -p "$STAGE/bin" "$STAGE/lib" "$STAGE/shaders"
+mkdir -p "$STAGE/bin" "$STAGE/lib" "$STAGE/shaders" "$STAGE/tools"
 
 # --- support libraries ----------------------------------------------------
 # Computed, not hand-maintained. The rule is the runtime's ldd closure minus
@@ -96,6 +96,9 @@ echo "    $(ls "$STAGE/lib" | wc -l) libraries"
 echo "==> scaffolding"
 install -m 755 "$RUNTIME"        "$STAGE/bin/moderngekko-run"
 install -m 755 "$SRC/RingOut"    "$STAGE/RingOut"
+# Same extractor the desktop package ships. The Deck package has no setup.sh --
+# it is prebuilt -- so the launcher runs this the first time a game is present.
+install -m 755 "$REPO/dist/shared/gc-art.py" "$STAGE/tools/gc-art.py"
 install -m 644 "$SRC/README.txt" "$STAGE/README.txt"
 install -m 644 "$SRC/CREDITS.txt" "$STAGE/CREDITS.txt"
 for f in "$SRC"/shaders/*.glsl; do install -m 644 "$f" "$STAGE/shaders/"; done
@@ -104,7 +107,9 @@ for f in "$SRC"/shaders/*.glsl; do install -m 644 "$f" "$STAGE/shaders/"; done
 # A package that ships the disc, the save card or the module is the failure
 # that matters here, so assert it rather than trusting the allowlist above.
 echo "==> checks"
-for forbidden in game userdata bin/gGRSEAF_recomp.so; do
+# art/ holds the game's own banner and icon, extracted from the player's own
+# disc at run time. Fine to generate locally, never to ship.
+for forbidden in game userdata bin/gGRSEAF_recomp.so art; do
   [ -e "$STAGE/$forbidden" ] && { echo "  FAIL: $forbidden is in the stage" >&2; exit 1; }
 done
 if find "$STAGE" -name '*_recomp.so' -o -name '*.gci' -o -name '*.iso' | grep -q .; then

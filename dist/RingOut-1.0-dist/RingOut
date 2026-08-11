@@ -27,6 +27,18 @@ mkdir -p "$USER_DIR"
 # it. ldconfig is asked what is installed and only the remainder is linked into
 # a private directory. RINGOUT_ALL_LIBS=1 forces the whole bundle back, which
 # separates a library the host is missing from one whose bundled copy is wrong.
+# The game's own banner and memory-card icon, extracted from the disc and saves
+# the player supplied. Nothing here ships -- it belongs to the publisher -- so
+# it is generated locally, on first launch once a game is present.
+#
+# Runs only when the output is missing, so it costs nothing on a normal launch.
+# The icon comes from a .gci and therefore does not exist until the player has
+# saved at least once; deleting art/icon.png re-runs this and picks it up.
+if [ -x "$HERE/tools/gc-art.py" ] && [ -d "$HERE/game" ] \
+   && [ ! -f "$HERE/art/icon.png" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$HERE/tools/gc-art.py" "$HERE" >/dev/null 2>&1 || true
+fi
+
 LIBDIR="$HERE/lib"
 LIB_PATH=""
 if [ -d "$LIBDIR" ]; then

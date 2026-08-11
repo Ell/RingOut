@@ -54,6 +54,18 @@ fi
 # of all 66. Set RINGOUT_ALL_LIBS=1 to force the old behaviour of using the
 # whole bundle, which is useful for telling a missing library apart from an
 # incompatible one.
+# The game's own banner and memory-card icon, extracted from the disc and saves
+# the player supplied. Nothing here ships -- it belongs to the publisher -- so
+# it is generated locally, on first launch once a game is present.
+#
+# Runs only when the output is missing, so it costs nothing on a normal launch.
+# The icon comes from a .gci and therefore does not exist until the player has
+# saved at least once; deleting art/icon.png re-runs this and picks it up.
+if [ -x "$HERE/tools/gc-art.py" ] && [ -d "$HERE/game" ] \
+   && [ ! -f "$HERE/art/icon.png" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$HERE/tools/gc-art.py" "$HERE" >/dev/null 2>&1 || true
+fi
+
 LIBDIR="$HERE/lib"
 LIB_PATH=""
 if [ -d "$LIBDIR" ]; then

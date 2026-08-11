@@ -50,6 +50,11 @@ install -m 644 "$SRC/CREDITS.txt" "$STAGE/CREDITS.txt"
 mkdir -p "$STAGE/bin" "$STAGE/tools" "$STAGE/shaders"
 install -m 755 "$SRC/bin/moderngekko-run" "$STAGE/bin/moderngekko-run"
 install -m 755 "$SRC/tools/dolrecomp"     "$STAGE/tools/dolrecomp"
+# Extracts the game's own banner and memory-card icon on the PLAYER's machine
+# (setup.sh runs it). One canonical copy in dist/shared/ feeds both packages,
+# rather than a second copy that drifts -- this project has been bitten by
+# exactly that with dolrecomp-src.
+install -m 755 "$REPO/dist/shared/gc-art.py" "$STAGE/tools/gc-art.py"
 for f in "$SRC"/shaders/*.glsl; do install -m 644 "$f" "$STAGE/shaders/"; done
 
 # bin/g<ID>_recomp.so is deliberately absent: it is recompiled from the user's
@@ -160,7 +165,10 @@ echo "  runtime is newer than the ABI header"
 echo "==> checks"
 # Assert rather than trust the allowlist: shipping the disc, the save card or
 # the module is the failure that matters.
-for forbidden in game work windows source/build bin/gGRSEAF_recomp.so \
+# art/ is the game's own banner and icon, extracted from the player's disc by
+# setup.sh. It belongs to the publisher: generating it locally is fine,
+# shipping it is not.
+for forbidden in game work windows source/build bin/gGRSEAF_recomp.so art \
                  userdata/Config userdata/GC userdata/Logs userdata/config.ini; do
   [ -e "$STAGE/$forbidden" ] && { echo "  FAIL: $forbidden is in the stage" >&2; exit 1; }
 done

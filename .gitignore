@@ -79,6 +79,9 @@ compile_commands.json
 # ---------------------------------------------------------------------------
 /dist.zip
 /dist/*
+# Shared scaffolding both packaging scripts install from. Source, not payload:
+# without this the scripts fail on a fresh clone, because /dist/* would hide it.
+!/dist/shared/
 !/dist/RingOut-1.0-dist/
 # redistributable: ship the scaffolding, never the built payload
 /dist/RingOut-1.0-dist/bin/
