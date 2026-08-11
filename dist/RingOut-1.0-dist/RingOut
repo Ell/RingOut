@@ -11,6 +11,26 @@ HERE="$(dirname "$(readlink -f "$0")")"
 USER_DIR="$HERE/userdata"
 mkdir -p "$USER_DIR"
 
+# Keep a log of the run. Launched from a file manager or a desktop entry there
+# is no terminal to print to, so a crash otherwise leaves the window closing and
+# nothing else -- which is exactly the position a "it crashes on the VS screen"
+# report starts from. The Deck launcher has kept one for this reason; this one
+# did not. Truncated per run, with the previous kept for comparison, because
+# what matters is the attempt just made and the one before it.
+LOG="$USER_DIR/launch.log"
+[ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
+if [ -t 1 ]; then
+    exec > >(tee "$LOG") 2>&1
+else
+    exec > "$LOG" 2>&1
+fi
+echo "=== RingOut launch $(date -Is) ==="
+echo "runtime : $(date -r "$HERE/bin/moderngekko-run" +%F\ %H:%M 2>/dev/null)"
+for m in "$HERE"/bin/g*_recomp.so; do
+    [ -e "$m" ] && echo "module  : $(basename "$m")  $(date -r "$m" +%F\ %H:%M)"
+done
+echo "session : ${XDG_SESSION_TYPE:-unset}   wayland: ${WAYLAND_DISPLAY:-unset}   x11: ${DISPLAY:-unset}"
+
 # Only the libraries this host does NOT already provide go on the search path.
 #
 # Putting all of lib/ on LD_LIBRARY_PATH shadows the host's copy of every soname
