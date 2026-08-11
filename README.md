@@ -18,12 +18,29 @@ fallback**: every executed block runs as native code. The recompiler translates
 535,368 instructions with 0 unknown opcodes. Rendering is Vulkan on the GPU, with
 the CPU emulation and the runtime on separate cores.
 
+**Steam Deck**: supported, with its own prebuilt package — no toolchain, no
+compile step. Runs in both Desktop and Game Mode at 45–49 fps in a match.
+
+**Netplay**: working. Rollback over a deterministic dual-core setup, with a lobby
+showing live ping and per-player game status; two peers stayed byte-identical
+over 6,470 frames.
+
 ---
 
 ## Getting it
 
-Grab `RingOut-1.0-linux-x86_64.zip` from the
-[Releases](../../releases) page, unzip, and run:
+Two packages, from the [Releases](../../releases) page:
+
+| | for | needs a toolchain? |
+| --- | --- | --- |
+| `RingOut-1.0-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
+| `RingOut-1.0-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
+
+The Deck package ships no module: build one on a desktop with the package below,
+then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a
+non-Steam game to launch it from Game Mode.
+
+For desktop, unzip and run:
 
 ```sh
 ./RingOut
@@ -65,6 +82,10 @@ before relying on that.
 - **Free camera** — fly the camera anywhere in a match
 - **FMV playback** via FFmpeg, replacing the software Sofdec decoder
 - **23 verified cheat codes** shipped in `GameSettings/GRSEAF.ini`
+- **Netplay** — rollback, lobby with live ping and per-player game status
+- **Its own icon** — the disc banner and the memory-card icon are extracted from
+  your disc and saves on your machine, and a desktop entry is written for you.
+  None of that artwork ships; it is the publisher's.
 
 ### Controls
 
@@ -85,44 +106,73 @@ Free camera (enable in the Video tab): `Shift+WASD` move, `Shift+Q/E` down/up,
 
 ## Performance work
 
-The recompiled module went through several rounds of optimisation, measured with a
-headless benchmark counting native dispatches, each change lockstep-verified against
-the interpreter for floating-point divergence (0 in every case):
+Everything below is measured on a **fixed-work gameplay benchmark** — the same
+emulated frames, driven by a frame-keyed input script, counted in retired CPU
+cycles rather than wall time. That harness exists because the earlier one did
+not measure the right thing: it ran boot and an idle menu, which carry ~0.1% of
+a real session's paired-single traffic, so a change could look free there and
+cost 3% in a match. **Earlier figures in this README were taken that way and have
+been removed rather than restated.**
 
-| Change | Gain |
+### What shipped
+
+| Change | Effect |
 | --- | --- |
-| `-march=native` | +8.9% |
-| Profile-guided optimisation (gameplay + attract-mode profiles) | +11.6% under load |
-| `ldexp` → inline `psq_pow2i` in the paired-single quantise path | +8.2% |
-| BOLT layout optimisation | +3.1% |
-| **Cumulative** | **≈ +33%** |
+| Inline the paired-single helper chain | psq cost per unit of work −43% |
+| Compile loop back-edges as native `goto` | dispatches −66%, CPU −11.5% |
+| Defer FPRF classification until FPSCR is observable | −2.14% cycles (Deck) |
+| `-flto=auto` | module relink 22 min → 6 |
 
-The `ldexp` one is the interesting case: paired-single dequantisation called libm
-`ldexp` at 3,086 inlined sites for what is only a multiply by a power of two — 5.37
-billion hot PLT calls, replaced with a bit-cast that is bit-identical over the
-6-bit signed GQR scale range.
+The FPRF one is the shape most of these take: the FP condition register is
+written 3.07 billion times per run and read 15,885 times — mandatory by
+architecture, dead in practice — so it is now computed only where something can
+observe it, with frame hashes proving guest state is unchanged.
 
-A register-allocation rewrite was prototyped and **rejected**: the dispatcher
-returns to the loop head on every backward branch, so registers round-trip through
-memory each iteration and there is no cross-iteration residency for a register
-allocator to exploit. The measured benefit on realistic short blocks was 0.97–1.00×.
+### What was measured and rejected
+
+Kept here because the negative results cost as much to establish as the wins,
+and each one looks plausible enough to be retried:
+
+| Idea | Result |
+| --- | --- |
+| BOLT post-link layout | **8.1% slower** |
+| `-O2` instead of `-O3` | **9.1% slower**, despite 12.5% less code |
+| LLVM object backend | **4% slower**, even removing 43% of dispatches |
+| Profile-guided optimisation | does not build — SIGBUS before the first frame |
+| Leaders-only entry labels | 81% of execution fell out to the interpreter |
+| Block-local register allocation | tied; no cross-iteration residency to exploit |
+| CR / XER[CA] elision | ceiling ~0.05% and ~0.2% respectively |
+
+The pattern: BOLT, `-O2` and the LLVM backend all bought instruction locality or
+fewer dispatches, and all three lost by retiring more instructions at lower IPC.
+PMU attribution explains why — front-end starvation is 2.4% of cycles and the
+back end is saturated at IPC 1.92. The workload is not inefficient, just large:
+86.4 million host instructions per emulated frame.
+
 
 ---
 
 ## Known issues
 
-- **Shutdown abort.** Quitting can end with `terminate called without an active
-  exception` (exit 134). Cosmetic — it happens after the session ends — but open.
-- **Netplay is stubbed out.** The code paths exist but are not wired up.
-- **The bundled-glibc fallback is untested on SteamOS / Steam Deck.** It is verified
-  to work mechanically, but only on the machine the libraries came from. The
-  predicted failure point is NSS: `libnss_files`/`libnss_dns` are dlopen'd from the
-  *host* and built against the host glibc. **A crash mentioning `libnss` means
-  bundling is exhausted and a container build is required.** On SteamOS, prefer
-  `distrobox create -n ringout -i archlinux:latest` over `steamos-readonly disable`,
-  which every system update reverts.
+- **The Deck package is SteamOS-only.** Its runtime is built against glibc 2.36 in
+  a Debian 12 container, which clears SteamOS and essentially every current
+  distro. A build made natively on SteamOS instead has a 2.38 floor and will not
+  run on older SteamOS releases — so the container build stays the shipped one.
+- **Windows is behind.** It builds in CI, but its packaging checks have not been
+  exercised, and the last artifacts predate the current source shipment.
 - The `-march=native` build is machine-specific by design; setup compiles on your
   own machine, so this only matters if you copy a built folder to another CPU.
+
+### Fixed since the last revision of this page
+
+- **Netplay was described here as stubbed out.** It is not: there is a lobby with
+  live ping and per-player game status, automatic pad assignment, and a
+  host-controlled input buffer.
+- **The shutdown abort** (`terminate called without an active exception`) was a
+  real bug rather than a cosmetic one, and is fixed.
+- **The bundled-glibc fallback on SteamOS** is no longer the plan. The predicted
+  NSS failure is moot: the Deck package is built in a container against an old
+  glibc instead, and is verified on hardware in both Desktop and Game Mode.
 
 ---
 
@@ -136,6 +186,18 @@ ninja -C ModernGekko/build
 Then build the recompiled module for your disc with `dist/RingOut-1.0-dist/setup.sh`,
 which drives `dolrecomp` and compiles the generated C.
 
+Releases are assembled by script, never by zipping a working directory — those
+hold the extracted disc, saves and build output. Each stage is built from an
+allowlist and then checked: no disc-derived files, no personal data, and for the
+desktop package, that the prebuilt runtime can actually load a module built from
+the sources shipped beside it.
+
+```sh
+.github/scripts/package-deck.sh     # Steam Deck zip
+.github/scripts/package-dist.sh     # desktop Linux zip
+.github/scripts/regen-source.sh     # refresh the GPL source shipment
+```
+
 ### Repository layout
 
 | Path | What it is |
@@ -143,7 +205,10 @@ which drives `dolrecomp` and compiles the generated C.
 | `ModernGekko/` | the runtime fork — chassis, settings overlay, StaticRecomp core |
 | `ModernGekko/vendor/dolphin/` | the vendored Dolphin tree the runtime is built from |
 | `DolRecomp/` | the static recompiler fork (PowerPC → C) |
-| `dist/RingOut-1.0-dist/` | the redistributable scaffolding: launcher, `setup.sh`, module build recipe |
+| `dist/RingOut-1.0-dist/` | the desktop redistributable: launcher, `setup.sh`, module build recipe |
+| `dist/RingOut-1.0-deck/` | the Steam Deck package scaffolding |
+| `dist/shared/gc-art.py` | extracts the game's banner and icon on the player's machine |
+| `.github/scripts/` | packaging, the privacy scan, the GPL source shipment, benchmarks |
 | `work/mg_userdir/GameSettings/GRSEAF.ini` | the verified cheat codes |
 
 Everything is vendored as plain files — clone and build, no submodule init needed.
