@@ -93,8 +93,11 @@ if [ "${SKIP_SOURCE:-0}" != "1" ]; then
   # The offer is to supply the source FOR THE BINARIES SHIPPED. Source older
   # than the runtime it accompanies does not satisfy that, and it is how a
   # developer path from an old working tree survived into a release here.
-  newest_src="$(find "$STAGE/source" -type f -printf '%T@\n' | sort -n | tail -1)"
-  runtime_ts="$(stat -c %Y "$STAGE/bin/moderngekko-run")"
+  # Compare against the BUILT runtime, not the staged copy: install(1) stamps
+  # the staged file with the current time, so comparing against that would make
+  # this fail unconditionally -- and a check that always fails gets deleted.
+  newest_src="$(find "$SRC/source" -type f -printf '%T@\n' | sort -n | tail -1)"
+  runtime_ts="$(stat -c %Y "$SRC/bin/moderngekko-run")"
   if [ "${newest_src%.*}" -lt "$runtime_ts" ]; then
     echo "  FAIL: source/ is older than bin/moderngekko-run." >&2
     echo "        Regenerate the tarballs and patches from the built commits," >&2

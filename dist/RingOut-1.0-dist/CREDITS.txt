@@ -72,10 +72,11 @@ source. It is in source/ :
   ModernGekko-dolphin-1873066.tar.gz       the Dolphin tree it vendors
   ModernGekko-dolphin-new-files.tar.gz     new files added by this project
   DolRecomp-2595de5.tar.gz                 the recompiler
+  DolRecomp-new-files.tar.gz               its IR and LLVM backend, added here
   *-local-changes.patch                    every modification made here
 
-  Apply the patches to the matching archives to reproduce exactly what
-  these binaries were built from.
+  Apply the patches to the matching archives, then add the new-files
+  archives, to reproduce exactly what these binaries were built from.
 
 If you pass this package on, keep source/ with it.
 
