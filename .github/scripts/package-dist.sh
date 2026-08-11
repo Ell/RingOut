@@ -173,9 +173,17 @@ echo "  no disc-derived content"
 # credentials, author emails in the source patches.
 "$REPO/.github/scripts/privacy-scan.sh" "$STAGE"
 
+# -X and TZ=UTC strip metadata that identifies the machine this was built on.
+# Info-ZIP otherwise records a 0x7875 extra field holding the builder's numeric
+# uid/gid, and stores each mtime TWICE -- local and UTC -- whose difference is
+# the builder's timezone offset, which narrows their location to a region. -X
+# drops both extra fields; TZ=UTC removes any local/UTC discrepancy in what is
+# left. Unix permission bits live in the central directory's external
+# attributes, NOT in an extra field, so -X does not touch them -- verified: a
+# 755 file still unpacks 755, and the canary below would catch it if it did.
 echo "==> zipping"
 rm -f "$ZIP"
-( cd "$WORK" && zip -qr "$ZIP" "$(basename "$STAGE")" )
+( cd "$WORK" && TZ=UTC zip -X -qr "$ZIP" "$(basename "$STAGE")" )
 
 echo
 echo "$(basename "$ZIP")  $(du -h "$ZIP" | cut -f1)"

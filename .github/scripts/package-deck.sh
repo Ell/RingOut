@@ -131,9 +131,17 @@ esac
 # looks: RingOut and bin/moderngekko-run arrive non-executable otherwise and the
 # package fails with "permission denied" on a player's Deck, so the unpack below
 # is a canary rather than a formality.
+# -X and TZ=UTC strip metadata that identifies the machine this was built on.
+# Info-ZIP otherwise records a 0x7875 extra field holding the builder's numeric
+# uid/gid, and stores each mtime TWICE -- local and UTC -- whose difference is
+# the builder's timezone offset, which narrows their location to a region. -X
+# drops both extra fields; TZ=UTC removes any local/UTC discrepancy in what is
+# left. Unix permission bits live in the central directory's external
+# attributes, NOT in an extra field, so -X does not touch them -- verified: a
+# 755 file still unpacks 755, and the canary below would catch it if it did.
 echo "==> zipping"
 rm -f "$ZIP"
-( cd "$WORK" && zip -qr "$ZIP" "$PKG" )
+( cd "$WORK" && TZ=UTC zip -X -qr "$ZIP" "$PKG" )
 
 verify="$WORK/_verify"
 mkdir -p "$verify"
