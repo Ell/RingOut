@@ -134,6 +134,34 @@ cmake --build "$HERE/work/build"
 
 cp "$HERE/work/build/g${DISC_ID}_recomp.so" "$HERE/bin/"
 
+# The module you just built is also the one you copy to a Steam Deck -- the Deck
+# package ships no module and its README sends you here to make one. SteamOS is
+# around glibc 2.37, and a binary runs FORWARD across glibc versions but never
+# backward, so a module whose floor is higher fails at dlopen on the Deck with
+# "version GLIBC_x.y not found" -- after the whole extract-and-recompile above.
+#
+# Nothing else can catch this. The packaging scripts check artifacts that live in
+# the repo; this module is built here, on your machine, so no release gate ever
+# sees it. That is how a single fmod call quietly raised the floor to 2.38 on
+# every current distro until 2026-08-12.
+#
+# A WARNING, not an error: if you are only playing on this machine the floor is
+# irrelevant and setup has succeeded.
+if command -v objdump >/dev/null 2>&1; then
+    floor="$(objdump -T "$HERE/bin/g${DISC_ID}_recomp.so" 2>/dev/null |
+             grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+    # sort -V puts the newer version last, so the floor is too high exactly when
+    # it sorts after 2.37 and is not 2.37 itself.
+    if [ -n "$floor" ] && [ "$floor" != "2.37" ] &&
+       [ "$(printf '%s\n2.37\n' "$floor" | sort -V | tail -1)" = "$floor" ]; then
+        echo
+        echo "    NOTE: this module needs glibc $floor, and SteamOS has about 2.37."
+        echo "          It runs fine here. It will NOT load if you copy it to a Steam"
+        echo "          Deck -- build the module on an older distro (Debian 12 or"
+        echo "          Ubuntu 22.04) if you need one for the Deck."
+    fi
+fi
+
 # The game's own artwork, taken from the disc you supplied. None of it ships in
 # this package -- it belongs to the publisher, so it is extracted here on your
 # machine, exactly as the module above is. art/banner.png is the disc banner;
