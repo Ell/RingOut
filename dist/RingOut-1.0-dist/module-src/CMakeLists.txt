@@ -228,14 +228,15 @@ endif()
 # emitted as explicit ppc_fma() calls, so auto-contraction was only ever
 # catching incidental arithmetic.
 #
-# The linker choice above lands in the same territory and has NOT been through
-# the parity harness yet. Because ThinLTO codegen happens inside the linker, an
-# lld-linked module's .text differs from the ld.bfd one -- same 20,689,042
-# bytes, different contents. With contraction off that should be guest-state
-# equivalent, and -march=native already varies the code per machine, but "should
-# be" is exactly what FRAME 176 above disproved once. Run the frame-hash harness
-# across an lld build and an ld.bfd build before a release leans on this;
-# -DMODULE_LLD=OFF restores the old linker if it ever points here.
+# It covers the LINKER too, which had to be checked rather than assumed. Because
+# ThinLTO codegen happens inside the linker, an lld-linked module's .text differs
+# from the ld.bfd one -- same 20,689,042 bytes, different contents -- and
+# "different code that should behave identically" is exactly what FRAME 176 above
+# disproved once. Measured 2026-08-12: two modules built from identical sources,
+# one per linker, give byte-identical per-frame RAM hashes over 24000 frames of
+# arcade-match.txt (boot -> Arcade -> two full matches with active input), the
+# same standard the compiler-version and -march comparisons were held to.
+# -DMODULE_LLD=OFF restores the old linker if a future parity run points here.
 target_compile_options(${MODULE_NAME} PRIVATE
   ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition
   -ffp-contract=off)
