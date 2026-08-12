@@ -13,6 +13,24 @@
 #include <stdatomic.h>
 #endif
 
+// glibc 2.38 added a new symbol version for fmod, and the linker binds whatever
+// the BUILD host has. That silently sets this module's glibc floor to 2.38 on
+// any current distro (Arch, Fedora 39+, Ubuntu 24.04) -- above SteamOS's ~2.37,
+// so the module fails to dlopen on a Deck with "version GLIBC_2.38 not found".
+//
+// That breaks the documented Deck workflow, where the player builds the module
+// on a desktop and copies it across (dist/RingOut-1.0-deck/README.txt). It has
+// gone unnoticed because the Deck's own module was built ON the Deck, where the
+// floor is 2.2.5, and because a builder on Debian/Ubuntu LTS never sees it.
+//
+// Pinning the old version is safe: fmod is exact -- its result is always
+// representable, so both symbol versions return identical values. Verified by
+// frame hashes, not assumed. The single call site is the round-half-to-even
+// tiebreak in ppc_round_to_nearest below.
+#if defined(__linux__) && defined(__GLIBC__)
+__asm__(".symver fmod,fmod@GLIBC_2.2.5");
+#endif
+
 // Lockstep memory-write journal: the chassis installs a callback via
 // ppc_set_mem_write_journal so it can capture the pre-image of flat-RAM writes
 // and re-run a block on Dolphin's interpreter for register/memory comparison.
