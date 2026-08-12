@@ -595,6 +595,25 @@ void StaticRecompCore::Run()
     return;
   }
 
+  // FMV HLE env flags, read once. These were already cached in function-local
+  // statics -- getenv() per dispatch had been the dominant cost, dropping a
+  // movie from ~30 to ~12 fps -- but the DECLARATIONS sat inside the
+  // per-dispatch loop, so each one still paid a thread-safe-initialisation
+  // guard check every dispatch. Hoisting them here leaves one guard check per
+  // Run() entry instead of four per dispatch.
+  static const bool s_fmv_noexec = std::getenv("STATICRECOMP_FMV_NOEXEC") != nullptr;
+  static const bool s_fmv_dumphndl = std::getenv("STATICRECOMP_FMV_DUMPHNDL") != nullptr;
+  // Takeover: skip the game's software MPEG decode entirely and drive the
+  // frame-ready state ourselves. Opt-in: measured NOT faster than letting the
+  // decode run + idle-skip (~43 vs 47-60fps) because the decode was never the
+  // bottleneck -- the OS idle-spin was, and idle-skip already reclaims it;
+  // skipping the decode just leaves less idle to skip. Kept for
+  // experimentation, off by default.
+  static const bool s_fmv_takeover = std::getenv("STATICRECOMP_FMV_TAKEOVER") != nullptr;
+  // PC histogram (16KB buckets) while a movie plays, to find the hot decode
+  // function. Dumped by OnFmvStartAfs on the next movie / here.
+  static const bool s_fmv_hist = std::getenv("STATICRECOMP_FMV_HIST") != nullptr;
+
   while (*state_ptr == CPU::State::Running)
   {
     core_timing.Advance();
@@ -625,23 +644,9 @@ void StaticRecompCore::Run()
           }
 
           // --- FMV HLE hooks (fire before the guest function runs; m_guest
-          // holds the PPC arg regs r3.. in gpr[3..]). Env flags are cached once:
-          // getenv() on the per-dispatch hot path (millions/sec) was itself the
-          // dominant cost (dropped the movie from ~30 to ~12 fps). ---
-          static const bool s_fmv_noexec = std::getenv("STATICRECOMP_FMV_NOEXEC") != nullptr;
-          static const bool s_fmv_dumphndl = std::getenv("STATICRECOMP_FMV_DUMPHNDL") != nullptr;
-          // Takeover: skip the game's software MPEG decode entirely and drive
-          // the frame-ready state ourselves. Opt-in: measured NOT faster than
-          // letting the decode run + idle-skip (~43 vs 47-60fps) because the
-          // decode was never the bottleneck — the OS idle-spin was, and
-          // idle-skip already reclaims it; skipping the decode just leaves less
-          // idle to skip. Kept for experimentation, off by default.
-          static const bool s_fmv_takeover =
-              std::getenv("STATICRECOMP_FMV_TAKEOVER") != nullptr;
-
-          // PC histogram (16KB buckets) while a movie plays, to find the hot
-          // decode function. Dumped by OnFmvStartAfs on the next movie / here.
-          static const bool s_fmv_hist = std::getenv("STATICRECOMP_FMV_HIST") != nullptr;
+          // holds the PPC arg regs r3.. in gpr[3..]). The s_fmv_* env flags are
+          // read once at the top of Run(); they used to be declared here, which
+          // cost a static-init guard check per dispatch. ---
           if (s_fmv_hist)
             FmvHistSample(m_guest.pc);
 

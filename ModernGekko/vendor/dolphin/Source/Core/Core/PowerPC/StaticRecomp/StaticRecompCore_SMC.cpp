@@ -98,12 +98,29 @@ bool StaticRecompCore::IsModuleEntry(u32 address) const
   return idx >= 0 && idx < static_cast<int>(m_entry_bitmap.size()) && m_entry_bitmap[idx];
 }
 
+// Hot: called once per dispatch, tens of millions of times a run. Written out
+// rather than composed from ChunkIndexOf + IsModuleEntry because those two each
+// call GetAddressLookupIndex, so the composed version derived the SAME index
+// from the SAME address twice per dispatch. Semantics are identical -- the entry
+// bitmap is indexed like the chunk lookup table, which is what makes the single
+// index valid for both -- and the profile that motivated this had
+// FastDispatchableAt at 2.32% of the CPU thread.
 bool StaticRecompCore::FastDispatchableAt(u32 address) const
 {
-  const int index = ChunkIndexOf(address);
-  if (index < 0 || m_chunk_state[index] != CHUNK_VERIFIED)
+  if (!m_module_active || m_chunk_lookup_table.empty())
     return false;
-  return IsModuleEntry(address);
+
+  const int idx = GetAddressLookupIndex(address);
+  if (idx < 0 || idx >= static_cast<int>(m_chunk_lookup_table.size()))
+    return false;
+
+  const int chunk = m_chunk_lookup_table[idx];
+  if (chunk < 0 || m_chunk_state[chunk] != CHUNK_VERIFIED)
+    return false;
+
+  if (m_entry_bitmap.empty())
+    return true;  // Pre-v3 module: every in-range address is an entry.
+  return idx < static_cast<int>(m_entry_bitmap.size()) && m_entry_bitmap[idx];
 }
 
 bool StaticRecompCore::DispatchableAt(u32 address)
