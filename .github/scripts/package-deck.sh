@@ -55,12 +55,56 @@ box() {
 }
 
 # --- the runtime ----------------------------------------------------------
+# This package's payload IS the prebuilt runtime -- unlike the desktop one, the
+# player compiles nothing. So a stale binary here ships silently: it passes the
+# glibc floor, the forbidden-file list and the privacy scan, because none of
+# those look at age.
+#
+# That is not hypothetical. This script used to rebuild only when the runtime
+# was ABSENT, so on 2026-08-12 it packaged a three-day-old binary missing a
+# merged chassis change, reported success, and every check passed. The desktop
+# path already refuses to package a runtime older than its ABI header
+# (package-dist.sh); this is the same guard for the package where it matters
+# more.
+RUNTIME_EXPLICIT=0
+[ -n "${RUNTIME:-}" ] && RUNTIME_EXPLICIT=1
 RUNTIME="${RUNTIME:-$REPO/build-deck/moderngekko-run}"
-if [ ! -f "$RUNTIME" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
-  echo "==> building the runtime (no $RUNTIME yet)"
-  "$REPO/.github/scripts/build-deck.sh"
+
+# Newest source wins: if anything the runtime is built from is newer than the
+# runtime, the binary does not contain it. mtime rather than a hash because the
+# build is out-of-tree and there is nothing to compare against.
+newer_source_than_runtime() {
+  [ -f "$RUNTIME" ] || return 0
+  find "$REPO/ModernGekko/src" "$REPO/ModernGekko/tools" \
+       "$REPO/ModernGekko/vendor/dolphin/Source" "$REPO/ModernGekko/CMakeLists.txt" \
+       -newer "$RUNTIME" -type f -print -quit 2>/dev/null | grep -q .
+}
+
+if [ "${SKIP_BUILD:-0}" != "1" ] && [ "$RUNTIME_EXPLICIT" != "1" ]; then
+  if [ ! -f "$RUNTIME" ]; then
+    echo "==> building the runtime (no $RUNTIME yet)"
+    "$REPO/.github/scripts/build-deck.sh"
+  elif newer_source_than_runtime; then
+    echo "==> runtime is older than the sources -- rebuilding"
+    "$REPO/.github/scripts/build-deck.sh"
+  fi
 fi
+
 [ -f "$RUNTIME" ] || { echo "no runtime at $RUNTIME" >&2; exit 1; }
+
+# Assert even after building, and assert for the override paths too: SKIP_BUILD
+# and RUNTIME= are for packaging a runtime built elsewhere (CI), not a licence
+# to ship an old one. ALLOW_STALE_RUNTIME=1 is the deliberate escape hatch.
+if [ "${ALLOW_STALE_RUNTIME:-0}" != "1" ] && newer_source_than_runtime; then
+  echo "  FAIL: $RUNTIME is older than the sources it is built from." >&2
+  echo "        newer: $(find "$REPO/ModernGekko/src" "$REPO/ModernGekko/tools" \
+                              "$REPO/ModernGekko/vendor/dolphin/Source" \
+                              "$REPO/ModernGekko/CMakeLists.txt" \
+                              -newer "$RUNTIME" -type f -print -quit 2>/dev/null)" >&2
+  echo "        Rebuild with .github/scripts/build-deck.sh, or set" >&2
+  echo "        ALLOW_STALE_RUNTIME=1 if this is deliberate." >&2
+  exit 1
+fi
 echo "==> runtime: $RUNTIME"
 
 rm -rf "$WORK"
