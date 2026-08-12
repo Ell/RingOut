@@ -162,6 +162,38 @@ if [ "$rt_ts" -lt "$abi_ts" ]; then
 fi
 echo "  runtime is newer than the ABI header"
 
+# A recompiler older than the emitter it was built from ships OLD CODEGEN, and
+# nothing downstream notices: setup.sh runs, the module builds, the game plays.
+# It is just slower, by however much the emitter work since then was worth.
+#
+# This happened. tools/dolrecomp dated 5 August predated lazy FPRF (68aea54d,
+# 10 August), so the generated header carried no g_fprf_kind at all and every
+# desktop player built the eager path, missing a measured -2.45%. The package
+# was assembled, checked and shipped with no indication anything was wrong --
+# which is the whole problem: a stale RUNTIME breaks loudly at dlopen, a stale
+# RECOMPILER is silent.
+#
+# mtime, like the Deck runtime guard: it catches "the binary predates the
+# sources", which is the failure that actually occurs. It cannot prove the
+# binary was built FROM these sources -- for that, regenerate and diff against a
+# known-good generation, or grep the generated header for a marker of the newest
+# emitter change.
+if newer="$(find "$REPO/DolRecomp/src" -newer "$SRC/tools/dolrecomp" -type f -print -quit 2>/dev/null)" &&
+   [ -n "$newer" ]; then
+  echo "  FAIL: tools/dolrecomp ($(date -r "$SRC/tools/dolrecomp" +%F)) is older than" >&2
+  echo "        $newer" >&2
+  echo "        It would ship codegen predating that change. Rebuild it -- STATIC," >&2
+  echo "        because setup.sh runs it directly and its glibc floor decides which" >&2
+  echo "        distros can run setup at all:" >&2
+  echo "          podman run --rm -v $REPO:/src -w /src ringout-deck-build bash -c \\" >&2
+  echo "            'cmake -S DolRecomp -B build-dolrecomp-static -GNinja \\" >&2
+  echo "               -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-static \\" >&2
+  echo "               -DZLIB_USE_STATIC_LIBS=ON && cmake --build build-dolrecomp-static'" >&2
+  echo "          cp build-dolrecomp-static/dolrecomp $SRC/tools/" >&2
+  exit 1
+fi
+echo "  recompiler is newer than DolRecomp/src"
+
 echo "==> checks"
 # Assert rather than trust the allowlist: shipping the disc, the save card or
 # the module is the failure that matters.
