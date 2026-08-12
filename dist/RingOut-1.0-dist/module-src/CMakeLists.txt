@@ -237,6 +237,19 @@ endif()
 # arcade-match.txt (boot -> Arcade -> two full matches with active input), the
 # same standard the compiler-version and -march comparisons were held to.
 # -DMODULE_LLD=OFF restores the old linker if a future parity run points here.
+#
+# Identical guest state says nothing about how many CYCLES it takes to reach it,
+# so that was measured separately (module-bench.sh, 24000 frames, 7 runs per
+# arm): ld.bfd 979.4 Gcyc mean, lld 994.1, i.e. +1.5% for lld -- inside a 12-16%
+# per-arm spread on this host, and one whole session came out 997.8 vs 997.4, a
+# dead heat. Instruction counts agree to 0.03% and all 14 runs hash identically,
+# so both arms really did the same work. NO in-game cost is detectable.
+#
+# An earlier reading of "lld is 8% slower" came from three adjacent-run pairs in
+# a single session and did not survive replication: across both sessions the
+# seven pairs run -7.8% to +8.8% with the sign flipping. This host cannot resolve
+# anything under ~10% on this workload, so a real codegen comparison needs a
+# quiet machine or the Deck. Do not re-derive that 8% and act on it.
 target_compile_options(${MODULE_NAME} PRIVATE
   ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition
   -ffp-contract=off)
