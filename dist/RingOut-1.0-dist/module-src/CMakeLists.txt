@@ -108,32 +108,39 @@ endif()
 # its cache belong here rather than with the compile flags below.
 #
 # Measured on this tree, 12 cores, clang 22.1.8, 132 chunks, generated sources
-# reused so only the module build is timed:
+# reused so only the module build is timed. ON AN IDLE MACHINE -- browser shut,
+# VMs stopped -- because the first attempt at this table was taken on a busy one
+# and every figure in it was wrong (see the paragraph after next):
 #
-#   clean, default linker (ld.bfd + LLVMgold)          3m 18s
-#   clean, lld, no cache                               3m 04s
-#   clean, lld, cold cache                     2m 59s / 3m 24s
-#   FRESH BUILD DIR, lld, WARM cache                   2m 17s
-#   one chunk changed, lld, no cache                     77.5s
-#   one chunk changed, default linker, no cache          80.6s
-#   one chunk changed, lld, warm cache             1.4s / 1.7s
-#   nothing changed                                     0.013s
+#   clean, ld.bfd, no cache              144.3s mean of 3   (143.9 - 145.1)
+#   clean, lld, no cache                 144.5s mean of 3   (144.0 - 145.3)
+#   FRESH BUILD DIR, lld, warm cache      83.4s
+#   one chunk changed, ld.bfd, no cache   61.2s / 61.5s
+#   one chunk changed, lld, no cache      61.7s / 61.8s
+#   one chunk changed, lld, warm cache    1.31s / 1.31s
+#   nothing changed                      0.013s
 #
-# THE LINKER'S EFFECT ON A CLEAN BUILD IS NOT RESOLVED, and the two figures on
-# the cold-cache line are why: that is one configuration measured twice, 25s
-# apart, a spread wider than the 14s between the two linkers. Anything claimed
-# from a single pair of clean builds on this machine -- including a "33% faster
-# clean build" -- is reading thermals and page cache. lld is enabled here
-# because the CACHE needs it (--thinlto-cache-dir is an lld option; the gold
-# plugin spells it -plugin-opt=cache-dir= and was never measured), not because
-# a clean build got measurably faster.
+# THE LINKER MAKES NO DIFFERENCE TO BUILD TIME: 144.3s against 144.5s over three
+# alternating reps each, a 0.1% gap inside a 1% spread. Not "unresolvable" --
+# measured, and zero. lld is enabled because the CACHE needs it
+# (--thinlto-cache-dir is an lld option; the gold plugin spells it
+# -plugin-opt=cache-dir= and was never measured), never for build speed.
 #
-# The cache is the actual win, and it is not subtle. A clean build is 132
-# parallel clang invocations, so no linker swap can reach that part -- but what
-# the cache removes is ThinLTO codegen for every module that did not change,
-# which is the whole 77 seconds of the link. Note the fresh-build-dir line: even
-# with a warm cache a new build tree still pays all 132 compiles, so the cache
-# halves that case rather than collapsing it. ccache would cover the other half.
+# THE FIRST VERSION OF THIS TABLE WAS TAKEN ON A LOADED MACHINE AND EVERY ROW
+# WAS INFLATED: the same clean build read 3m 04s - 3m 24s there against 144s
+# here, and the same incremental read 77-80s against 61s. Worse, the noise had
+# structure -- it looked like a 7% linker win, then like a 33% one, depending
+# which pair you compared. If a build measurement here disagrees with this
+# table by tens of seconds, suspect the machine before the code: check the load
+# average and what is running, and re-measure idle rather than reasoning about
+# the difference.
+#
+# The cache is the actual win. A clean build is 132 parallel clang invocations,
+# so no linker swap can reach that part -- what the cache removes is ThinLTO
+# codegen for every module that did not change, which is the whole 61 seconds of
+# the link, leaving 1.31s. Note the fresh-build-dir line: even with a warm cache
+# a new build tree still pays all 132 compiles, so the cache takes that case from
+# 144s to 83s rather than collapsing it. ccache would cover the other half.
 #
 # The 1.4s is a lower bound, honestly labelled: the test edit was dead-stripped,
 # so every module still cache-hit and only the chunk recompile (~1.2s) and a
@@ -239,17 +246,26 @@ endif()
 # -DMODULE_LLD=OFF restores the old linker if a future parity run points here.
 #
 # Identical guest state says nothing about how many CYCLES it takes to reach it,
-# so that was measured separately (module-bench.sh, 24000 frames, 7 runs per
-# arm): ld.bfd 979.4 Gcyc mean, lld 994.1, i.e. +1.5% for lld -- inside a 12-16%
-# per-arm spread on this host, and one whole session came out 997.8 vs 997.4, a
-# dead heat. Instruction counts agree to 0.03% and all 14 runs hash identically,
-# so both arms really did the same work. NO in-game cost is detectable.
+# so that was measured separately (module-bench.sh, 24000 frames of
+# arcade-match.txt, 5 runs per arm, alternating order, idle machine):
 #
-# An earlier reading of "lld is 8% slower" came from three adjacent-run pairs in
-# a single session and did not survive replication: across both sessions the
-# seven pairs run -7.8% to +8.8% with the sign flipping. This host cannot resolve
-# anything under ~10% on this workload, so a real codegen comparison needs a
-# quiet machine or the Deck. Do not re-derive that 8% and act on it.
+#   ld.bfd  877.95 Gcyc mean   877.55 - 878.83   spread 0.15%
+#   lld     873.35 Gcyc mean   872.18 - 874.41   spread 0.26%   (+ one outlier)
+#
+# lld is ~0.5% CHEAPER, and on four of five reps every lld run sits below every
+# ld.bfd run with no overlap. The fifth lld rep came in at 884.78 with IPC 2.470
+# against 2.500-2.507 for its siblings and the longest wall of the ten, which is
+# a contention signature, not codegen. Either way the effect is half a percent:
+# real, repeatable, and far too small to choose a linker over. Instruction counts
+# agree to 0.03% and all runs hash identically, so both arms did the same work.
+#
+# THE 8% THAT WAS NOT THERE: an earlier session on a loaded machine read "ld.bfd
+# is 8% cheaper" from three adjacent-run pairs. It was an artifact of run order
+# under contention -- per-arm spread was 12-16% there against 0.15% here, and
+# replication flipped the sign. A BOLT-sized regression that would have flipped
+# this default turned out to be the browser. When a codegen A/B on this host
+# shows anything in the single-digit percents, close everything and re-run before
+# believing it.
 target_compile_options(${MODULE_NAME} PRIVATE
   ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition
   -ffp-contract=off)
