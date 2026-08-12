@@ -103,6 +103,97 @@ elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_G
 else()
   set(MODULE_LTO_FLAG -flto)
 endif()
+
+# ThinLTO codegen runs inside the LINKER, not the compiler, so the linker and
+# its cache belong here rather than with the compile flags below.
+#
+# Measured on this tree, 12 cores, clang 22.1.8, 132 chunks, generated sources
+# reused so only the module build is timed:
+#
+#   clean, default linker (ld.bfd + LLVMgold)          3m 18s
+#   clean, lld, no cache                               3m 04s
+#   clean, lld, cold cache                     2m 59s / 3m 24s
+#   FRESH BUILD DIR, lld, WARM cache                   2m 17s
+#   one chunk changed, lld, no cache                     77.5s
+#   one chunk changed, default linker, no cache          80.6s
+#   one chunk changed, lld, warm cache             1.4s / 1.7s
+#   nothing changed                                     0.013s
+#
+# THE LINKER'S EFFECT ON A CLEAN BUILD IS NOT RESOLVED, and the two figures on
+# the cold-cache line are why: that is one configuration measured twice, 25s
+# apart, a spread wider than the 14s between the two linkers. Anything claimed
+# from a single pair of clean builds on this machine -- including a "33% faster
+# clean build" -- is reading thermals and page cache. lld is enabled here
+# because the CACHE needs it (--thinlto-cache-dir is an lld option; the gold
+# plugin spells it -plugin-opt=cache-dir= and was never measured), not because
+# a clean build got measurably faster.
+#
+# The cache is the actual win, and it is not subtle. A clean build is 132
+# parallel clang invocations, so no linker swap can reach that part -- but what
+# the cache removes is ThinLTO codegen for every module that did not change,
+# which is the whole 77 seconds of the link. Note the fresh-build-dir line: even
+# with a warm cache a new build tree still pays all 132 compiles, so the cache
+# halves that case rather than collapsing it. ccache would cover the other half.
+#
+# The 1.4s is a lower bound, honestly labelled: the test edit was dead-stripped,
+# so every module still cache-hit and only the chunk recompile (~1.2s) and a
+# fully-cached link (~0.15s) were measured. A chunk whose code really changes
+# adds codegen for that one module, which the 77s/132 rate puts near 0.6s. Call
+# a real one-chunk edit ~2s rather than ~1.4s. Either way it is ~40x, not the
+# 420x that comparing against a no-op build would suggest.
+#
+# setup.sh does `rm -rf work/` every run, so this only pays off on a re-run --
+# which setup.sh explicitly invites ("worth re-running after you have played",
+# to pick up the memory-card icon). That re-run currently rebuilds a module that
+# is byte-for-byte what it already had.
+option(MODULE_LLD "Link with lld when it is usable; ThinLTO links far faster" ON)
+set(MODULE_LINK_CACHE "" CACHE STRING
+    "ThinLTO cache directory; empty picks the XDG default, NONE disables it")
+
+# PROBED, never assumed. lld is a separate package from clang on Arch, Debian
+# and Fedora alike, and setup.sh takes whatever compiler it finds (clang -> gcc
+# -> cc). This file already has one scar from assuming a clang spelling was
+# present -- see the -flto=thin note above, which killed the module build on
+# every machine without it. A player who has clang but not lld must get the
+# ordinary linker, not a failed setup.
+if(MODULE_LTO AND MODULE_LLD AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND UNIX AND NOT APPLE)
+  include(CheckCSourceCompiles)
+  set(CMAKE_REQUIRED_LINK_OPTIONS -fuse-ld=lld)
+  check_c_source_compiles("int main(void){return 0;}" MODULE_LLD_USABLE)
+  unset(CMAKE_REQUIRED_LINK_OPTIONS)
+endif()
+
+if(MODULE_LLD AND MODULE_LLD_USABLE)
+  target_link_options(${MODULE_NAME} PRIVATE -fuse-ld=lld)
+
+  # NOT under module-src/. package-dist.sh copies this whole tree into the
+  # release stage with `cp -a`, so a cache next to these sources would ship 42 MB
+  # of one developer's build artefacts inside the zip, and would sit untracked in
+  # git besides. It has to outlive `rm -rf work/`, which is the one thing work/
+  # cannot do, so it goes to the user's XDG cache.
+  if(NOT MODULE_LINK_CACHE)
+    if(DEFINED ENV{XDG_CACHE_HOME})
+      set(MODULE_LINK_CACHE "$ENV{XDG_CACHE_HOME}/ringout/thinlto")
+    elseif(DEFINED ENV{HOME})
+      set(MODULE_LINK_CACHE "$ENV{HOME}/.cache/ringout/thinlto")
+    endif()
+  endif()
+
+  # Bounded on purpose: one clean build leaves 135 entries / 42 MB, and every
+  # rebuilt variant adds more. lld's default policy prunes on a 20-minute
+  # interval and will otherwise let the directory grow to half the free space on
+  # the disk, which is not a reasonable thing to leave on a player's machine.
+  if(MODULE_LINK_CACHE AND NOT MODULE_LINK_CACHE STREQUAL "NONE")
+    file(MAKE_DIRECTORY "${MODULE_LINK_CACHE}")
+    target_link_options(${MODULE_NAME} PRIVATE
+      "-Wl,--thinlto-cache-dir=${MODULE_LINK_CACHE}"
+      "-Wl,--thinlto-cache-policy=cache_size_bytes=2g:prune_after=168h")
+    message(STATUS "module: ThinLTO cache at ${MODULE_LINK_CACHE}")
+  endif()
+elseif(MODULE_LLD AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+  message(STATUS "module: lld not usable, linking with the default linker")
+endif()
+
 # Line-level profiling (-DMODULE_DEBUG_LINES=ON). Each chunk is ONE huge C
 # function, so perf can only ever report "func_8000D940" -- a 16 KB span holding
 # dozens of guest functions. That is enough to see which chunk is hot and no more.
@@ -136,6 +227,15 @@ endif()
 # the noise and if anything faster): the guest's own FMA instructions are
 # emitted as explicit ppc_fma() calls, so auto-contraction was only ever
 # catching incidental arithmetic.
+#
+# The linker choice above lands in the same territory and has NOT been through
+# the parity harness yet. Because ThinLTO codegen happens inside the linker, an
+# lld-linked module's .text differs from the ld.bfd one -- same 20,689,042
+# bytes, different contents. With contraction off that should be guest-state
+# equivalent, and -march=native already varies the code per machine, but "should
+# be" is exactly what FRAME 176 above disproved once. Run the frame-hash harness
+# across an lld build and an ld.bfd build before a release leans on this;
+# -DMODULE_LLD=OFF restores the old linker if it ever points here.
 target_compile_options(${MODULE_NAME} PRIVATE
   ${MODULE_LTO_FLAG} -fvisibility=hidden -fno-semantic-interposition
   -ffp-contract=off)
