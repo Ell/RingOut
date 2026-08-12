@@ -104,10 +104,26 @@ mkdir -p "$HERE/work"
 cp "$HERE/game/sys/main.dol" "$HERE/work/out/generated/main.dol"
 
 echo "==> 3/3  Building the module"
+# Profile-guided optimisation, when a profile ships beside the sources and the
+# compiler we found is clang. Worth -11.9% CPU cycles and 54.5 -> 59.6 fps on a
+# real match (measured 2026-08-12; see module-src/CMakeLists.txt for the full
+# numbers), at the cost of roughly three times the build below.
+#
+# The profile is trained on SOULCALIBUR II gameplay, so it only matches a module
+# generated from that game's DOL. A different disc still builds -- clang reports
+# the functions as unprofiled and optimises them normally -- and a profile this
+# clang cannot read is skipped rather than fatal. Both cases are handled in the
+# CMakeLists, which probes before committing to the flag.
+PGO_ARGS=()
+if [ -f "$HERE/module-src/module.profdata" ] && "$CC" --version 2>&1 | grep -qi clang; then
+    PGO_ARGS=(-DMODULE_PGO_PROFILE="$HERE/module-src/module.profdata")
+    echo "    profile-guided build (this takes longer, and is worth it)"
+fi
 cmake -S "$HERE/module-src" -B "$HERE/work/build" -GNinja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER="$CC" \
       -DCMAKE_C_FLAGS="-march=native" \
+      "${PGO_ARGS[@]}" \
       -DGAME_ID="$DISC_ID" \
       -DGENERATED_DIR="$HERE/work/out/generated" \
       -DDOLRECOMP_SRC="$DEPS/dolrecomp-src" \
