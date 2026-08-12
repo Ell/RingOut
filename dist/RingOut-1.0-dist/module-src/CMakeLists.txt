@@ -201,6 +201,61 @@ elseif(MODULE_LLD AND CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(STATUS "module: lld not usable, linking with the default linker")
 endif()
 
+# Profile-guided optimisation. Point MODULE_PGO_PROFILE at a clang .profdata and
+# the chunks are compiled with -fprofile-use.
+#
+# Measured 2026-08-12, 24000 frames of arcade-match.txt, 5 reps per arm, idle
+# machine, profile trained on gameplay (NOT boot/menus -- menus carry ~0.1% of a
+# session's paired-single traffic, so a profile taken there optimises code the
+# game barely runs):
+#
+#   base   889.39 Gcyc   2185.7 Ginsn   IPC 2.456
+#   pgo    783.57 Gcyc   1970.0 Ginsn   IPC 2.514
+#
+# -11.9% cycles, non-overlapping across reps, and windowed on a real match
+# 54.5 -> 59.6 fps. The mechanism is -9.9% RETIRED INSTRUCTIONS plus 2.4% IPC:
+# fewer host instructions per guest instruction, which is the one lever the PMU
+# work said was left and which no amount of per-opcode inspection could find --
+# the reduction is diffuse, not concentrated in any hot opcode class.
+#
+# Guest state is unaffected: all 10 benchmark runs hashed 41f50d828b60, so a PGO
+# module and a plain one are netplay peers. This is codegen only.
+#
+# Costs, so nobody is surprised: .text 20.69 -> 37.47 MB and the module build
+# 144s -> 446s. setup.sh builds on the player's machine, so that is the trade --
+# three times the wait, once, for ~10% of the frame budget back.
+#
+# GCC is excluded deliberately: it cannot read a clang profile, and GCC's own PGO
+# is the path that died with SIGBUS during boot (see the notes on -DMODULE_LTO=OFF
+# above). PROBED rather than assumed, like lld: a profile written by a newer
+# clang than the player's is rejected by -fprofile-use, and setup.sh takes
+# whatever compiler it finds. An unusable profile means "build normally", never a
+# failed setup.
+set(MODULE_PGO_PROFILE "" CACHE FILEPATH
+    "clang .profdata to compile the chunks with (-fprofile-use); empty disables PGO")
+
+if(MODULE_PGO_PROFILE AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+  if(NOT EXISTS "${MODULE_PGO_PROFILE}")
+    message(STATUS "module: PGO profile not found, building without it: ${MODULE_PGO_PROFILE}")
+  else()
+    include(CheckCSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-fprofile-use=${MODULE_PGO_PROFILE}")
+    check_c_source_compiles("int main(void){return 0;}" MODULE_PGO_USABLE)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(MODULE_PGO_USABLE)
+      # The warnings are expected, not a problem: the profile covers the chunks
+      # and the runtime helpers, and anything else in the build is legitimately
+      # unprofiled.
+      target_compile_options(${MODULE_NAME} PRIVATE
+        "-fprofile-use=${MODULE_PGO_PROFILE}"
+        -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+      message(STATUS "module: PGO enabled from ${MODULE_PGO_PROFILE}")
+    else()
+      message(STATUS "module: PGO profile unusable by this clang, building without it")
+    endif()
+  endif()
+endif()
+
 # Line-level profiling (-DMODULE_DEBUG_LINES=ON). Each chunk is ONE huge C
 # function, so perf can only ever report "func_8000D940" -- a 16 KB span holding
 # dozens of guest functions. That is enough to see which chunk is hot and no more.
