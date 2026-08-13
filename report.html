@@ -1,0 +1,1252 @@
+<title>Thirty-One Claims, Measured</title>
+<style>
+  :root {
+    --ground:      #F6F8F7;
+    --surface:     #FFFFFF;
+    --surface-2:   #EDF1F0;
+    --ink:         #131A1D;
+    --ink-muted:   #55636A;
+    --ink-faint:   #7C888E;
+    --hairline:    #DBE3E2;
+    --accent:      #1B5C70;
+    --accent-soft: #E1EDF1;
+    --ok:          #2C6B4D;
+    --ok-soft:     #E2F0E8;
+    --no:          #A03D28;
+    --no-soft:     #F7E6E1;
+    --wait:        #7A5D15;
+    --wait-soft:   #F5EDD8;
+    --flat:        #4A585F;
+    --flat-soft:   #E9EDEC;
+
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --page: 54rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0E1315;
+      --surface:     #151C1F;
+      --surface-2:   #1B2529;
+      --ink:         #E3EAE9;
+      --ink-muted:   #8E9BA1;
+      --ink-faint:   #6C797F;
+      --hairline:    #253135;
+      --accent:      #74C3D6;
+      --accent-soft: #113039;
+      --ok:          #6FBF93;
+      --ok-soft:     #16301F;
+      --no:          #E08A70;
+      --no-soft:     #35201A;
+      --wait:        #D4AC59;
+      --wait-soft:   #2F2814;
+      --flat:        #9AA7AD;
+      --flat-soft:   #1E272B;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0E1315;
+    --surface:     #151C1F;
+    --surface-2:   #1B2529;
+    --ink:         #E3EAE9;
+    --ink-muted:   #8E9BA1;
+    --ink-faint:   #6C797F;
+    --hairline:    #253135;
+    --accent:      #74C3D6;
+    --accent-soft: #113039;
+    --ok:          #6FBF93;
+    --ok-soft:     #16301F;
+    --no:          #E08A70;
+    --no-soft:     #35201A;
+    --wait:        #D4AC59;
+    --wait-soft:   #2F2814;
+    --flat:        #9AA7AD;
+    --flat-soft:   #1E272B;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 1.5rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: var(--page); margin: 0 auto; }
+
+  /* ---- masthead ---- */
+
+  header.masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    padding: 4.5rem 0 2.25rem;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(2.25rem, 6vw, 3.4rem);
+    line-height: 1.05;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    font-family: var(--display);
+    font-size: clamp(1.05rem, 2.4vw, 1.25rem);
+    line-height: 1.5;
+    color: var(--ink-muted);
+    max-width: var(--measure);
+    margin: 0;
+  }
+
+  /* ---- scoreboard ---- */
+
+  .scoreboard {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    background: var(--hairline);
+    border: 1px solid var(--hairline);
+    margin: 2.25rem 0 0;
+  }
+
+  .tile {
+    background: var(--surface);
+    padding: 1.1rem 1.15rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .tile .n {
+    font-family: var(--mono);
+    font-size: 2rem;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
+  .tile .lbl {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .tile.t-ok   .n { color: var(--ok); }
+  .tile.t-no   .n { color: var(--no); }
+  .tile.t-flat .n { color: var(--flat); }
+  .tile.t-wait .n { color: var(--wait); }
+
+  /* ---- sections ---- */
+
+  section { margin: 3.5rem 0 0; }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 1.75rem;
+  }
+
+  h2 {
+    font-family: var(--display);
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  .sec-count {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-left: auto;
+  }
+
+  .sec-intro {
+    max-width: var(--measure);
+    color: var(--ink-muted);
+    margin: -0.75rem 0 1.75rem;
+  }
+
+  /* ---- claim entries ---- */
+
+  .entry {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--rail, var(--flat));
+    padding: 1.15rem 1.35rem 1.3rem;
+    margin-bottom: 0.85rem;
+  }
+
+  .entry.v-ok   { --rail: var(--ok); }
+  .entry.v-no   { --rail: var(--no); }
+  .entry.v-flat { --rail: var(--flat); }
+  .entry.v-wait { --rail: var(--wait); }
+
+  .entry-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+  }
+
+  .entry h3 {
+    font-family: var(--body);
+    font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.35;
+    margin: 0;
+    flex: 1 1 16rem;
+  }
+
+  .verdict {
+    font-family: var(--mono);
+    font-size: 0.63rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    padding: 0.22rem 0.5rem;
+    white-space: nowrap;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+
+  .v-ok   .verdict { background: var(--ok-soft);   color: var(--ok); }
+  .v-no   .verdict { background: var(--no-soft);   color: var(--no); }
+  .v-flat .verdict { background: var(--flat-soft); color: var(--flat); }
+  .v-wait .verdict { background: var(--wait-soft); color: var(--wait); }
+
+  .claim {
+    font-family: var(--display);
+    font-style: italic;
+    color: var(--ink-muted);
+    border-left: 2px solid var(--hairline);
+    padding-left: 0.85rem;
+    margin: 0 0 0.75rem;
+    max-width: var(--measure);
+  }
+
+  .entry p { margin: 0 0 0.7rem; max-width: var(--measure); }
+  .entry p:last-child { margin-bottom: 0; }
+
+  /* ---- evidence ---- */
+
+  .evidence {
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.65;
+    font-variant-numeric: tabular-nums;
+    padding: 0.8rem 0.95rem;
+    margin: 0 0 0.75rem;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--ink);
+  }
+
+  .evidence b { color: var(--accent); font-weight: 600; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--surface-2);
+    padding: 0.08em 0.3em;
+    border-radius: 2px;
+  }
+
+  /* ---- table ---- */
+
+  .tbl-wrap { overflow-x: auto; margin: 0 0 0.75rem; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 0.45rem 0.9rem 0.45rem 0;
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap;
+  }
+
+  th {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+  }
+
+  td.num { font-family: var(--mono); }
+  td.win { color: var(--ok); font-weight: 600; }
+
+  /* ---- closing ---- */
+
+  .pattern {
+    background: var(--accent-soft);
+    border: 1px solid var(--hairline);
+    padding: 1.5rem 1.6rem;
+    margin-top: 1.5rem;
+  }
+
+  .pattern h3 {
+    font-family: var(--display);
+    font-size: 1.15rem;
+    margin: 0 0 0.7rem;
+    font-weight: 600;
+  }
+
+  .pattern p { max-width: var(--measure); margin: 0 0 0.7rem; }
+  .pattern p:last-child { margin-bottom: 0; }
+
+  footer {
+    margin-top: 3.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--hairline);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    line-height: 1.8;
+  }
+
+  @media (max-width: 34rem) {
+    .entry { padding: 1rem 1rem 1.1rem; }
+    body { padding: 0 1rem 4rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">RingOut · recompiler performance · 12–13 Aug 2026</p>
+    <h1>Thirty-One Claims, Measured</h1>
+    <p class="standfirst">Six optimization documents, thirty-one suggestions, two days on an idle machine.
+      Three shipped. Five did nothing the numbers could detect. The two biggest headline figures were
+      measuring a build that did no work and a bottleneck that wasn't there. Shipping the ones that
+      worked then turned up two packaging bugs and a shipped glibc fault, none of which came from any
+      suggestion — and the one change that mattered was confirmed on the Deck at 56.9 fps.
+      The next morning tested whether the winning change could be pushed further. It could not, and the
+      attempt overturned one of this page's own findings. Then a slowdown reported from simply playing the
+      game turned up the one suggestion here that was right all along, and that a day of careful
+      single-variable testing had structurally hidden.</p>
+  </header>
+
+  <div class="scoreboard">
+    <div class="tile t-ok"><span class="n">4</span><span class="lbl">Shipped or confirmed</span></div>
+    <div class="tile t-no"><span class="n">14</span><span class="lbl">Refuted</span></div>
+    <div class="tile t-flat"><span class="n">10</span><span class="lbl">Already true</span></div>
+    <div class="tile t-wait"><span class="n">3</span><span class="lbl">Not tested</span></div>
+  </div>
+
+  <section>
+    <div class="sec-head">
+      <h2>Document 1 — ThinLTO cache and lld</h2>
+      <span class="sec-count">5 claims · 2 shipped</span>
+    </div>
+    <p class="sec-intro">The most useful of the three. It identified the right change for the wrong reason,
+      and both of its headline numbers were artifacts — but the underlying idea was sound and now ships.</p>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>Enable a persistent ThinLTO cache</h3><span class="verdict">Shipped</span></div>
+      <p>Correct, and the whole win. ThinLTO codegen runs inside the linker, so editing one generated chunk
+        re-optimized all 132 modules. The cache reuses the 131 that didn't change.</p>
+      <div class="evidence">one chunk changed, no cache      61.5s
+one chunk changed, warm cache   <b>1.31s</b>   47x
+fresh build dir, warm cache       83s   (from 144s)
+nothing changed                 0.013s</div>
+      <p>Merged in PR #1, with the cache at <code>~/.cache/ringout/thinlto</code>, capped at 2 GB with a 7-day prune.</p>
+    </div>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>Link with lld</h3><span class="verdict">Shipped — different reason</span></div>
+      <p>Adopted, but not for the stated benefit. <code>--thinlto-cache-dir</code> is an lld option, so the
+        cache needs it. As a speedup in its own right it is worth nothing: 144.3s against 144.5s over three
+        alternating reps. It is now probed with <code>check_c_source_compiles</code> rather than assumed —
+        lld ships as a separate package from clang on Arch, Debian and Fedora alike.</p>
+      <p>It does change codegen, since ThinLTO runs in the linker: <code>.text</code> differs from the ld.bfd
+        build at identical size. That needed a parity gate, and passed one — byte-identical frame hashes
+        across 24000 frames of gameplay.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Clean build 3m 04s → 2m 01s, a 33% speedup</h3><span class="verdict">Refuted</span></div>
+      <p>Does not exist. Measured idle, with the cache disabled on both sides so the linker is the only variable:</p>
+      <div class="evidence">clean, ld.bfd, no cache   144.3s   (143.9 - 145.1)
+clean, lld,    no cache   144.5s   (144.0 - 145.3)</div>
+      <p>A 0.1% gap inside a 1% spread. A clean build is 132 parallel clang invocations and the link is a
+        fraction of the wall, so no linker swap can reach the rest. The original 3m 04s–3m 24s readings were
+        a machine under load.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Incremental 1m 10s → 0.165s, a 420× speedup</h3><span class="verdict">Refuted as stated</span></div>
+      <p>Right direction, wrong measurement. Nothing recompiles a 1 MB chunk, re-runs the ThinLTO index over
+        132 modules and links a 40 MB shared object in 165 ms. That figure is a build that did no work —
+        a true no-op here is <b>13 ms</b>. A real one-chunk edit is 1.31s, so the honest speedup is <b>47×</b>.</p>
+      <p>Still an excellent result. It just isn't 420×, and the difference matters because the wrong number
+        is the one that gets quoted.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Put the cache in <code>module-src/</code></h3><span class="verdict">Rejected</span></div>
+      <p>Would have shipped 42 MB of one developer's build artifacts inside every release.
+        <code>package-dist.sh</code> copies that tree wholesale with <code>cp -a</code>. The instinct behind it
+        was right — the cache must survive <code>rm -rf work/</code> — but the location was the one directory
+        it could not live in.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Document 2 — graphics and compiler flags</h2>
+      <span class="sec-count">7 claims · 0 shipped</span>
+    </div>
+    <p class="sec-intro">Written from reading config files rather than running anything. Its description of the
+      current state was accurate; every conclusion drawn from it was not.</p>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Internal resolution 8× → 3× for a 300–1000% frame rate increase</h3><span class="verdict">Refuted</span></div>
+      <p>Zero effect. Fixed work, 6000 frames, windowed with the GPU genuinely in the loop and MSAA off in all
+        three so resolution was the only variable:</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Internal res</th><th>Pixels</th><th>Wall</th><th>In-game fps</th></tr></thead>
+          <tbody>
+            <tr><td>8× — 5120×4224</td><td class="num">21.6 MP</td><td class="num">57s</td><td class="num">~51</td></tr>
+            <tr><td>3× — 1920×1584</td><td class="num">3.0 MP</td><td class="num">54s</td><td class="num">~51</td></tr>
+            <tr><td>1× — 640×528</td><td class="num">0.34 MP</td><td class="num">57s</td><td class="num">~51</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>A 64× swing in pixel load, and native ties 8× exactly. The setting really was applied — VRAM went
+        1872 MiB against 1658 MiB. The revealing number is GPU utilization moving the <em>wrong</em> way:
+        32–36% at 8×, 53–57% at native. The card is more idle when asked to draw 64× the pixels, because it
+        finishes sooner and waits longer on the CPU thread.</p>
+      <p>These values also never reach a player. <code>package-dist.sh</code> hard-fails if
+        <code>userdata/Config</code> reaches the release stage; the only archive containing a
+        <code>GFX.ini</code> predates that script.</p>
+    </div>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>Disable 8× MSAA</h3><span class="verdict">Confirmed — the one that was right</span></div>
+      <p>Measured 13 August, and it is the only claim in this document that survived. MSAA was switched off in
+        all three resolution runs so that resolution was isolated, which is exactly why its cost stayed
+        invisible for a day — and the inference recorded here, that it was "plausibly also free", was wrong.
+        On the Arcade final fight it is the difference between 56 fps and a locked 60.</p>
+      <div class="evidence">8x res + 8x MSAA + CRT    56.23 fps   min 45.3   GPU  95%   89W
+8x res, no MSAA, CRT on   <b>59.90</b> fps   min 59.9   GPU  63%   64W</div>
+      <p>Full detail, and the three arms in between, in <b>The final fight</b> below.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Set <code>config.ini</code> target resolution to 2560×2112</h3><span class="verdict">Error found</span></div>
+      <p>This one is internally inconsistent. That key is not a window size — it maps to a Dolphin EFB scale,
+        and any exact <code>640·N × 528·N</code> string resolves to scale N. So <code>2560×2112</code> is
+        <b>scale 4</b>, while the same document sets <code>InternalResolution = 3</code>. The two files are
+        left disagreeing by a full step, and both feed the same setting.</p>
+      <p>Its own sentence — "InternalResolution from 8 to 3 (1080p equivalent, 2560x2112)" — pairs a scale-3
+        value with a scale-4 resolution. The matching pair for scale 3 is <code>1920×1584</code>.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Add <code>-O3 -fomit-frame-pointer -march=native</code></h3><span class="verdict">Already true</span></div>
+      <p>All three are no-ops, verified from the actual compile line rather than reasoned about:</p>
+      <div class="evidence">-march=native -O3 -flto=thin</div>
+      <p><code>-march=native</code> was already in <code>setup.sh</code>. <code>-O3</code> comes from
+        <code>CMAKE_BUILD_TYPE=Release</code>, and CMake emits <code>CMAKE_C_FLAGS</code> <em>before</em> the
+        Release flags, so adding it there changes nothing — a trap this project already documented when it
+        measured <code>-O2</code> against <code>-O3</code>. <code>-fomit-frame-pointer</code> is default at
+        <code>-O2</code> and above; its only observable effect would be breaking <code>perf</code>'s
+        frame-pointer unwinding.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Pass <code>--idle-pc</code> to the recompiler</h3><span class="verdict">Already true</span></div>
+      <p>Present and documented as mandatory — without it the OS idle spin loop compiles to a native goto and
+        idle-skip silently stops working.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Verify <code>CPUThread</code> and <code>DSPThread</code></h3><span class="verdict">Already true</span></div>
+      <p>Both already <code>True</code> in <code>Dolphin.ini</code>. Nothing was applied.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3><code>ShaderCompilationMode = 2</code></h3><span class="verdict">Already true</span></div>
+      <p>Already set. The document lists it as a finding rather than a change.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Document 3 — affinity, underclocking, PGO</h2>
+      <span class="sec-count">5 claims · 1 shipped</span>
+    </div>
+    <p class="sec-intro">Contains the single best suggestion of the three, and the only one that would have
+      caused damage.</p>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>Profile-guided optimization</h3><span class="verdict">Shipped — biggest win</span></div>
+      <p>The notes recorded PGO as dead here. That was true of GCC and only GCC — an instrumented module died
+        with SIGBUS during boot, in a GCC-only container. clang 22 with
+        <code>-mllvm -runtime-counter-relocation</code>, the flag that exists for instrumented <em>shared</em>
+        libraries, clears it.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th></th><th>Cycles</th><th>Instructions</th><th>IPC</th><th>In-game fps</th></tr></thead>
+          <tbody>
+            <tr><td>base</td><td class="num">889.39 G</td><td class="num">2185.7 G</td><td class="num">2.456</td><td class="num">54.5</td></tr>
+            <tr><td>PGO</td><td class="num win">783.57 G</td><td class="num win">1970.0 G</td><td class="num">2.514</td><td class="num win">59.6</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><b>−11.9% cycles</b>, with the arms not overlapping across five reps each — the slowest PGO run beats
+        the fastest baseline run by 94 Gcyc. The desktop now holds 60 where it dropped to ~54.</p>
+      <p>The mechanism is why it matters: <b>−9.9% retired instructions</b> plus 2.4% IPC. "Fewer host
+        instructions per guest instruction" was the one lever the PMU work left open, and the per-opcode
+        survey then closed on the grounds that no opcode class is both hot and wastefully emitted. Both were
+        right — the saving is diffuse, invisible to inspection, and exactly what a profile-guided compiler
+        finds.</p>
+      <p>Guest state is untouched: all ten runs hashed identically, so a PGO module and a plain one remain
+        netplay peers. Costs are real — <code>.text</code> grows 20.69 → 37.47 MB and the module build goes
+        144s → 446s cold. Merged in PR #2 and verified through a real <code>setup.sh</code> run against the
+        disc, which reproduced the benchmarked module byte for byte.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Underclock the guest CPU to 85%</h3><span class="verdict">Rejected on risk</span></div>
+      <p>The claim is that this "reduces guest CPU work by 15% without altering game physics or speed", which
+        is self-contradictory: the emulated CPU <em>is</em> what runs the physics. Underclocking means fewer
+        guest instructions per emulated second, so the CPU-heavy scenes already dropping frames run slower
+        internally. The frames are not free; they are traded for guest execution.</p>
+      <p>Worse here specifically: it changes emulated timing, so frame hashes change and two peers with
+        different values desync immediately. This project spent real effort making the module reproducible
+        across compilers, linkers and <code>-march</code>. This setting breaks that from a config file.</p>
+    </div>
+
+    <div class="entry v-wait">
+      <div class="entry-top"><h3>Unpin the CPU thread with <code>STATICRECOMP_CPU_AFFINITY=-1</code></h3><span class="verdict">Not tested</span></div>
+      <p>The mechanism is real — <code>-1</code> genuinely disables pinning via a <code>core &gt;= 0</code>
+        guard. The portability concern is fair in principle, but its specific examples are wrong: Intel hybrid
+        parts enumerate P-cores first, so core 2 is a P-core thread, and on a 7950X3D cores 0–7 are CCD0, the
+        V-cache die. On this 6-core single-CCD part there is no question to answer, and the Deck measurement
+        already found placement optimal.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Set the CPU governor and EPP to performance</h3><span class="verdict">Refuted</span></div>
+      <p>Nothing to reclaim. Under the actual emulator load the pinned core already boosts to the top of its
+        range:</p>
+      <div class="evidence">EPP: balance_performance     ceiling: 4762 MHz
+under emulation:   <b>4573</b> / 3659 / 3638 MHz</div>
+      <p>An intermediate reading of 3552 MHz suggested otherwise, but that was a bash busy loop being a poor
+        proxy for the real workload.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Rebuild with native SIMD and ThinLTO</h3><span class="verdict">Already true</span></div>
+      <p>Same no-op as Document 2. The module already compiles <code>-march=native -O3 -flto=thin</code> with
+        hidden visibility and no semantic interposition. The suggested detail about LTO inlining
+        <code>mem_read32</code> is already happening — and hand-inlining those fast paths into the generated
+        header was measured and rejected at +6.1% CPU.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Document 4 — advanced CPU techniques</h2>
+      <span class="sec-count">5 claims · 0 shipped</span>
+    </div>
+    <p class="sec-intro">The most technically literate of the four, and the one whose numbers are furthest
+      from this engine. Every technique here is real and pays elsewhere; each was already measured here and
+      found bounded well below what it claims.</p>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Fastmem: mmap the guest address space, catch SIGSEGV — 15–30%</h3><span class="verdict">Bounded at ~8%</span></div>
+      <p>The technique is real and standard. The ceiling is not. Every memory and paired-single helper
+        together — <code>mem_read*</code>, <code>mem_write*</code>, <code>ppc_psq_load/store</code>, slow
+        paths included — is this much of the CPU thread on gameplay:</p>
+      <div class="evidence">mem + psq helpers, total    <b>8.54%</b>  of the CPU thread</div>
+      <p>That is the entire budget the technique draws from, and fastmem does not empty it: the load and the
+        byte swap remain, only the bounds check goes. 15–30% is not an optimistic estimate of this, it is
+        <b>2–4× the whole memory path</b>.</p>
+      <p>The architectural cost is the larger objection, and the document does not mention it.
+        <code>cpu.c</code> exports <code>ppc_set_mem_write_journal</code>, and the chassis installs it to
+        capture pre-images of flat-RAM writes. That journal is what the lockstep differential,
+        <code>determinism-localise</code>, <code>determinism-watch</code> and rollback all run on. Under
+        mmap + <code>SIGSEGV</code>, ordinary writes land straight in mapped pages with <b>no hook at
+        all</b> — the journal goes silent and the tooling that proves netplay parity stops working. Not
+        unsolvable, but a redesign of the determinism story rather than a build flag.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3><code>__restrict__</code> on <code>CPUState</code> — 3–7% fewer stores</h3><span class="verdict">Refuted, and misaimed</span></div>
+      <p>The premise was already measured and came back ordinary — this is what "Clang spills guest
+        registers constantly" looks like when counted:</p>
+      <div class="evidence">loads    363.72 G   26.3% of instructions
+stores   151.03 G   10.9%
+memops   514.75 G   <b>37.2%</b>   ordinary compiled code is ~30-40%</div>
+      <p>Squarely in the normal band, which is why block-local register allocation was dropped as a lead.</p>
+      <p>The suggested form also would not do what it claims. Chunks are
+        <code>void func_8000D940(CPUState* ctx)</code> and RAM is reached as <code>cpu-&gt;ram + off</code>
+        — a pointer <em>loaded through</em> <code>cpu</code>. Marking the parameter <code>restrict</code>
+        says nothing about whether <code>cpu-&gt;ram</code> overlaps <code>cpu-&gt;gpr</code>, because both
+        are reached through the same pointer. The qualifier would have to go on the RAM pointer itself.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Dead CR field elision — 2–5%</h3><span class="verdict">Refuted</span></div>
+      <p>Measured directly, with counters compiled into the module over this same workload. 98.2% of
+        condition-register writes are live:</p>
+      <div class="evidence">field    writes         reads          dead%
+cr0      3709434029     3708005333      1.9%
+cr1        42983253       50909638      0.4%
+cr7         6875012       32459319      2.4%
+TOTAL    3840285604     3910538440     <b>1.8%</b></div>
+      <p>The upside is bounded twice over: CR computation is only ~2–3% of the instruction stream to begin
+        with, and 1.8% of that is dead. <b>Perfect</b> elision — not achievable elision — saves ~0.05%. cr0
+        is 97% of all writes and is read essentially every time, because compilers emit <code>.</code>-forms
+        precisely when they are about to branch on the result.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Transparent Huge Pages for <code>.text</code> — 2–4%</h3><span class="verdict">Above the ceiling</span></div>
+      <p>Only one counter measures real front-end starvation, and it caps every front-end fix including this
+        one at <b>2.4% of cycles</b>. The alarming-looking 55.9% <code>ic_stall_any</code> is dominated by
+        benign back-pressure — what a machine at IPC 1.92 doing real work looks like. Two projects have
+        already lost chasing that number: BOLT at −8.1% and <code>-O2</code> at −9.1%, the latter with
+        12.5% <em>less</em> code.</p>
+      <p>The command is also backwards on this machine, which is already at the most aggressive setting:</p>
+      <div class="evidence">/sys/kernel/mm/transparent_hugepage/enabled:  <b>[always]</b> madvise never</div>
+      <p><code>echo madvise</code> would make huge pages <em>less</em> likely here, not more.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Keep the pinned core's SMT sibling idle</h3><span class="verdict">Already true</span></div>
+      <p>Already the case. On this host core 2 pairs with core 8, and on the Deck it was measured directly
+        during a match — cpu2 at 100%, its sibling cpu3 idle, the video thread on a different physical core.
+        One thread saturated and seven near-idle is the whole picture: the guest is a single PowerPC and
+        that work cannot be split.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Document 5 — recompiler flags and backends</h2>
+      <span class="sec-count">7 claims · 0 shipped</span>
+    </div>
+    <p class="sec-intro">The best-informed of the five. The flags it names mostly exist, which none of the
+      earlier documents managed. But it reads flag <em>names</em> and infers what they must do: one of them
+      only reports, one was built and abandoned, one is already on, and one is already merged. Three of the
+      seven propose work that is finished or refuted, and they are the three carrying the most confident
+      frame-rate claims.</p>
+    <p class="sec-intro">Its file references also do not match this tree. <code>module_export.c:L19-20</code>
+      is cited for a <code>ppc_fprf_flush(ctx)</code> call; that file is <b>44 lines long</b> and contains no
+      <code>fprf</code> at all. <code>cpu.h:L98-100</code> is cited for memory access and holds struct
+      fields — the accessor is at line 186. <code>cli.c:L100-109</code> is cited for flag parsing and holds
+      an ASCII-uppercase helper.</p>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Enable basic-block leader switch tables — <code>--leader-cases</code></h3><span class="verdict">Built and rejected</span></div>
+      <p>The flag is real and the size claim is right: the module shrinks <b>19.5%</b>, 38.76 → 31.20 MB. It
+        was built end to end on 7 August, with an ABI-v3 entry-point table so the chassis knows which
+        addresses are entrable. It is a catastrophe at runtime:</p>
+      <div class="evidence">base3   (all labels)   23.6M native dispatches    0.48M interpreter steps
+leader2 (leaders)      18.9M native dispatches   <b>82.4M</b> interpreter steps</div>
+      <p><b>81% of execution leaves the recompiled code.</b> Block leaders do not cover indirect-branch
+        targets, so every guest jump-table target and mid-block resume lands on a non-leader and is handed to
+        the interpreter. The ICache argument is sound in isolation and worth nothing against an 80× increase
+        in interpretation. The flag stays in DolRecomp, off by default, pending indirect-target discovery.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>XER carry dead-code elimination — <code>--ca-liveness</code></h3><span class="verdict">Flag does not do this</span></div>
+      <p>Its own help text: <em>"Report provably-dead XER[CA] writes (codegen unchanged)"</em>. The
+        implementation is three <code>atomic_fetch_add</code> calls into stat counters. It is a measuring
+        instrument — and it is the instrument that produced this project's carry-liveness numbers. Enabling
+        it removes nothing.</p>
+      <p>The underlying idea was then tested and is blocked. <code>RECOMP_NO_CA</code> <b>hangs the game</b> —
+        zero frames against 16000 for the same tree with CA on. Unlike FPRF, whose reads only observe wrong
+        bits, CA's 20.2 M reads are load-bearing: some early <code>addc</code>/<code>adde</code> loop depends
+        on the carry to terminate. There is no semantically inert version to measure against.</p>
+      <div class="evidence">XER.CA   1.255 G writes   20.2 M reads   98.4% dead
+stub removes 181,786 bytes of .text (0.61%)  ->  ~1% of the instruction stream</div>
+      <p>So the ceiling is ~1%, only the dead fraction is recoverable, and it needs a backward liveness pass
+        over 3769 write sites. FPRF was the same idea with a 3.1% ceiling and no dataflow, which is why it
+        went first.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Zero-mask direct base pointer RAM access</h3><span class="verdict">Premise false</span></div>
+      <p>There is no <code>addr &amp; 0x01FFFFFF</code> in this codebase to remove. The accessor is already
+        the reduced form the suggestion is arguing towards:</p>
+      <div class="evidence">u32 off = addr - GC_RAM_BASE;
+return off &lt;= cpu-&gt;ram_size - size ? cpu-&gt;ram + off : (u8*)0;</div>
+      <p>One subtract, one compare — the comment above it reads <em>"Kept to a single compare"</em>. Uncached
+        <code>0xC0…</code> addresses fall through to the slow path deliberately, because they have different
+        semantics; folding them into a shared mask is a correctness change, not an optimization. And the
+        entire memory plus paired-single path is 8.54% of the CPU thread, so the ceiling is small even where
+        the premise holds.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Tune the LLVM object backend for Zen 2</h3><span class="verdict">Knob does not exist</span></div>
+      <p>The most substantial item, and the only one with anything left in it. <code>--backend llvm</code>,
+        <code>DOLRECOMP_LLVM_TARGET</code> and <code>DOLRECOMP_LLVM_CHUNK_INSTRUCTIONS</code> (128–4096,
+        default 1024) are all real. But <code>DolLLVMOptions</code> carries exactly
+        <code>target_triple</code>, <code>optimization_level</code>, <code>verify</code>,
+        <code>emit_ir</code>, <code>ir_path</code> and the function ranges. There is <b>no
+        <code>-mcpu</code> or <code>-mattr</code></b>, so the znver2 tuning has nothing to attach to and
+        would need new code before it could be tried.</p>
+      <p>The backend itself is blocked on ~11 float helpers our C backend inlines instead of calling, needs
+        LLVM 19–20 exactly, and takes ~2 h to emit 526 objects at 736 MB. When it did run it made <b>43%
+        fewer dispatches and was still 4% slower</b>.</p>
+      <p>Hard-coding <code>znver2</code> would also be a regression rather than a tune. This desktop is Zen 3,
+        and <code>setup.sh</code> builds the module on the player's own machine with
+        <code>-march=native</code> — which already selects the right target for whatever hardware runs it,
+        Deck included.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Native MOVBE byte swapping — <code>-mmovbe</code></h3><span class="verdict">Already true</span></div>
+      <p>Already in effect. <code>setup.sh</code> passes <code>-march=native</code>, which defines
+        <code>__MOVBE__</code> on both this host and the Deck. Compiling the actual access pattern confirms
+        the fusion has been happening all along:</p>
+      <div class="evidence">movbel  (%rdi), %eax</div>
+      <p>One instruction, load and byte-swap merged, no <code>bswap</code> emitted anywhere. The same no-op as
+        Document 2's <code>-O3 -march=native</code> claim, found the same way — by reading the generated
+        code rather than the source.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Lazy FPRF updates</h3><span class="verdict">Already shipped</span></div>
+      <p>Merged three days before the document was written — commit <code>68aea54d</code>, 10 August,
+        <b>−2.45% cycles</b>, hash-identical. FPRF was measured 100% dead with a 3.1% ceiling, and it is the
+        one status-bit win this project found. The suggestion describes completed work.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>High-intensity combat PGO profile</h3><span class="verdict">Already true</span></div>
+      <p>The committed profile is 6000 frames of a single Arcade match — already "pure combat, no menus, no
+        FMVs". The document's recommendation is the status quo, and widening it was benchmarked the morning
+        the document arrived: adding attract mode cost <b>+2.18% cycles</b> and the narrow profile won.</p>
+      <p>Two details do not survive contact with the game. It asks for "a 4-player Arcade match" —
+        SOULCALIBUR II's Arcade mode is 1v1, there is no 4-player mode. And its stated goal, frame-rate
+        retention under peak load, is the symptom traced the same day to <b>8× MSAA</b>, which no profile
+        can touch.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Document 6 — what is left for the Deck</h2>
+      <span class="sec-count">2 claims · 0 shipped</span>
+    </div>
+    <p class="sec-intro">Written after reading this page, and its opening premise is the right one: the CPU
+      side is tuned out, and what remains is at hardware boundaries rather than in code generation. That is
+      the conclusion two days of measurement support. It then picks the boundary that was already handled,
+      and misses the one sitting next to it.</p>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>Force <code>MSAA = 0</code> in the Deck package</h3><span class="verdict">Already true</span></div>
+      <p>The Deck package has never shipped MSAA. Its config, unchanged since packaging:</p>
+      <div class="evidence">InternalResolution = 7        <b>MSAA = 0x00000001</b>   (off)
+SSAA = False                  PostProcessingShader =   (none)</div>
+      <p>So MSAA is not what caps the Deck at 56.9 fps, and the recommended fix is the current state. The
+        suggested value is also wrong in detail — the setting is a sample count, where <code>1</code> means
+        off; <code>0</code> is not the off value either package uses.</p>
+      <p><b>The question underneath it is real, and it is now the better one.</b> The Deck ships <b>7×
+        internal resolution — 4480×3696</b>, 16.6 megapixels on an RDNA2 iGPU. Resolution was measured free
+        on 12 August, but every one of those runs had MSAA off <em>and</em> an RTX 3050 with headroom to
+        spare. Neither condition holds on the Deck. That is untested, costs a config change and no rebuild,
+        and it is on the machine where the frame rate is actually tight.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Inline monomorphic cache at the chassis dispatcher</h3><span class="verdict">Refuted — and unsafe as written</span></div>
+      <p>The first suggestion across six documents to name a code site that exists and does what it says.
+        <code>chassis_dispatch</code> really is a one-line wrapper around <code>dolrecomp_call</code>. Three
+        things go wrong after that.</p>
+      <p><b>The numbers are the rejected experiment's, with their meaning inverted.</b> "81% of execution
+        stays inside native recompiled chunks and dispatches are down to 18.9M" describes the
+        <code>--leader-cases</code> arm, where 81% of execution <em>left</em> the recompiled code — 82.4M
+        interpreter steps against the baseline's 0.48M — and 18.9M was that arm's dispatch count. It is the
+        failure configuration quoted as the current state.</p>
+      <p><b>The lookup being bypassed is not a lookup.</b> <code>dolrecomp_find_original</code> is generated
+        as uniform-stride runs: a range check and index arithmetic, then an indirect call. An inline cache
+        adds a load, a compare and a branch to <em>every</em> dispatch to skip that arithmetic, and still
+        ends in an indirect call through the cached pointer — so it does not remove the misprediction that
+        actually costs. Against arithmetic that cheap it is plausibly a net loss.</p>
+      <p><b>And it would be incorrect.</b> <code>dolrecomp_call</code> is not only a lookup:</p>
+      <div class="evidence">ctx-&gt;pc = address;
+if (dolrecomp_dispatch_replacement(ctx, address)) return 1;
+if (ctx-&gt;host_call &amp;&amp; ppc_host_call(ctx, address)) return 1;
+if (dolrecomp_call_original(ctx, address)) return 1;</div>
+      <p>Returning early on an address match skips the replacement check <b>and the host-call hook</b> — the
+        HLE path, which this game uses for FMV playback. It also caches a function pointer across the
+        module's SMC ranges and chunk hashes, so self-modifying code could execute stale entries; the chassis
+        reports <code>smc_failed</code> on shutdown precisely because that path is live.</p>
+      <p>The headroom is largely spent in any case. PR #3 removed a double lookup from this exact path for
+        −1.23% instructions, and the evidence against dispatch count being the lever still stands: the LLVM
+        backend made 43% fewer dispatches and was 4% slower.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Beyond the suggestions</h2>
+      <span class="sec-count">3 shipped · 1 dismissed</span>
+    </div>
+    <p class="sec-intro">None of these came from a suggestion document. The first was an item the
+      profiling turned up; the next two were found by shipping the work and watching what the release
+      scripts did — or failed to do.</p>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>The dispatcher looked the same address up twice</h3><span class="verdict">Shipped</span></div>
+      <p><code>FastDispatchableAt</code> runs once per dispatch — roughly 970M times over a 24000-frame
+        match — and was composed from <code>ChunkIndexOf</code> + <code>IsModuleEntry</code>. Both call
+        <code>GetAddressLookupIndex</code>, so every dispatch derived the same index from the same address
+        twice and discarded one. Four FMV env flags were also declared <em>inside</em> the loop, each
+        paying a static-init guard check per dispatch.</p>
+      <div class="evidence">base   1969.68 Ginsn   (1968.83-1970.05, spread 0.06%)
+new    <b>1945.38</b> Ginsn   (1944.41-1945.94, spread 0.08%)
+       <b>-1.23%</b> instructions, arms do not overlap</div>
+      <p>That is ~25 host instructions off every dispatch. <b>No cycle claim is made</b> — cycles came out
+        −0.76% but with a 3.7–4.7% per-arm spread, because the machine was no longer idle. The instruction
+        count is immune to that, which is why it is the number quoted. Below the 1–2% originally estimated,
+        and nowhere near PGO. Merged in PR #3.</p>
+      <p>Worth recording what was <em>wrong</em> going in: the hypothesis was that per-burst state syncing
+        was the hidden cost. <code>SyncIn</code> is 0.13%. And the older note claiming ~15% headroom here is
+        contradicted by the LLVM backend doing 43% fewer dispatches and still losing 4%.</p>
+    </div>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>The Deck package shipped a three-day-old runtime</h3><span class="verdict">Fixed</span></div>
+      <p>Found by walking into it. With a merged chassis change sitting in the tree,
+        <code>package-deck.sh</code> completed in <b>four seconds</b> and produced a clean 21 MB zip built
+        around a binary from 9 August. It rebuilt only when the runtime was <em>absent</em>, never when it
+        was stale.</p>
+      <div class="evidence">==> runtime: build-deck/moderngekko-run
+==> checks
+  glibc floor: GLIBC_2.36
+==> forbidden files
+  none
+==> personal identifiers
+  none
+privacy scan clean</div>
+      <p>Every gate passed, because none of them look at age — and this is the package where it matters most,
+        since the prebuilt runtime <em>is</em> the payload and there is no on-machine rebuild to paper over
+        it. Now rebuilds when stale, and refuses to package a stale one even via the
+        <code>SKIP_BUILD</code> / <code>RUNTIME=</code> override paths. Merged in PR #4.</p>
+    </div>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>The desktop package couldn't see a stale recompiler</h3><span class="verdict">Fixed</span></div>
+      <p>The same class, but quieter. A stale <em>runtime</em> fails loudly at <code>dlopen</code>; a stale
+        <em>recompiler</em> ships old codegen in silence — setup runs, the module builds, the game plays,
+        just slower. It already happened here: <code>tools/dolrecomp</code> predated lazy FPRF, so desktop
+        players would have built the eager path and missed a measured <b>−2.45%</b>, with every check
+        passing.</p>
+      <p>The runtime had a freshness guard against the ABI header; the recompiler now has the matching one
+        against <code>DolRecomp/src</code>. Merged in PR #5.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>A document made of these results</h3><span class="verdict">Derivative</span></div>
+      <p>It arrived quoting this page's numbers verbatim — 889.39 → 783.57, the 8.1% dispatcher split, the
+        32%-versus-53% GPU utilization — as if independently established. It is the same measurement counted
+        twice, and evaluating it as corroboration would be a feedback loop.</p>
+      <p>Its printed PGO recipe also does not run. Executed verbatim:</p>
+      <div class="evidence">configure exit=1
+  No SOURCES given to target: g_recomp</div>
+      <p>It omits every required cache variable, omits <code>-DMODULE_LTO=OFF</code> (the documented
+        21 KB-stub trap), drops <code>-march=native</code>, and globs for <code>.profraw</code> files in a
+        directory they are never written to. It is also obsolete: <code>setup.sh</code> now does PGO
+        automatically from a committed profile.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>On the Deck</h2>
+      <span class="sec-count">the hardware that matters · 4 results</span>
+    </div>
+    <p class="sec-intro">The desktop was never the point — it was already fast enough. The Deck sat at
+      45–49 fps against a 60 target, and everything above was staged so this could be measured on the
+      device rather than extrapolated to it.</p>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>The profile transfers to Zen 2 unchanged</h3><span class="verdict">−12.55%</span></div>
+      <p>The open question was whether a profile trained on a Zen 3 desktop means anything on the Deck's
+        Zen 2. It does — slightly more, in fact, than it was worth here. Same runtime, two
+        <code>-march=znver2</code> modules differing only by <code>-fprofile-use</code>, 12000 frames,
+        3 reps alternating, idle Deck:</p>
+      <div class="evidence">base   531.77 Gcyc  1083.0 Ginsn  IPC 2.036  (spread 0.20%)
+pgo    <b>465.04</b> Gcyc   983.3 Ginsn  IPC 2.115  (spread 0.19%)
+       <b>-12.55%</b> cycles   -9.2% instructions   +3.9% IPC</div>
+      <p>So retraining per microarchitecture is unnecessary. A profile records which branches and blocks are
+        hot, which is a property of the game and the input script — not of the chip. <b>Retrain when the
+        emitter's codegen changes, not when the CPU does.</b></p>
+      <p>One detail worth more than the headline: on the Deck <b>wall time tracks cycles</b> (−10.7% against
+        −12.55%), where on the desktop it did not (−4.8% against −11.9%). That is the signature of a machine
+        genuinely bound by its CPU thread, and it means the gain lands as frames rather than being absorbed.</p>
+    </div>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>In a real match: 45–49 → 56.9 fps</h3><span class="verdict">Confirmed on hardware</span></div>
+      <p>Measured in Game Mode, on the device, by the person playing it. Above what the cycle figure alone
+        predicted (50–54) — but the honest attribution is that the remembered 45–49 baseline came from a
+        module dated 5 August, so this is <em>today's build against a months-old one</em>, not PGO alone.
+        The clean PGO-only number remains the −12.55% measured with everything else held constant.</p>
+      <p>Nothing here is graphics-assisted: the Deck renders at native 640×528 with MSAA off and VSync off.
+        The gain is entirely CPU-side, which is where the work went.</p>
+    </div>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>PC↔Deck netplay parity survives PGO</h3><span class="verdict">Byte-identical</span></div>
+      <p>The real risk in the day's work: the two machines now run different binaries — desktop
+        <code>-march=native</code>, Deck <code>-march=znver2</code> — and netplay requires identical guest
+        state. With starting state matched, 6000 frames:</p>
+      <div class="evidence">desktop  -march=native   PGO   md5=<b>da2ace4b4d3c2cf0</b>
+deck     -march=znver2   PGO   md5=<b>da2ace4b4d3c2cf0</b></div>
+      <p>Different compilers, CPU generations and glibc versions. <code>-ffp-contract=off</code> holds with
+        the largest codegen change this project has made layered on top.</p>
+      <p>The first attempt appeared to diverge at <b>frame 241</b> — and the frame number is the diagnostic.
+        All 240 boot frames matched, then it split at the first <code>START</code>: the signature of
+        different <em>starting state</em>, not codegen. Both <code>SRAM.raw</code> and the memory-card save
+        differed between machines. Copying the desktop's <code>GC/</code> directory across made it vanish.
+        Frame 0 would have meant the module; a split at first input means state.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>The CPU governor, again — and the snapshot that lied</h3><span class="verdict">No gain</span></div>
+      <p>The Deck looked more promising than the desktop: under load on <code>powersave</code> the busiest
+        core sat at 3204 MHz against a 3501 ceiling, 8.5% short. On <code>performance</code> it hit 3499.7 —
+        apparently recovered headroom worth crossing 60 fps for. It was not:</p>
+      <div class="evidence">                cycles      wall    effective clock
+powersave     465.04 G      142s      3.275 GHz
+performance   468.12 G      141s      3.320 GHz
+                           -0.7%        +1.4%</div>
+      <p>Same frames, same module, identical hashes. The instantaneous reading was a snapshot of a boosting
+        core; sustained, the Deck is <b>TDP-limited</b> and averages ~3.3 GHz under either governor.
+        <b>Cycles ÷ wall is the honest clock</b> — and it was free, because both numbers were already being
+        recorded. Revert it: <code>performance</code> costs battery on a handheld and returns nothing.</p>
+    </div>
+
+    <div class="entry v-flat">
+      <div class="entry-top"><h3>A crash that was not the new code</h3><span class="verdict">Diagnosed</span></div>
+      <p>Worked in Desktop Mode, then Game Mode was tried, then Desktop Mode stopped working too — the exact
+        shape of "the thing you just changed broke it". The backtrace said otherwise in one screen:</p>
+      <div class="evidence">#0  libvulkan_radeon.so                       <- Mesa RADV
+#5  Vulkan::VKPipeline::Create
+#6  VKGfx::CreatePipeline(config, const void*, size_t)   <- cache blob
+#7  ShaderCache::QueueUberPipelineCompile
+#8  AsyncShaderCompiler::WorkerThreadRun</div>
+      <p>Frame 6 takes a cache <em>pointer and size</em>: Dolphin replaying a stored pipeline cache into the
+        driver, which walked off the end of it. Nothing in that stack touches recompiled guest code, and a
+        headless run — which never creates pipelines — passed on the same binaries. The fix was moving
+        <code>Vulkan-*.cache</code> aside; they regenerate.</p>
+      <p>The mechanism is worth remembering because it is <b>self-perpetuating</b>: a crash leaves the blob
+        truncated, so every subsequent launch crashes replaying it and re-corrupts it. It never wears off,
+        which is precisely why it looks like a code regression. Get the backtrace before theorising —
+        <code>coredumpctl info</code> needs no reproduction and answers it in one screen.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The next morning — can PGO be pushed further?</h2>
+      <span class="sec-count">13 Aug · 1 refuted · 1 correction</span>
+    </div>
+    <p class="sec-intro">PGO was the one change that paid. The obvious follow-up is that its profile is
+      narrow — 6000 frames of a single match on a single stage — so a broader training set ought to do
+      better. Three modules were built and benchmarked against each other on an idle machine.</p>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>A broader PGO training set</h3><span class="verdict">Refuted</span></div>
+      <p class="claim">More representative training data should produce better codegen than one match on one
+        stage.</p>
+      <p>Three arms, five reps each, 24000 frames, order reversed on even reps. All fifteen runs produced the
+        identical guest hash, so every arm did identical work.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Profile</th><th>Cycles</th><th>vs base</th><th>Instructions</th><th>IPC</th></tr></thead>
+          <tbody>
+            <tr><td>base — 6000 frames, one match</td><td class="num">756.30 G</td><td class="num">—</td><td class="num">1931.11 G</td><td class="num">2.556</td></tr>
+            <tr><td>+ 39988-frame match</td><td class="num">752.11 G</td><td class="num">−0.55%</td><td class="num">1932.34 G</td><td class="num">2.569</td></tr>
+            <tr><td>+ match and attract mode</td><td class="num">772.79 G</td><td class="num">+2.18%</td><td class="num">1952.58 G</td><td class="num">2.527</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Adding attract mode made it <b>worse</b> — more instructions and lower IPC together. The reason is
+        specific: attract mode opens with the intro movie, which is the game's software MPEG decoder, and the
+        project deliberately bypasses that code in normal play. Twenty thousand frames of it pulled the
+        profile's weights toward a workload the player never runs.</p>
+      <p>The broader profile <em>without</em> attract mode came in 0.55% ahead, against per-arm spreads of
+        0.7–1.3% — t≈2.0, p≈0.08. That is under the resolution of this instrument, so it is a wash rather
+        than a win, and not a reason to churn a committed 11 MB profile. The shipped profile stays.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>"Coverage was never the problem"</h3><span class="verdict">Own finding overturned</span></div>
+      <p class="claim">Every profile reported the same 180 functions and the same 1,426,365 blocks, so the
+        extra 60000 frames reached no new code — only different weights.</p>
+      <p>Wrong, and wrong in an avoidable way. Those are <b>static</b> totals: <code>llvm-profdata</code>
+        prints every instrumented function and block in the binary whether or not it ever executed, so three
+        profiles of the same module were always going to agree. Counting <em>non-zero</em> counters instead
+        gives the real picture:</p>
+      <div class="evidence">shipped     259,449 of 1,426,365 blocks    <b>18.19%</b>
++ match     302,564                        21.21%
++ attract   346,983                        24.33%</div>
+      <p>Broadening reached <b>87,534 more blocks</b> — a third more covered code. Coverage varies enormously
+        with the training set. It simply did not help, and the arm with the <em>most</em> coverage was the
+        <em>slowest</em>.</p>
+      <p>That inverts the intuition worth carrying forward: coverage is not the goal, representative
+        weighting is. Extra training data pays only when the extra content is content the player runs.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The final fight</h2>
+      <span class="sec-count">13 Aug · reported from play · solved</span>
+    </div>
+    <p class="sec-intro">Reported from actually playing the game: the Arcade final fight slows down, and it is
+      a special stage carrying visual effects that appear nowhere else. This is the only item on this page
+      that did not come from a document or a profiler — and it is the one that found a real problem.</p>
+
+    <div class="entry v-ok">
+      <div class="entry-top"><h3>8× MSAA on a 5K target, not recompiled code</h3><span class="verdict">Solved</span></div>
+      <p class="claim">The final fight has effects that occur nowhere else, so the code that draws them is
+        cold to a profile trained on ordinary matches.</p>
+      <p>Plausible, and wrong. The shipped profile really does cover only 18% of the module, and the input
+        script really does stop at Arcade stage 2 — but the symptom has nothing to do with either. Five
+        configurations of the same fight, sampled once a second:</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Configuration</th><th>n</th><th>fps</th><th>min</th><th>&lt;58 fps</th><th>GPU</th><th>Power</th></tr></thead>
+          <tbody>
+            <tr><td>everything off — 1× res, no CRT</td><td class="num">523</td><td class="num">59.90</td><td class="num">58.0</td><td class="num">0%</td><td class="num">41%</td><td class="num">37 W</td></tr>
+            <tr><td>8× res + 8× MSAA + CRT</td><td class="num">292</td><td class="num">56.23</td><td class="num">45.3</td><td class="num">60%</td><td class="num">95%</td><td class="num">89 W</td></tr>
+            <tr><td>8× res + 8× MSAA, no CRT</td><td class="num">442</td><td class="num">57.28</td><td class="num">50.1</td><td class="num">56%</td><td class="num">96%</td><td class="num">91 W</td></tr>
+            <tr><td>8× res, no MSAA, no CRT</td><td class="num">186</td><td class="num win">59.90</td><td class="num">59.9</td><td class="num">0%</td><td class="num">62%</td><td class="num">65 W</td></tr>
+            <tr><td>8× res, no MSAA, <b>CRT on</b></td><td class="num">534</td><td class="num win">59.90</td><td class="num">59.9</td><td class="num">0%</td><td class="num">63%</td><td class="num">65 W</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><b>8× MSAA is the entire cost.</b> Remove it and the fight holds a locked 60 with 8× internal
+        resolution still fully on. The recommended configuration is the last row — <b>8× resolution, CRT on,
+        MSAA off</b> — which gives up nothing but the anti-aliasing. That arm ran nearly nine minutes of
+        continuous play without a single sample below 59.9.</p>
+      <p>The CRT post-processing shader was the wrong suspect, twice over. It costs about 1 fps when the card
+        is already saturated and is <em>free</em> once MSAA is gone — 59.90 either way. The guest CPU thread
+        sat between 66% and 80% of a core in every one of the five arms, so the recompiled module always had
+        headroom. No codegen change, PGO included, could ever have moved this number.</p>
+    </div>
+
+    <div class="entry v-no">
+      <div class="entry-top"><h3>Why a whole day of resolution testing missed it</h3><span class="verdict">Method</span></div>
+      <p>Document 2's resolution claim was refuted on 12 August because 8×, 3× and 1× tied exactly. That
+        result stands. But every one of those runs had <b>MSAA switched off</b> — deliberately, to isolate
+        resolution — and MSAA's own cost was written down as "Not tested, plausibly also free". The two
+        settings are not separable that way: MSAA multiplies per-sample work on whatever target resolution
+        gives it. Isolating one variable measured it correctly and hid the interaction completely.</p>
+      <p>Single samples were actively misleading here in a way averages were not. One 8-second reading taken
+        at a <em>menu</em> showed the video thread at 99% of a core and pointed squarely at a host-CPU
+        bottleneck — a conclusion that inverted the moment real geometry appeared on screen. Recording a
+        continuous 1 Hz timeline and finding the slow stretch afterwards was what made this tractable.</p>
+      <p>One more caution, from getting it wrong in writing: the first draft of this section explained the
+        saturation as a low-wattage memory-bandwidth stall. That came from reading 37 W off the
+        <em>1× control arm</em> and attributing it to the MSAA arms, which actually drew the most power of
+        any configuration at 89–91 W. There is no subtlety in the mechanism — the card is simply full.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Left on the table</h2>
+      <span class="sec-count">6 open items</span>
+    </div>
+    <p class="sec-intro">Things worth doing that this session did not do, in rough order of value.</p>
+
+    <div class="entry v-wait">
+      <div class="entry-top"><h3>The Deck runs the same enhancement stack</h3><span class="verdict">Open — likely worse</span></div>
+      <p><b>MSAA is not the item — that was checked and the Deck already ships it off.</b> What the Deck does
+        ship is <b>7× internal resolution, 4480×3696</b>: 16.6 megapixels on an RDNA2 iGPU that holds 56.9 fps
+        rather than 60.</p>
+      <p>Resolution was measured free on 12 August, which is the reason to doubt it matters — and the reason
+        that reassurance does not transfer. Those runs had MSAA off <em>and</em> an RTX 3050 with headroom to
+        spare, and the desktop result only held because the card was never the constraint. On the Deck it
+        plainly is something.</p>
+      <p>This is the cheapest remaining win on the page: a config change, no rebuild, on the machine where
+        the frame rate is actually tight. The same 1 Hz timeline works there — only the GPU counters need
+        swapping, since <code>nvidia-smi</code> has no equivalent on RADV.</p>
+    </div>
+
+    <div class="entry v-wait">
+      <div class="entry-top"><h3>Two guest faults from the Action Replay codes</h3><span class="verdict">Unexplained</span></div>
+      <p>Enabling the unlock codes to reach the final fight produced two warnings during boot, immediately
+        after the intro FMV starts:</p>
+      <div class="evidence">[alert] Invalid read from 0x0000005a, PC = 0x80009dc0
+[alert] Invalid read from 0x0000005a, PC = 0x80032ca4</div>
+      <p>The game played normally and the measurements were unaffected, but nobody has checked whether these
+        predate the codes. One launch with the codes disabled answers it. A GFX FIFO unknown-opcode warning
+        also appeared once during a fight without causing the hang it threatens.</p>
+    </div>
+
+    <div class="entry v-wait">
+      <div class="entry-top"><h3>What Exhibition mode actually is</h3><span class="verdict">Never looked</span></div>
+      <p>Still unanswered from the PGO work above. If Exhibition runs CPU-vs-CPU fights it is the ideal
+        hands-off profile training source — real gameplay, no intro FMV, no controller — and with
+        <em>Infinite Time</em> plus both <em>Infinite Health</em> codes it would run indefinitely. There is
+        no CPU-vs-CPU Action Replay code in the game ini, so it is the only known route to an unattended
+        fight. It is a two-minute look at a menu that nobody has taken.</p>
+      <p>Worth weighing against the result above, though: broadening the training set was measured and lost,
+        so this only matters if the goal is reaching the cold 82% of the module rather than reweighting the
+        18% already covered.</p>
+    </div>
+
+
+    <div class="entry v-wait">
+      <div class="entry-top"><h3>PGO's true headroom</h3><span class="verdict">Open</span></div>
+      <p>The 59.6 fps reading is clipped by the 60 fps limiter, so the fps gain is a floor, not a measurement.
+        Unlocking the frame limiter would show how much is actually there. The −11.9% cycle figure is the
+        unclipped one.</p>
+    </div>
+
+    <div class="entry v-wait">
+      <div class="entry-top"><h3>The dispatcher's cycle cost</h3><span class="verdict">Half open</span></div>
+      <p>The change shipped on its instruction count, which was unambiguous. What it is worth in
+        <em>cycles</em> is still unresolved — the A/B ran with the machine no longer idle and a per-arm
+        spread several times the effect. Expect somewhere near half a percent; confirming it needs the
+        machine quiet again and roughly 8 reps per arm.</p>
+    </div>
+
+    <div class="entry v-wait">
+      <div class="entry-top"><h3>Two cheap disproofs</h3><span class="verdict">Open</span></div>
+      <p>An affinity A/B on this machine would close the pinning question by measurement rather than argument.
+        And a single 6000-frame run at <code>Overclock = 0.85</code> with a hash diff would turn the
+        underclocking rejection from reasoning into evidence.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The pattern</h2>
+      <span class="sec-count">why so many were wrong</span>
+    </div>
+
+    <div class="pattern">
+      <h3>Every wrong number came from the same place</h3>
+      <p>All three documents were written by reading configuration files and build scripts and reasoning about
+        what the settings <em>ought</em> to cost. Not one of their headline figures survived contact with a
+        counter. The 33% clean build, the 420× incremental, the 300–1000% frame rate — each is what the change
+        would be worth if the thing it targets were the bottleneck.</p>
+      <p>The machine itself produced two more false results, and those are the instructive ones because they
+        were mine. With a browser and a 4 GB Windows VM running, per-arm spread was 12–16% and clean builds
+        varied by 25 seconds. That noise had <em>structure</em>: it produced clean-looking, confidently
+        non-overlapping readings twice — "lld is 7% faster to build" and "ld.bfd is 8% cheaper in-game" —
+        in opposite directions, from adjacent run pairs that looked properly controlled. Both evaporated on
+        an idle machine, where the same instrument resolves 0.15%.</p>
+      <p>The one suggestion that paid was the one nobody could have reasoned their way to. PGO's benefit is
+        spread thinly across the entire instruction stream — no hot spot, no single wasteful opcode class,
+        nothing a person finds by reading code. It took a compiler with a profile to see it, and a benchmark
+        that resolves a fifth of a percent to prove it.</p>
+      <p>The two real bugs of the day were found the same way, by doing rather than reading: a package that
+        built in four seconds and a release script that had no concept of a binary being older than its
+        sources. Neither is visible from the source, and both passed every check that existed.</p>
+      <p>The fourth document is the sharpest illustration, because nothing in it is wrong <em>in general</em>.
+        Fastmem, restrict qualifiers, dead-flag elision and huge pages are all real techniques that pay real
+        money in engines where memory access or the front end is the bottleneck. Every one of them was
+        already measured here and found bounded — 8.54%, 37.2% normal, 1.8% dead, 2.4% starvation. A
+        technique's reputation is not a measurement of your workload.</p>
+      <p>The fifth document fails differently, and more interestingly, because it is the only one that read
+        the code. Its flags exist. But a flag's name is not its behaviour: <code>--ca-liveness</code> reports
+        rather than eliminates, <code>--leader-cases</code> was built and abandoned for a reason recorded in
+        this repository, <code>-mmovbe</code> has been on since the first build, and lazy FPRF was merged
+        three days earlier. Knowing the codebase moved the failure from "wrong about the workload" to "wrong
+        about what has already happened" — and the second kind is harder to catch, because the suggestions
+        look specific enough to be true.</p>
+      <p>The next morning added a fourth false result to the tally, and it was mine again. "All three profiles
+        report the same 1,426,365 blocks, so no new code was reached" was a number read without checking what
+        it counted — a static total that could not have come out any other way. The executed figure was 18%
+        against 24%, a completely different fact. The failure mode is the same one this page keeps
+        documenting, one level further in: not reasoning instead of measuring, but reading an instrument
+        without asking what it measures.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What shipped</h2>
+      <span class="sec-count">5 merged to main</span>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>PR</th><th>Change</th><th>Measured</th></tr></thead>
+        <tbody>
+          <tr><td class="num">#1</td><td>ThinLTO cache + probed lld</td><td class="win">edit loop 61.5s → 1.31s</td></tr>
+          <tr><td class="num">#2</td><td>Profile-guided optimization</td><td class="win">−11.9% cycles · 54.5 → 59.6 fps</td></tr>
+          <tr><td class="num">#3</td><td>Dispatcher single lookup</td><td class="win">−1.23% instructions</td></tr>
+          <tr><td class="num">#4</td><td>Deck stale-runtime guard</td><td>stale binaries now refuse to package</td></tr>
+          <tr><td class="num">#5</td><td>Desktop stale-recompiler guard</td><td>silent codegen staleness now caught</td></tr>
+          <tr><td class="num">#6</td><td><code>fmod</code> symbol version pinned</td><td class="win">desktop modules now load on a Deck</td></tr>
+          <tr><td class="num">#7</td><td><code>setup.sh</code> glibc floor warning</td><td>the class closed, not just the instance</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sec-intro" style="margin-top:1.25rem">On the Deck this lands as <b>45–49 → 56.9 fps</b>, with
+      PC↔Deck netplay parity proven byte-identical afterwards. Both packages were rebuilt and verified — the
+      desktop one through a real <code>setup.sh</code> run against the disc, which reproduced the benchmarked
+      module byte for byte, and the Deck one by running its Debian 12 binary against the determinism harness
+      for 6000 frames with matching hashes.</p>
+  </section>
+
+  <footer>
+    Measured on an idle 6-core Ryzen 5 5600X · RTX 3050 · clang 22.1.8 · 132 chunks.<br>
+    Updated 13 Aug 2026 with the PGO training-set benchmark, the coverage correction, the final-fight
+    MSAA result, and Documents 5 and 6.<br>
+    Frame-rate arms sampled at 1 Hz from the running game — fps from the window title, GPU counters from
+    nvidia-smi — over the Arcade final fight.<br>
+    Workload: 24000 frames of arcade-match.txt for cycles, 6000 frames for parity, alternating reps throughout.<br>
+    Five PRs merged to main; every figure above is from a run on this machine, not an estimate.
+  </footer>
+
+</div>
+

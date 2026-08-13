@@ -64,6 +64,13 @@
 # whole repo as /src and CMake writes the build dir relative to that.
 /build-deck/
 /build-deck-module/
+# native build trees from setup.sh / a local dolrecomp build, same placement
+# reason as the container ones above.
+/build-dist-native/
+/build-dolrecomp-static/
+# root-level ccache/CMake cache written by those trees -- 700 MB+ and never
+# wanted. The per-project /*/.cache/ rules above do not reach the repo root.
+/.cache/
 compile_commands.json
 *.gch
 
@@ -91,6 +98,13 @@ compile_commands.json
 /dist/RingOut-1.0-dist/userdata/
 # prebuilt dolrecomp binary (unstripped, leaks build paths) -- setup.sh builds it
 /dist/RingOut-1.0-dist/tools/
+# DISC-DERIVED. tools/gc-art.py extracts the banner, icon frames and title text
+# from the user's own game disc; the launcher regenerates them whenever
+# art/icon.png is absent, so nothing needs them in git and they must never be
+# published from here.
+/dist/RingOut-1.0-dist/art/
+# written at install time with an absolute Exec= path to one machine
+/dist/RingOut-1.0-dist/RingOut.desktop
 # setup.sh's build tree: where the user's own ISO is extracted and recompiled.
 # CMake/ninja output plus compiler-probe binaries, regenerated on every run.
 /dist/RingOut-1.0-dist/work/
