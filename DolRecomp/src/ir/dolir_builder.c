@@ -798,7 +798,14 @@ static bool lower_float_memory(Builder* b) {
         if (single)
             value = unary(b, DOLIR_OP_FPEXT, DOLIR_TYPE_F64, value);
         set_fpr(b, i->rD, value);
-        set_ps1(b, i->rD, value);
+        // Only lfs fills both lanes (Gekko: ps[FD].Fill). lfd writes ps0 and
+        // leaves ps1 alone -- which is what Dolphin's interpreter and this
+        // fork's C emitter both do (emitter.c emit_fload/emit_floadx write ps1
+        // under `single` only). Filling it here diverged on every lfd, and
+        // games use lfd as a fast 8-byte move, so ps1 ended up holding two
+        // packed f32s where the interpreter had an untouched f64.
+        if (single)
+            set_ps1(b, i->rD, value);
     } else {
         DolIRValue value = fpr(b, i->rS);
         if (single)
@@ -975,7 +982,10 @@ static bool lower_float(Builder* b) {
     default: return false;
     }
     set_fpr(b, i->rD, value);
-    set_ps1(b, i->rD, value);
+    // fmr/fneg/fabs/fnabs/fsel are ps0-only moves; they must NOT touch ps1.
+    // The single-precision arithmetic that DOES broadcast to both lanes goes
+    // through the `exact` helper path above (cpu_llvm_abi.c), never here.
+    // emitter.c writes fpr alone for all five.
     if (i->rc)
         set_cr1_from_fpscr(b);
     return true;
