@@ -48,7 +48,11 @@
 #define DOLLLVM_DEFAULT_CHUNK_INSTRUCTIONS 1024u
 #define DOLLLVM_DEFAULT_WORKER_BATCH 4u
 // v6 carries the execution budget across generated function calls.
-#define DOLLLVM_CACHE_VERSION "dolllvm-v6"
+// v7 stops lfd and the ps0-only moves (fmr/fneg/fabs/fnabs/fsel) writing ps1.
+// The stamp hashes decoded instructions, not emitter behaviour, so a codegen
+// fix like that is invisible to it -- without this bump DOLRECOMP_LLVM_RESUME
+// would happily reuse every pre-fix object.
+#define DOLLLVM_CACHE_VERSION "dolllvm-v7"
 
 typedef struct {
     const PPCInst* insts;
