@@ -21,11 +21,24 @@ endif()
 if(NOT generated_source MATCHES "ctx->downcount -=")
     message(FATAL_ERROR "generated code has no guest cycle charges")
 endif()
-if(NOT generated_source MATCHES "if \\(!ppc_fp_available\\(ctx, 0x8000317Cu\\)\\) return;")
+# The gate may carry a block suffix that restores downcount before returning
+# ("{ ctx->downcount += N; return; }"), which it does whenever the instruction
+# sits inside a counted block. Match the gate, not one of its two tails -- the
+# bare-return form alone went stale when that suffix was added.
+if(NOT generated_source MATCHES "if \\(!ppc_fp_available\\(ctx, 0x8000317Cu\\)\\)[^\n]*return;")
     message(FATAL_ERROR "generated floating-point code has no MSR FP gate")
 endif()
-if(NOT generated_source MATCHES "ppc_fallback_instruction\\(ctx, 0x7C13A0ACu")
-    message(FATAL_ERROR "dcbf codegen does not route through the environment fallback")
+# dcbf/dcbst/dcbi are deliberately no-ops: there is no data cache in a flat
+# memory model, and routing them through the fallback cost a dispatcher round
+# trip thousands of times per frame. This assertion used to require the
+# opposite and went stale when that changed.
+if(generated_source MATCHES "ppc_fallback_instruction\\(ctx, 0x7C13A0ACu")
+    message(FATAL_ERROR "dcbf should be a no-op, not an environment fallback")
+endif()
+# icbi is the one cache op that MUST still round-trip: instruction-cache
+# invalidation is how self-modifying code gets its stale translations retired.
+if(NOT generated_source MATCHES "ppc_fallback_instruction\\(ctx, 0x7C1BE7ACu")
+    message(FATAL_ERROR "icbi no longer routes through the environment fallback")
 endif()
 
 get_filename_component(output_dir "${OUTPUT_C}" DIRECTORY)

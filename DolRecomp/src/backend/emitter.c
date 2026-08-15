@@ -520,6 +520,16 @@ static bool branch_target_is_local(u32 func_start, u32 func_end, u32 target) {
     return target >= func_start && target < func_end && ((target - func_start) & 3u) == 0;
 }
 
+// Upstream (98f77b6) emits direct calls between chunks and sets this table from
+// pipeline.c. This fork does not take that path yet: its own measurement is
+// still owed, and upstream reports +2.9% with overlapping ranges -- "not
+// demonstrated" by the standard used here. The entry point exists so the shared
+// pipeline links; passing a table would be the only thing needed to enable it.
+void emit_set_chunk_table(const u32* starts, u32 count) {
+    (void)starts;
+    (void)count;
+}
+
 static void emit_direct_branch(FILE* out, const PPCInst* inst, bool local_target) {
     bool local_backward = local_target && inst->branch_target <= inst->address;
 
