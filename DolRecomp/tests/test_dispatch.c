@@ -17,6 +17,23 @@ static void check(int condition, const char* name) {
         fail_count++;
 }
 
+// MSVC has no setenv, and _putenv_s is not portable back the other way.
+static int set_lookup_mode(const char* value) {
+#if defined(_WIN32)
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "DOLRECOMP_DISPATCH_LOOKUP=%s",
+             value ? value : "");
+    return _putenv(buffer) == 0;
+#else
+    if (!value)
+        return unsetenv("DOLRECOMP_DISPATCH_LOOKUP") == 0;
+    return setenv("DOLRECOMP_DISPATCH_LOOKUP", value, 1) == 0;
+#endif
+}
+
+// The four ranges below cover the three shapes the lookup has to get right:
+// a contiguous equal-stride run (0x3000..0x3080), a short chunk closing that
+// run (0x3080..0x30A0), and an isolated chunk a page away (0x4000..0x4020).
 static char* emit_dispatch_to_string(void) {
     FunctionList funcs = {0};
     FILE* f = NULL;
@@ -101,6 +118,43 @@ int main(void) {
           "public dispatcher can fall back to original code");
 
     free(code);
+
+    // DOLRECOMP_DISPATCH_LOOKUP=indexed. The linear chain is O(chunks) on an
+    // irregular plan and that confounded E008; the indexed form must replace
+    // it without changing which chunk an address resolves to.
+    if (set_lookup_mode("indexed")) {
+        char* indexed = emit_dispatch_to_string();
+        if (!indexed) {
+            check(0, "indexed: emit dispatch helpers");
+        } else {
+            check(strstr(indexed, "dolrecomp_page_first[DOLRECOMP_LOOKUP_PAGES]") != NULL &&
+                  strstr(indexed, "run = dolrecomp_page_first[page];") != NULL,
+                  "indexed: page index selects the run window");
+            check(strstr(indexed, "if (address >= 0x80003000u && address < 0x80003040u") == NULL,
+                  "indexed: no linear range-test chain remains");
+            check(strstr(indexed, "#define DOLRECOMP_LOOKUP_RUNS 2u") != NULL,
+                  "indexed: collapses the contiguous chunks into one run");
+            // 0x80003000..0x800040a0 spans two 4 KiB pages plus the boundary page.
+            check(strstr(indexed, "#define DOLRECOMP_LOOKUP_BASE 0x80003000u") != NULL &&
+                  strstr(indexed, "#define DOLRECOMP_LOOKUP_PAGES 2u") != NULL,
+                  "indexed: page table covers exactly the emitted code");
+            check(strstr(indexed, "func_80003000,") != NULL &&
+                  strstr(indexed, "func_80003040,") != NULL &&
+                  strstr(indexed, "func_80003080,") != NULL &&
+                  strstr(indexed, "func_80004000,") != NULL,
+                  "indexed: chunk table covers generated chunks");
+            check(strstr(indexed, "if ((offset & 3u) != 0u) return NULL;") != NULL,
+                  "indexed: keeps the instruction-alignment check");
+            check(strstr(indexed, "ctx->pc = address;") != NULL &&
+                  strstr(indexed, "dolrecomp_physical_pc_alias") != NULL,
+                  "indexed: leaves the rest of the dispatcher alone");
+            free(indexed);
+        }
+        set_lookup_mode(NULL);
+    } else {
+        check(0, "indexed: set DOLRECOMP_DISPATCH_LOOKUP");
+    }
+
     printf("DISPATCH,total,%d passed %d failed\n", pass_count, fail_count);
     return fail_count == 0 ? 0 : 1;
 }
