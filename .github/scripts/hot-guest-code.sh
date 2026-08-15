@@ -26,7 +26,11 @@ TOP="${3:-25}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-perf report -i "$DATA" --no-children --comms="CPU thread" -s srcline \
+# "CPU-GPU thread" as well as "CPU thread": the determinism harness runs the
+# GPU synchronously on the emulation thread, so profiles taken through it carry
+# the merged name and a filter on "CPU thread" alone silently matches nothing --
+# which reads exactly like a module built without -DMODULE_DEBUG_LINES=ON.
+perf report -i "$DATA" --no-children --comms="CPU thread,CPU-GPU thread" -s srcline \
     --stdio -g none --percent-limit 0 2>/dev/null \
     | grep -oE "[0-9.]+%[[:space:]]+chunk_[^[:space:]]+\.c:[0-9]+" > "$WORK/lines" || true
 
