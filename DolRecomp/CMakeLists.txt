@@ -168,6 +168,12 @@ add_executable(test_jumptables tests/test_jumptables.c)
 target_link_libraries(test_jumptables PRIVATE dr_backend dr_cpu)
 add_test(NAME jumptables COMMAND test_jumptables)
 
+# The off-by-default emitter flags. --chain-calls must never chain a call to a
+# PC the run loop hooks, and --ca-liveness claims codegen is unchanged.
+add_executable(test_emitter_flags tests/test_emitter_flags.c)
+target_link_libraries(test_emitter_flags PRIVATE dr_backend)
+add_test(NAME emitter_flags COMMAND test_emitter_flags)
+
 # Lazy FPRF must flush on entry to every op that writes FPSCR[12:16] itself, or
 # a later materialise wipes those bits. Cost three attempts to get right.
 add_executable(test_lazy_fprf tests/test_lazy_fprf.c)
