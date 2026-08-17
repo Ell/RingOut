@@ -61,11 +61,6 @@ ReadDefaultGame(const std::filesystem::path &user_directory) {
 }
 
 std::filesystem::path DefaultUserDirectory() {
-#if defined(_WIN32)
-  if (const char *local_app_data = std::getenv("LOCALAPPDATA"))
-    return std::filesystem::path(local_app_data) /
-           MODERNGEKKO_USER_DIRECTORY_NAME;
-#endif
   if (const char *xdg = std::getenv("XDG_DATA_HOME"))
     return std::filesystem::path(xdg) / MODERNGEKKO_USER_DIRECTORY_NAME;
   if (const char *home = std::getenv("HOME"))
@@ -75,9 +70,7 @@ std::filesystem::path DefaultUserDirectory() {
 }
 
 std::string LibrarySuffix() {
-#if defined(_WIN32)
-  return ".dll";
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
   return ".dylib";
 #else
   return ".so";
@@ -291,7 +284,7 @@ int RunMain(int argc, char **argv) {
     config.module =
         moderngekko::ModuleSource::DynamicPath(std::move(module_path));
 
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__)
   if (!config.headless && config.graphics.backend.empty())
     config.graphics.backend = "Vulkan";
 #endif

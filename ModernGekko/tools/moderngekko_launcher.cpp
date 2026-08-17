@@ -99,10 +99,6 @@ int FindController(const std::vector<ControllerOption>& controllers, std::string
 
 fs::path DefaultUserDirectory()
 {
-#if defined(_WIN32)
-  if (const char* local_app_data = std::getenv("LOCALAPPDATA"))
-    return fs::path(local_app_data) / MODERNGEKKO_USER_DIRECTORY_NAME;
-#endif
   if (const char* xdg = std::getenv("XDG_DATA_HOME"))
     return fs::path(xdg) / MODERNGEKKO_USER_DIRECTORY_NAME;
   if (const char* home = std::getenv("HOME"))
@@ -112,10 +108,6 @@ fs::path DefaultUserDirectory()
 
 fs::path DocumentsDirectory()
 {
-#if defined(_WIN32)
-  if (const char* user_profile = std::getenv("USERPROFILE"))
-    return fs::path(user_profile) / "Documents";
-#endif
   if (const char* home = std::getenv("HOME"))
     return fs::path(home) / "Documents";
   return fs::current_path();
@@ -292,10 +284,7 @@ fs::path SiblingRunner(const char* argv0)
 {
   std::error_code ec;
   const fs::path self = fs::weakly_canonical(argv0, ec);
-  fs::path runner = MODERNGEKKO_RUNNER_FILENAME;
-#if defined(_WIN32)
-  runner += ".exe";
-#endif
+  const fs::path runner = MODERNGEKKO_RUNNER_FILENAME;
   const fs::path sibling = self.parent_path() / runner;
   return fs::is_regular_file(sibling) ? sibling : runner;
 }

@@ -2,21 +2,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <direct.h>
-#include <windows.h>
-#else
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
 
 int make_dir(const char* path) {
-#ifdef _WIN32
-    int rc = _mkdir(path);
-#else
     int rc = mkdir(path, 0777);
-#endif
     if (rc == 0 || errno == EEXIST)
         return 1;
 
@@ -106,11 +96,7 @@ int make_dir_tree(const char* path) {
 int join_path(char* out, size_t out_size, const char* dir, const char* name) {
     size_t len = strlen(dir);
     const char* sep = (len > 0 && is_path_sep(dir[len - 1])) ? "" :
-#ifdef _WIN32
-        "\\";
-#else
         "/";
-#endif
     int written = snprintf(out, out_size, "%s%s%s", dir, sep, name);
     return written > 0 && (size_t)written < out_size;
 }
@@ -124,13 +110,7 @@ int file_exists(const char* path) {
 }
 
 int path_is_directory(const char* path) {
-#ifdef _WIN32
-    DWORD attrs = GetFileAttributesA(path);
-    return attrs != INVALID_FILE_ATTRIBUTES &&
-           (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
-#else
     struct stat st;
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-#endif
 }
 

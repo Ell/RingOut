@@ -28,12 +28,8 @@
 // fork's C-only path never needed them.
 #include <errno.h>
 #include <time.h>
-#ifdef _WIN32
-#include <process.h>
-#else
 #include <sys/wait.h>
 #include <unistd.h>
-#endif
 
 // --- LLVM object backend -------------------------------------------------
 // Grafted from upstream DolRecomp. Self-contained and #ifdef-gated, so the C
@@ -164,11 +160,7 @@ static void write_llvm_job_stamp(const LLVMChunkJob* job) {
     char temp[1480];
     if (!llvm_job_stamp_path(job, path, sizeof(path)))
         return;
-#ifdef _WIN32
-    int process_id = _getpid();
-#else
     int process_id = (int)getpid();
-#endif
     if (snprintf(temp, sizeof(temp), "%s.tmp.%d", path, process_id) >=
         (int)sizeof(temp))
         return;
@@ -264,11 +256,6 @@ static int llvm_cache_dir(char* path, size_t size) {
         if (snprintf(path, size, "%s", configured) >= (int)size)
             return 0;
     } else {
-#ifdef _WIN32
-        const char* root = getenv("LOCALAPPDATA");
-        if (!root || snprintf(path, size, "%s\\DolRecomp\\llvm", root) >= (int)size)
-            return 0;
-#else
         const char* root = getenv("XDG_CACHE_HOME");
         if (root) {
             if (snprintf(path, size, "%s/dolrecomp/llvm", root) >= (int)size)
@@ -279,7 +266,6 @@ static int llvm_cache_dir(char* path, size_t size) {
                              (int)size)
                 return 0;
         }
-#endif
     }
     return make_dir_tree(path);
 }
@@ -299,11 +285,7 @@ static void cache_llvm_object(const LLVMChunkJob* job) {
     if (!job->cache_path[0] || valid_object_file(job->cache_path))
         return;
     char temp[1440];
-#ifdef _WIN32
-    int process_id = _getpid();
-#else
     int process_id = (int)getpid();
-#endif
     if (snprintf(temp, sizeof(temp), "%s.tmp.%d", job->cache_path, process_id) >=
         (int)sizeof(temp))
         return;
@@ -318,29 +300,10 @@ static int emit_llvm_chunk_job(const void* data, void* user) {
     const LLVMChunkJob* job = (const LLVMChunkJob*)data;
     (void)user;
     if (reuse_llvm_object(job)) {
-#ifdef _WIN32
-        // Say so. A silent reuse is indistinguishable from a regeneration in
-        // the log, and "the cache was hit" is exactly the thing that must not
-        // be assumed when checking whether a codegen change was really tested.
-        printf("[%u/%u] Reusing cached LLVM object %s\n", job->index,
-               job->total, job->name);
-        fflush(stdout);
-#endif
         return 1;
     }
-#ifdef _WIN32
-    // See run_llvm_chunk_jobs: on Windows this is the only live progress.
-    printf("[%u/%u] Emitting LLVM object %s\n", job->index, job->total,
-           job->name);
-    fflush(stdout);
-    time_t started = time(NULL);
-#endif
     char temp_path[1440];
-#ifdef _WIN32
-    int process_id = _getpid();
-#else
     int process_id = (int)getpid();
-#endif
     if (snprintf(temp_path, sizeof(temp_path), "%s.tmp.%d", job->path,
                  process_id) >=
         (int)sizeof(temp_path))
@@ -387,12 +350,6 @@ static int emit_llvm_chunk_job(const void* data, void* user) {
     }
     if (!ok)
         remove(temp_path);
-#ifdef _WIN32
-    printf("[%u/%u] %s LLVM object %s (%llds)\n", job->index, job->total,
-           ok ? "Finished" : "FAILED", job->name,
-           (long long)(time(NULL) - started));
-    fflush(stdout);
-#endif
     return ok;
 }
 
@@ -412,16 +369,6 @@ static void report_llvm_progress(const LLVMChunkJob* jobs,
 static int run_llvm_chunk_jobs(const LLVMChunkJob* jobs, u32 count,
                                u32 requested_jobs) {
     u32 workers = effective_chunk_jobs(count, requested_jobs);
-#ifdef _WIN32
-    // Progress is reported from inside the job, not dumped up front. The
-    // Windows path used to print every line before starting any work, so a
-    // chunk that hung produced a complete-looking log and no indication of
-    // which chunk was stuck -- one such hang ran 49 minutes with nothing to
-    // point at. A start line, and a done line carrying elapsed seconds, means
-    // the stuck chunk is the one with no matching completion.
-    return run_parallel_jobs(jobs, sizeof(*jobs), count, workers,
-                             emit_llvm_chunk_job, NULL);
-#else
     typedef struct {
         pid_t pid;
         u32 batch_start;
@@ -547,7 +494,6 @@ static int run_llvm_chunk_jobs(const LLVMChunkJob* jobs, u32 count,
     free(retry);
     free(states);
     return !failed && completed == count;
-#endif
 }
 
 static int emit_code_sections_llvm(const LoadedCodeSection* sections,
@@ -818,8 +764,6 @@ fail:
     return 0;
 }
 #endif
-
-
 
 int emit_code_sections_split(const LoadedCodeSection* sections,
                                     u32 section_count,

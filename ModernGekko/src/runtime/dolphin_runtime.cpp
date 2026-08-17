@@ -274,9 +274,6 @@ void InitializeUICommon(const std::filesystem::path &user_directory) {
 std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
   if (config.headless)
     return Platform::CreateHeadlessPlatform();
-#ifdef _WIN32
-  return Platform::CreateWin32Platform();
-#endif
 #ifdef MODERNGEKKO_HAVE_COCOA
   return Platform::CreateMacOSPlatform();
 #endif
@@ -348,16 +345,6 @@ void ApplyCoreSettings(const GameMetadata &metadata) {
 void ApplyGraphicsSettings(const GraphicsSettings &graphics, bool headless) {
   if (!graphics.backend.empty())
     Config::SetBase(Config::MAIN_GFX_BACKEND, graphics.backend);
-#ifdef _WIN32
-  // Default to Direct3D on Windows. Vulkan is only present if the GPU driver
-  // installed vulkan-1.dll, and on a machine without it the failure is fatal
-  // and opaque -- "Failed to load Vulkan library", then "Failed to initialize
-  // video backend!", and the emulated CPU never starts (native=0). D3D11 ships
-  // with Windows itself, so it always works. This is the BASE layer, so a
-  // backend chosen in the settings menu still wins.
-  else if (!headless)
-    Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("D3D"));
-#endif
   else if (headless)
     Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Null"));
   if (graphics.internal_resolution_scale)

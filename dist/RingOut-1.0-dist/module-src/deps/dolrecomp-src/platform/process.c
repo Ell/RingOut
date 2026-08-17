@@ -3,19 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
 #include <unistd.h>
-#endif
 
 void sleep_ms(u32 milliseconds) {
-#ifdef _WIN32
-    Sleep(milliseconds);
-#else
     usleep((useconds_t)milliseconds * 1000u);
-#endif
 }
 
 char* shell_quote_arg(const char* arg) {
@@ -25,17 +16,6 @@ char* shell_quote_arg(const char* arg) {
     if (!out)
         return NULL;
 
-#ifdef _WIN32
-    size_t w = 0;
-    out[w++] = '"';
-    for (size_t i = 0; i < len; i++) {
-        if (arg[i] == '"')
-            out[w++] = '\\';
-        out[w++] = arg[i];
-    }
-    out[w++] = '"';
-    out[w] = '\0';
-#else
     size_t w = 0;
     out[w++] = '\'';
     for (size_t i = 0; i < len; i++) {
@@ -48,7 +28,6 @@ char* shell_quote_arg(const char* arg) {
     }
     out[w++] = '\'';
     out[w] = '\0';
-#endif
 
     return out;
 }
@@ -63,13 +42,8 @@ int command_exists_quiet(const char* command_name) {
         return 0;
 
     char command[1200];
-#ifdef _WIN32
-    int written = snprintf(command, sizeof(command), "%s --version >NUL 2>NUL",
-                           quoted);
-#else
     int written = snprintf(command, sizeof(command), "%s --version >/dev/null 2>/dev/null",
                            quoted);
-#endif
     free(quoted);
     return written > 0 && (size_t)written < sizeof(command) &&
            run_shell_command(command);
@@ -103,15 +77,9 @@ int download_file(const char* url, const char* output_path) {
     }
 
     char command[2600];
-#ifdef _WIN32
-    int written = snprintf(command, sizeof(command),
-                           "curl.exe -fL --max-time 300 -o %s %s",
-                           qout, qurl);
-#else
     int written = snprintf(command, sizeof(command),
                            "curl -fL --max-time 300 -o %s %s",
                            qout, qurl);
-#endif
     free(qurl);
     free(qout);
 
