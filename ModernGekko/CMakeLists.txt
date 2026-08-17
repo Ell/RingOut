@@ -123,10 +123,34 @@ else()
     add_subdirectory(vendor/fmt/fmt EXCLUDE_FROM_ALL)
 endif()
 
-if(BUILD_TESTING)
-    add_subdirectory(vendor/dolphin/DolRecomp)
+# Build the WORKING recompiler at ../DolRecomp, not the copy under vendor/.
+#
+# vendor/dolphin carries DolRecomp as a submodule of its own (ExpansionPak/
+# DolRecomp), and those files came along when Dolphin was vendored. Dolphin's
+# build never references it, nothing here links its libraries, and its binary is
+# used by nothing -- it is pinned two upstream commits behind ../DolRecomp and
+# carries NONE of this project's recompiler work: no --idle-pc, no lazy FPRF, no
+# --chain-calls / --dispatch-pc / --ca-liveness / --leader-cases. 3177 lines apart.
+#
+# Building it meant ten of this suite's tests -- opcodes, dispatch,
+# codegen_compile, jumptables, pc_reference and friends -- exercised a
+# recompiler nobody ships, while the one that DOES ship (packaged as
+# tools/dolrecomp, mirrored into module-src/deps/dolrecomp-src, and guarded by
+# package-dist.sh against ../DolRecomp/src) had no coverage here at all. The
+# names read like recompiler coverage, which is what made it worth fixing.
+#
+# The fallback matters: the GPL source shipment archives ModernGekko and
+# DolRecomp separately, so an extraction of ModernGekko alone has no sibling.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../DolRecomp/CMakeLists.txt")
+    set(_moderngekko_dolrecomp "${CMAKE_CURRENT_SOURCE_DIR}/../DolRecomp")
 else()
-    add_subdirectory(vendor/dolphin/DolRecomp EXCLUDE_FROM_ALL)
+    set(_moderngekko_dolrecomp "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/DolRecomp")
+    message(STATUS "DolRecomp: no sibling ../DolRecomp; using the vendored copy")
+endif()
+if(BUILD_TESTING)
+    add_subdirectory("${_moderngekko_dolrecomp}" dolrecomp-build)
+else()
+    add_subdirectory("${_moderngekko_dolrecomp}" dolrecomp-build EXCLUDE_FROM_ALL)
 endif()
 
 add_library(moderngekko_abi INTERFACE)
@@ -753,7 +777,7 @@ if(BUILD_TESTING)
     get_property(_moderngekko_test_targets
                  DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     get_property(_dolrecomp_test_targets
-                 DIRECTORY vendor/dolphin/DolRecomp PROPERTY BUILDSYSTEM_TARGETS)
+                 DIRECTORY "${_moderngekko_dolrecomp}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(_target IN LISTS _moderngekko_test_targets _dolrecomp_test_targets)
         if(_target MATCHES "_test$|^test_")
             add_dependencies(moderngekko-tests ${_target})

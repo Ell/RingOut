@@ -21,6 +21,12 @@ on:
     branches: [main]
     paths:
       - 'ModernGekko/**'
+      # The recompiler that actually ships. It lives outside ModernGekko/ but
+      # ModernGekko builds it and the desktop package carries it, so a change
+      # here changes what this workflow produces -- and until 2026-08-17 the
+      # suite tested the stale copy under vendor/dolphin instead, so nothing
+      # here ever covered it.
+      - 'DolRecomp/**'
       # The packaging scripts and the shipped scaffolding are part of what this
       # workflow produces, so a change to them has to trigger it. Leaving them
       # out meant a packaging fix pushed cleanly, triggered nothing, and looked
