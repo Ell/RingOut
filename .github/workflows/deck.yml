@@ -51,6 +51,12 @@ jobs:
     container: debian:12
     timeout-minutes: 120
 
+    env:
+      # Inside the workspace on purpose: this is a CONTAINER job, and the
+      # workspace is the one path the cache action and the compiler both see.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+
     steps:
       # actions/checkout needs git present, or it silently falls back to a
       # tarball download and the working tree is not a repository. debian:12 is
@@ -72,6 +78,27 @@ jobs:
           echo "$deps"
           apt-get install -y --no-install-recommends $deps
 
+      # ~1,400 translation units of vendored Dolphin, recompiled from scratch
+      # every run -- 23.5 of the job's 25 minutes, against a finite monthly
+      # allowance. Measured locally (12 cores, same tree twice, build dir wiped
+      # between): 4m07s cold -> 0m08s warm, 1120/1120 cacheable compiles hit.
+      # The runner has far fewer cores so the wall times differ; the hit rate is
+      # what carries over.
+      #
+      # Actions CACHE is a separate allowance from the artifact/package storage
+      # that this repo has filled before -- different endpoint, not billed the
+      # same way -- so this cannot repeat the quota failure that broke unrelated
+      # workflows' uploads.
+      #
+      # Keyed by SHA with a prefix fallback, so every run restores the newest
+      # cache and saves its own; eviction is GitHub's problem.
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-deck-${{ github.sha }}
+          restore-keys: ccache-deck-
+
       - name: Configure
         # Qt and the tests pull in toolchain the container does not have, and the
         # runtime is headless-capable, so both are off -- same set as build-deck.sh.
@@ -82,9 +109,16 @@ jobs:
           -DENABLE_TESTS=OFF
           -DENABLE_ANALYTICS=OFF
           -DENABLE_AUTOUPDATE=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build runtime
         run: cmake --build build-deck --target moderngekko-run
+
+      # Prints the hit rate, so a cache that silently stops working shows up as
+      # a number rather than as a slow job nobody looks at.
+      - name: Compiler cache stats
+        run: ccache -s
 
       # ENABLE_TESTS above is DOLPHIN's suite, which needs toolchain this
       # container does not have. These are ModernGekko's and DolRecomp's own,

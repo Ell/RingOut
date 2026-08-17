@@ -33,12 +33,17 @@ echo
 echo "==> configuring"
 podman run --rm --userns=keep-id -v "$REPO:/src:Z" -w /src "$IMAGE" bash -c '
   set -e
+  # Guarded: an image built before ccache joined deck-deps.txt still works,
+  # it just rebuilds everything.
+  LAUNCH=""
+  command -v ccache >/dev/null && \
+    LAUNCH="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
   cmake -S ModernGekko -B build-deck -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DENABLE_QT=OFF \
     -DENABLE_TESTS=OFF \
     -DENABLE_ANALYTICS=OFF \
-    -DENABLE_AUTOUPDATE=OFF
+    -DENABLE_AUTOUPDATE=OFF $LAUNCH
 '
 
 echo

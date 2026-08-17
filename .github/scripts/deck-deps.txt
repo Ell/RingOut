@@ -37,3 +37,11 @@ libusb-1.0-0-dev
 libsystemd-dev
 libbluetooth-dev
 libcurl4-openssl-dev
+
+# Compiler cache. The runtime build is ~1,400 translation units of vendored
+# Dolphin that change rarely, recompiled from scratch every CI run: measured
+# 23.5 min of a 25 min job, and Actions minutes are finite. Measured locally,
+# 12 cores, same tree twice with the build dir wiped between: 4m07s cold ->
+# 0m08s warm, 1120/1120 cacheable compiles hit. Listed here rather than only in
+# the workflow so the local container gets it too.
+ccache
