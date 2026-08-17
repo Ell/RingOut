@@ -22,9 +22,9 @@ on:
     paths:
       - 'ModernGekko/**'
       # The packaging scripts and the shipped scaffolding are part of what this
-      # workflow produces, so a change to them has to trigger it -- see the same
-      # note in windows.yml, where leaving them out meant a packaging fix looked
-      # green against the previous run's result.
+      # workflow produces, so a change to them has to trigger it. Leaving them
+      # out meant a packaging fix pushed cleanly, triggered nothing, and looked
+      # green against the PREVIOUS run's result.
       - '.github/workflows/deck.yml'
       - '.github/scripts/build-deck.sh'
       - '.github/scripts/package-deck.sh'

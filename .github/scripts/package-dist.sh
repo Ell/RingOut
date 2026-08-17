@@ -69,11 +69,12 @@ echo "==> module sources"
 cp -a "$SRC/module-src" "$STAGE/module-src"
 
 # The cheat/game-settings ini is authored by this project (USA Action Replay
-# codes; Dolphin ships only the PAL ini), not disc-derived, and the Windows
-# package already ships it. Take it from the same canonical location
-# package-windows.ps1 uses -- the working package's own userdata/GameSettings is
-# empty, so sourcing it from there would silently ship nothing and leave the
-# Linux release without the CHEATS tab the Windows one has.
+# codes; Dolphin ships only the PAL ini), not disc-derived. Take it from the
+# canonical location rather than the working package's own
+# userdata/GameSettings, which is empty -- sourcing it from there would silently
+# ship nothing and leave the release without a CHEATS tab.
+# (The retired Windows packager resolved the same file the same way; see
+# attic/windows/.)
 #
 # Nothing ELSE from userdata/ goes: the rest is the developer's Dolphin config,
 # cache, logs and memory card, and config.ini there names a LAN address.
