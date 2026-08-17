@@ -168,6 +168,12 @@ add_executable(test_jumptables tests/test_jumptables.c)
 target_link_libraries(test_jumptables PRIVATE dr_backend dr_cpu)
 add_test(NAME jumptables COMMAND test_jumptables)
 
+# Lazy FPRF must flush on entry to every op that writes FPSCR[12:16] itself, or
+# a later materialise wipes those bits. Cost three attempts to get right.
+add_executable(test_lazy_fprf tests/test_lazy_fprf.c)
+target_link_libraries(test_lazy_fprf PRIVATE dr_cpu)
+add_test(NAME lazy_fprf COMMAND test_lazy_fprf)
+
 # --idle-pc fails silently: the module builds, runs, and is ~half speed. This
 # pins the emitter's two back-edge forms so that cannot happen unnoticed.
 add_executable(test_idle_pc tests/test_idle_pc.c)
