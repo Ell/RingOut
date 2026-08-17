@@ -168,6 +168,12 @@ add_executable(test_jumptables tests/test_jumptables.c)
 target_link_libraries(test_jumptables PRIVATE dr_backend dr_cpu)
 add_test(NAME jumptables COMMAND test_jumptables)
 
+# --idle-pc fails silently: the module builds, runs, and is ~half speed. This
+# pins the emitter's two back-edge forms so that cannot happen unnoticed.
+add_executable(test_idle_pc tests/test_idle_pc.c)
+target_link_libraries(test_idle_pc PRIVATE dr_backend)
+add_test(NAME idle_pc COMMAND test_idle_pc)
+
 add_executable(test_dispatch tests/test_dispatch.c)
 target_link_libraries(test_dispatch PRIVATE dr_backend)
 add_test(NAME dispatch COMMAND test_dispatch)
