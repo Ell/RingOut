@@ -306,12 +306,14 @@ void ppc_ca_note_write(void);
 void ppc_ca_note_read(void);
 void ppc_fprf_note_write(void);
 void ppc_fprf_note_read(void);
+void ppc_ps_note_lane(void);
 #define PPC_CR_WRITE(field) ppc_cr_note_write((field))
 #define PPC_CR_READ(mask)   ppc_cr_note_read((mask))
 #define PPC_CA_WRITE()      ppc_ca_note_write()
 #define PPC_CA_READ()       ppc_ca_note_read()
 #define PPC_FPRF_WRITE()    ppc_fprf_note_write()
 #define PPC_FPRF_READ()     ppc_fprf_note_read()
+#define PPC_PS_LANE()       ppc_ps_note_lane()
 #else
 #define PPC_CR_WRITE(field) ((void)0)
 #define PPC_CR_READ(mask)   ((void)0)
@@ -319,6 +321,7 @@ void ppc_fprf_note_read(void);
 #define PPC_CA_READ()       ((void)0)
 #define PPC_FPRF_WRITE()    ((void)0)
 #define PPC_FPRF_READ()     ((void)0)
+#define PPC_PS_LANE()       ((void)0)
 #endif
 
 // MSR.FP (PPC_BIT(18) = 0x2000). Common case (FP enabled) is a single bit test.
