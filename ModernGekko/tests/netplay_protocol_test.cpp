@@ -1,6 +1,29 @@
-#include "Common/SFMLHelper.h"
+// Netplay coverage against the PUBLIC RecompCore tree.
+//
+// This test used to be written against an unpushed RecompCore fork, so it had
+// never compiled here at all -- and nothing noticed, because CI runs no tests.
+// The symbols it needed and this tree does not have:
+//
+//   NetPlay::SetCompatibilityFingerprint, NetPlayClient::GetConnectionError,
+//   ConnectionError::CompatibilityMismatch  -- a build-hash handshake that
+//     rejects a mismatched peer at connect time
+//   NetPlayServer::CanStart, NetPlayServer::SetAdaptiveBuffer
+//   NetPlayClient::SetLocalControllerCount / GetAssignedControllerCount /
+//     GetPlayersSnapshot, and a 6th constructor argument for the local
+//     controller count
+//   MessageID::PadBufferRequest, NetPlay::INPUT_CHANNEL
+//
+// vendor/dolphin carries stock netplay, which has none of that. Those
+// assertions are deleted rather than stubbed out -- a stub that always passes
+// is worse than an absence. They are in git history if the fork ever lands.
+//
+// What survives is what this tree can genuinely assert: the ModernGekko-side
+// compatibility fingerprint, which is pure computation, and a two-peer
+// localhost lobby over the stock protocol. Exit codes are unchanged from the
+// original for the checks that survived, so an old failure number still means
+// the same thing.
+
 #include "Core/Boot/Boot.h"
-#include "Core/HW/WiimoteEmu/DesiredWiimoteState.h"
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/NetPlayServer.h"
@@ -14,7 +37,6 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
-#include <ranges>
 #include <span>
 #include <string>
 #include <thread>
@@ -179,116 +201,45 @@ int main() {
   TestUI host_ui;
   TestUI first_ui;
   TestUI second_ui;
-  TestUI third_ui;
   TestUI invalid_ui;
   auto invalid = std::make_unique<NetPlay::NetPlayClient>(
       "invalid host", 2626, &invalid_ui, "Invalid",
-      NetPlay::NetTraversalConfig{}, 1);
+      NetPlay::NetTraversalConfig{});
   if (invalid->IsConnected() || invalid_ui.error.empty())
     return 10;
   invalid.reset();
-  NetPlay::SetCompatibilityFingerprint("matching-build");
+
+  // Port 0 asks the OS for a free one, so concurrent test runs cannot collide.
   auto server = std::make_unique<NetPlay::NetPlayServer>(
       0, false, &host_ui, NetPlay::NetTraversalConfig{});
   if (!server->is_connected)
     return 1;
-  std::jthread lobby_observer([&](std::stop_token stop) {
-    while (!stop.stop_requested()) {
-      static_cast<void>(server->CanStart());
-      std::this_thread::yield();
-    }
-  });
   auto first = std::make_unique<NetPlay::NetPlayClient>(
       "127.0.0.1", server->GetPort(), &first_ui, "First",
-      NetPlay::NetTraversalConfig{}, 3);
-  if (!first->IsConnected() ||
-      !WaitFor([&] { return first->GetAssignedControllerCount() == 3; }))
+      NetPlay::NetTraversalConfig{});
+  if (!first->IsConnected())
     return 2;
   auto second = std::make_unique<NetPlay::NetPlayClient>(
       "127.0.0.1", server->GetPort(), &second_ui, "Second",
-      NetPlay::NetTraversalConfig{}, 2);
-  if (!second->IsConnected() ||
-      !WaitFor([&] { return second->GetAssignedControllerCount() == 1; }))
+      NetPlay::NetTraversalConfig{});
+  if (!second->IsConnected())
     return 3;
-  if (!WaitFor([&] { return first->GetPlayersSnapshot().size() == 2; }))
+  // The client constructor returns once its own connection is up, but the
+  // roster is filled by the receive thread, so both peers have to be waited
+  // for rather than read straight away.
+  if (!WaitFor([&] { return first->GetPlayers().size() == 2; }) ||
+      !WaitFor([&] { return second->GetPlayers().size() == 2; }))
     return 4;
 
-  first->SetLocalControllerCount(1);
-  if (!WaitFor([&] { return first->GetAssignedControllerCount() == 1; }))
-    return 14;
-  auto third = std::make_unique<NetPlay::NetPlayClient>(
-      "127.0.0.1", server->GetPort(), &third_ui, "Third",
-      NetPlay::NetTraversalConfig{}, 1);
-  if (!third->IsConnected() ||
-      !WaitFor([&] { return third->GetAssignedControllerCount() == 1; }) ||
-      !WaitFor([&] { return first->GetPlayersSnapshot().size() == 3; }))
-    return 15;
-
+  // Round-trips a real message: AdjustPadBufferSize broadcasts MessageID::
+  // PadBuffer, which each client turns back into OnPadBufferChanged. It fails
+  // if the lobby is connected but not actually exchanging packets.
   server->AdjustPadBufferSize(2);
-  server->SetAdaptiveBuffer(true);
-  if (!WaitFor([&] {
-        return first_ui.buffer == 2 && second_ui.buffer == 2 &&
-               third_ui.buffer == 2;
-      }))
+  if (!WaitFor([&] { return first_ui.buffer == 2 && second_ui.buffer == 2; }))
     return 18;
-  sf::Packet buffer_request;
-  buffer_request << NetPlay::MessageID::PadBufferRequest
-                 << static_cast<u32>(12);
-  first->SendAsync(std::move(buffer_request));
-  if (!WaitFor([&] {
-        return first_ui.buffer == 4 && second_ui.buffer == 4 &&
-               third_ui.buffer == 4;
-      }))
-    return 17;
 
-  sf::Packet input;
-  input << NetPlay::MessageID::WiimoteData << static_cast<NetPlay::PadIndex>(0)
-        << static_cast<u8>(3);
-  const std::array<u8, 3> sent_state = {0x12, 0x34, 0x56};
-  input.append(sent_state.data(), sent_state.size());
-  first->SendAsync(std::move(input), NetPlay::INPUT_CHANNEL);
-  WiimoteEmu::SerializedWiimoteState received_state{};
-  NetPlay::NetPlayClient::WiimoteDataBatchEntry entry = {0, &received_state};
-  if (!WaitFor([&] {
-        return second->WiimoteUpdate(std::span(&entry, 1)) &&
-               received_state.length == sent_state.size() &&
-               std::ranges::equal(sent_state,
-                                  std::span(received_state.data.data(),
-                                            received_state.length));
-      }))
-    return 13;
-  received_state = {};
-  if (!WaitFor([&] {
-        return third->WiimoteUpdate(std::span(&entry, 1)) &&
-               received_state.length == sent_state.size() &&
-               std::ranges::equal(sent_state,
-                                  std::span(received_state.data.data(),
-                                            received_state.length));
-      }))
-    return 16;
-
-  third.reset();
   second.reset();
   first.reset();
-  lobby_observer.request_stop();
-  lobby_observer.join();
-  server.reset();
-
-  NetPlay::SetCompatibilityFingerprint("host-build");
-  server = std::make_unique<NetPlay::NetPlayServer>(
-      0, false, &host_ui, NetPlay::NetTraversalConfig{});
-  if (!server->is_connected)
-    return 5;
-  NetPlay::SetCompatibilityFingerprint("guest-build");
-  auto mismatch = std::make_unique<NetPlay::NetPlayClient>(
-      "127.0.0.1", server->GetPort(), &second_ui, "Mismatch",
-      NetPlay::NetTraversalConfig{}, 1);
-  if (mismatch->IsConnected() || second_ui.error.empty() ||
-      mismatch->GetConnectionError() !=
-          NetPlay::ConnectionError::CompatibilityMismatch)
-    return 6;
-
-  mismatch.reset();
   server.reset();
   UICommon::Shutdown();
   std::filesystem::remove_all(directory);

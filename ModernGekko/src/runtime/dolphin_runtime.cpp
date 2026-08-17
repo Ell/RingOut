@@ -1,5 +1,3 @@
-#include <cstdlib>
-#include <cstdio>
 #include "moderngekko/runtime.hpp"
 
 #include "AudioCommon/AudioCommon.h"
@@ -9,23 +7,22 @@
 #include "Core/Boot/Boot.h"
 #include "Core/Boot/BootManager.h"
 #include "Core/Config/GraphicsSettings.h"
-#include <ranges>
-#include "InputCommon/ControllerInterface/ControllerInterface.h"
-#include "InputCommon/ControllerEmu/ControllerEmu.h"
-#include "InputCommon/InputConfig.h"
-#include "Core/HW/GCPad.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/StaticRecompSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/GBACore.h"
+#include "Core/HW/GCPad.h"
 #include "Core/Host.h"
 #include "Core/NetPlay/NetPlayClient.h"
-#include "Core/RecompDeterminism.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompModuleSource.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/System.h"
 #include "DolphinNoGUI/Platform.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
+#include "InputCommon/InputConfig.h"
 #include "UICommon/UICommon.h"
 #include "VideoCommon/PerformanceMetrics.h"
 #include "VideoCommon/RecompMenu.h"
@@ -39,25 +36,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <mutex>
+#include <ranges>
 #include <thread>
 #include <utility>
-
-namespace {
-static_assert(sizeof(ModernGekkoModuleDesc) == sizeof(StaticRecompModuleDesc));
-static_assert(offsetof(ModernGekkoModuleDesc, chunk_hashes) ==
-              offsetof(StaticRecompModuleDesc, chunk_hashes));
-std::mutex s_runtime_mutex;
-bool s_runtime_active = false;
-Platform *s_platform = nullptr;
-std::string s_window_title;
-bool s_show_fps_in_title = true;
-bool s_external_ui_common = false;
-std::unique_ptr<BootSessionData> s_boot_session_data;
-u64 s_previous_net_wait_ns = 0;
-double s_net_wait_ms_per_second = 0.0;
-std::chrono::steady_clock::time_point s_previous_net_wait_sample;
 
 #ifndef MODERNGEKKO_PROJECT_NAME
 #define MODERNGEKKO_PROJECT_NAME "Ring Out"
@@ -66,15 +51,28 @@ std::chrono::steady_clock::time_point s_previous_net_wait_sample;
 #define MODERNGEKKO_PROJECT_VERSION "Ver 1.0"
 #endif
 
+// Process-wide state shared between the Host_* callbacks Dolphin calls from its
+// own threads and the single live Runtime. s_runtime_mutex guards creation and
+// teardown; the title fields are only written while it is held.
+namespace {
+static_assert(sizeof(ModernGekkoModuleDesc) == sizeof(StaticRecompModuleDesc));
+static_assert(offsetof(ModernGekkoModuleDesc, chunk_hashes) ==
+              offsetof(StaticRecompModuleDesc, chunk_hashes));
+
+std::mutex s_runtime_mutex;
+bool s_runtime_active = false;
+Platform *s_platform = nullptr;
+std::string s_window_title;
+bool s_show_fps_in_title = true;
+bool s_external_ui_common = false;
+std::unique_ptr<BootSessionData> s_boot_session_data;
+
+// Net-wait telemetry decoration removed: NetPlay::InputWaitTelemetry /
+// GetInputWaitTelemetry live only in an unpushed RecompCore fork. The title is
+// just "<title> | <fps> FPS", in netplay as well as single player.
 std::string FormatWindowTitle(const std::string &title, double fps) {
   if (!std::isfinite(fps) || fps < 0.0)
     fps = 0.0;
-  // Net-wait telemetry decoration removed: NetPlay::InputWaitTelemetry /
-  // GetInputWaitTelemetry live only in an unpushed RecompCore fork. Single-
-  // player title is just "<title> | <fps> FPS".
-  (void)s_previous_net_wait_ns;
-  (void)s_net_wait_ms_per_second;
-  (void)s_previous_net_wait_sample;
   return fmt::format("{} | {:.1f} FPS", title, fps);
 }
 } // namespace
@@ -169,9 +167,7 @@ ModuleSource::AttachedDescriptor(const ModernGekkoModuleDesc *descriptor) {
   return source;
 }
 
-Runtime::Runtime(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
-
-
+namespace {
 // A pad profile names its device as a string ("SDL/0/Steam Deck Controller").
 // That string is not stable: on a Steam Deck the same physical pad enumerates as
 // "SDL/0/Steam Deck Controller" or "SDL/0/Steam Virtual Gamepad" depending on
@@ -192,9 +188,8 @@ void RebindPadsToPresentDevices() {
       g_controller_interface.GetAllDeviceStrings();
   // Prefer a real gamepad over the keyboard/pointer pair, which is always
   // present and would otherwise look like a valid answer.
-  const auto gamepad = std::ranges::find_if(available, [](const std::string &d) {
-    return d.starts_with("SDL/");
-  });
+  const auto gamepad = std::ranges::find_if(
+      available, [](const std::string &d) { return d.starts_with("SDL/"); });
 
   for (int i = 0; i < config->GetControllerCount(); ++i) {
     auto *const pad = config->GetController(i);
@@ -202,38 +197,32 @@ void RebindPadsToPresentDevices() {
       continue;
     const ciface::Core::DeviceQualifier &current = pad->GetDefaultDevice();
     if (current.ToString().empty())
-      continue;  // port was never configured; nothing to repair
+      continue; // port was never configured; nothing to repair
     if (g_controller_interface.FindDevice(current) != nullptr)
-      continue;  // still there; leave it alone
+      continue; // still there; leave it alone
     if (gamepad == available.end()) {
       std::fprintf(stderr,
-                   "[input] pad %d is bound to '%s', which is not connected, and no "
-                   "gamepad is available to move it to\n",
+                   "[input] pad %d is bound to '%s', which is not connected, "
+                   "and no gamepad is available to move it to\n",
                    i + 1, current.ToString().c_str());
       continue;
     }
-    std::fprintf(stderr, "[input] pad %d: '%s' is not connected; rebinding to '%s'\n",
+    std::fprintf(stderr,
+                 "[input] pad %d: '%s' is not connected; rebinding to '%s'\n",
                  i + 1, current.ToString().c_str(), gamepad->c_str());
     pad->SetDefaultDevice(*gamepad);
     pad->UpdateReferences(g_controller_interface);
   }
 }
 
-RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
-  std::lock_guard lock(s_runtime_mutex);
-  if (s_runtime_active)
-    return {
-        {},
-        RuntimeError{RuntimeErrorCode::AlreadyActive,
-                     "only one ModernGekko runtime may be active per process"}};
-
-  GameInspectResult inspected = InspectGame(config.game_root);
-  if (!inspected)
-    return {{}, RuntimeError{RuntimeErrorCode::InvalidGame, inspected.error}};
-
+// Checks the configured module against this build's CPU ABI and the disc it was
+// generated for. A module that fails validation is fatal unless the caller
+// opted into the interpreter, in which case it is dropped from the config.
+std::optional<RuntimeError> ResolveModuleSource(RuntimeConfig &config,
+                                                const GameMetadata &metadata) {
   const ModernGekkoModuleRequirements requirements = {
       MODERNGEKKO_CPU_ABI_VERSION, static_cast<std::uint32_t>(sizeof(CPUState)),
-      inspected.metadata->disc_id.c_str()};
+      metadata.disc_id.c_str()};
   ModuleLibrary validation_library;
   ModuleLoadResult module_result{};
   if (config.module.kind == ModuleSource::Kind::DynamicPath)
@@ -243,11 +232,9 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
     module_result =
         validation_library.Attach(config.module.descriptor, requirements);
   else if (!config.allow_interpreter)
-    return {
-        {},
-        RuntimeError{
-            RuntimeErrorCode::ModuleRequired,
-            "no native module was supplied; use allow_interpreter explicitly"}};
+    return RuntimeError{
+        RuntimeErrorCode::ModuleRequired,
+        "no native module was supplied; use allow_interpreter explicitly"};
 
   if (config.module.kind != ModuleSource::Kind::None &&
       module_result.status != ModuleLoadStatus::Ok) {
@@ -256,72 +243,55 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
       if (module_result.status == ModuleLoadStatus::DescriptorRejected)
         message += ": " + std::string(moderngekko_module_status_string(
                               module_result.validation_status));
-      return {
-          {},
-          RuntimeError{RuntimeErrorCode::ModuleRejected, std::move(message)}};
+      return RuntimeError{RuntimeErrorCode::ModuleRejected, std::move(message)};
     }
     config.module = {};
   }
   validation_library.Close();
+  return {};
+}
 
-  auto impl = std::make_unique<Impl>();
-  impl->config = std::move(config);
-  impl->metadata = std::move(*inspected.metadata);
-  impl->title = impl->config.window_title.value_or(
-      std::string(MODERNGEKKO_PROJECT_NAME) + " " + MODERNGEKKO_PROJECT_VERSION);
+void InitializeUICommon(const std::filesystem::path &user_directory) {
+  UICommon::SetUserDirectory(user_directory.string());
+  // Only DolphinQt's main() called this, so running headless/NoGUI left the
+  // user directory without StateSaves/, Screenshots/, Logs/, Maps/ etc. and
+  // anything writing there failed with "failed to create file" -- savestates
+  // in particular.
+  UICommon::CreateDirectories();
+  UICommon::Init();
+  // Dolphin's default non-Windows alert handler answers "No" to every
+  // question, and ASSERT's PanicYesNo treats "No" as "don't ignore" ->
+  // Crash(). A GFX FIFO hiccup then kills the whole game (seen live: dual
+  // core desync mid-session, SIGILL). There is no UI to ask, so log the
+  // alert and always pick the continue path.
+  Common::RegisterMsgAlertHandler([](const char *caption, const char *text,
+                                     bool yes_no, Common::MsgType style) -> bool {
+    std::fprintf(stderr, "[alert] %s: %s\n", caption, text);
+    return true;
+  });
+}
 
-  if (!s_external_ui_common) {
-    UICommon::SetUserDirectory(impl->config.user_directory.string());
-    // Only DolphinQt's main() called this, so running headless/NoGUI left the
-    // user directory without StateSaves/, Screenshots/, Logs/, Maps/ etc. and
-    // anything writing there failed with "failed to create file" -- savestates
-    // in particular.
-    UICommon::CreateDirectories();
-    UICommon::Init();
-    // Dolphin's default non-Windows alert handler answers "No" to every
-    // question, and ASSERT's PanicYesNo treats "No" as "don't ignore" ->
-    // Crash(). A GFX FIFO hiccup then kills the whole game (seen live: dual
-    // core desync mid-session, SIGILL). There is no UI to ask, so log the
-    // alert and always pick the continue path.
-    Common::RegisterMsgAlertHandler(
-        [](const char* caption, const char* text, bool yes_no, Common::MsgType style) -> bool {
-          std::fprintf(stderr, "[alert] %s: %s\n", caption, text);
-          return true;
-        });
-    impl->ui_initialized = true;
-  }
-
-  if (impl->config.headless)
-    impl->platform = Platform::CreateHeadlessPlatform();
+std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
+  if (config.headless)
+    return Platform::CreateHeadlessPlatform();
 #ifdef _WIN32
-  else
-    impl->platform = Platform::CreateWin32Platform();
+  return Platform::CreateWin32Platform();
 #endif
 #ifdef MODERNGEKKO_HAVE_COCOA
-  else impl->platform = Platform::CreateMacOSPlatform();
+  return Platform::CreateMacOSPlatform();
 #endif
 #ifdef HAVE_X11
-  else if (impl->config.window_system != WindowSystem::Wayland) impl->platform =
-      Platform::CreateX11Platform();
+  if (config.window_system != WindowSystem::Wayland)
+    return Platform::CreateX11Platform();
 #endif
 #ifdef HAVE_WAYLAND
-  else if (impl->config.window_system != WindowSystem::X11) impl->platform =
-      Platform::CreateWaylandPlatform();
+  if (config.window_system != WindowSystem::X11)
+    return Platform::CreateWaylandPlatform();
 #endif
-  if (!impl->platform || !impl->platform->Init()) {
-    if (impl->ui_initialized)
-      UICommon::Shutdown();
-    return {{},
-            RuntimeError{RuntimeErrorCode::PlatformUnavailable,
-                         "the requested Dolphin host platform is unavailable"}};
-  }
+  return nullptr;
+}
 
-  const WindowSystemInfo wsi = impl->platform->GetWindowSystemInfo();
-  UICommon::InitControllers(wsi);
-  impl->controllers_initialized = true;
-  RebindPadsToPresentDevices();
-  impl->platform->SetTitle(impl->title);
-
+void ApplyCoreSettings(const GameMetadata &metadata) {
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   // Dolphin defaults CPUThread=false (single-core) on desktop, which runs the
   // GPU synchronously on the CPU thread — every full-screen XFB blit / texture
@@ -342,11 +312,13 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // measures its own noise, which is the trap this whole comment is about. Left
   // opt-in so every previously verified result keeps its exact shape.
   const bool determinism_dual_core =
-      RecompDeterminism::IsActive() && std::getenv("RINGOUT_DETERMINISM_DUALCORE") != nullptr;
+      RecompDeterminism::IsActive() &&
+      std::getenv("RINGOUT_DETERMINISM_DUALCORE") != nullptr;
   Config::SetBase(Config::MAIN_CPU_THREAD,
                   !RecompDeterminism::IsActive() || determinism_dual_core);
   if (determinism_dual_core)
-    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE, std::string("fake-completion"));
+    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE,
+                    std::string("fake-completion"));
   if (RecompDeterminism::IsActive()) {
     // Pin the clock the same way NetPlayServer does (NetPlayServer.cpp:2088):
     // the RTC is converted to timebase ticks at boot, so two runs started
@@ -369,10 +341,13 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // the scheduler and its idle loop stay where they were: the four
   // instructions at 0x80185DEC are byte-identical between the two discs
   // (verified section by section against the stock DOL). Same spin, same skip.
-  if (impl->metadata.disc_id == "GRSEAF" || impl->metadata.disc_id == "GRSEPS")
+  if (metadata.disc_id == "GRSEAF" || metadata.disc_id == "GRSEPS")
     Config::SetBase(Config::MAIN_STATICRECOMP_IDLE_PC, 0x80185DECu);
-  if (!impl->config.graphics.backend.empty())
-    Config::SetBase(Config::MAIN_GFX_BACKEND, impl->config.graphics.backend);
+}
+
+void ApplyGraphicsSettings(const GraphicsSettings &graphics, bool headless) {
+  if (!graphics.backend.empty())
+    Config::SetBase(Config::MAIN_GFX_BACKEND, graphics.backend);
 #ifdef _WIN32
   // Default to Direct3D on Windows. Vulkan is only present if the GPU driver
   // installed vulkan-1.dll, and on a machine without it the failure is fatal
@@ -380,14 +355,13 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // video backend!", and the emulated CPU never starts (native=0). D3D11 ships
   // with Windows itself, so it always works. This is the BASE layer, so a
   // backend chosen in the settings menu still wins.
-  else if (!impl->config.headless)
+  else if (!headless)
     Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("D3D"));
 #endif
-  else if (impl->config.headless)
+  else if (headless)
     Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Null"));
-  if (impl->config.graphics.internal_resolution_scale)
-    Config::SetBase(Config::GFX_EFB_SCALE,
-                    *impl->config.graphics.internal_resolution_scale);
+  if (graphics.internal_resolution_scale)
+    Config::SetBase(Config::GFX_EFB_SCALE, *graphics.internal_resolution_scale);
   // SoulCalibur II and most GC titles render a 4:3 projection. ForceWide alone
   // would just stretch that image; the widescreen hack widens the projection
   // matrix so the extra horizontal field of view is actually drawn. The pair is
@@ -396,9 +370,9 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // the next frame).
   // Only forced when --widescreen is passed; otherwise the value saved by the
   // in-game menu (Alt+W / Settings) carries over between launches.
-  if (impl->config.graphics.widescreen) {
-    Config::SetBase(Config::GFX_WIDESCREEN_HACK, *impl->config.graphics.widescreen);
-    Config::SetBase(Config::GFX_ASPECT_RATIO, *impl->config.graphics.widescreen
+  if (graphics.widescreen) {
+    Config::SetBase(Config::GFX_WIDESCREEN_HACK, *graphics.widescreen);
+    Config::SetBase(Config::GFX_ASPECT_RATIO, *graphics.widescreen
                                                   ? AspectMode::ForceWide
                                                   : AspectMode::Auto);
   }
@@ -406,37 +380,119 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
                   ShaderCompilationMode::AsynchronousUberShaders);
   Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+}
+
+// Resolves audio.backend to something this host actually offers, writing the
+// choice back so GetConfig() reports what is really in use.
+void ApplyAudioSettings(AudioSettings &audio, bool headless) {
   const std::vector<std::string> audio_backends =
       AudioCommon::GetSoundBackends();
-  if (impl->config.headless) {
-    impl->config.audio.backend = BACKEND_NULLSOUND;
-  } else if (impl->config.audio.backend.empty() ||
-             std::ranges::find(audio_backends, impl->config.audio.backend) ==
+  if (headless) {
+    audio.backend = BACKEND_NULLSOUND;
+  } else if (audio.backend.empty() ||
+             std::ranges::find(audio_backends, audio.backend) ==
                  audio_backends.end()) {
-    impl->config.audio.backend = AudioCommon::GetDefaultSoundBackend();
-    if (impl->config.audio.backend == BACKEND_NULLSOUND) {
+    audio.backend = AudioCommon::GetDefaultSoundBackend();
+    if (audio.backend == BACKEND_NULLSOUND) {
       const auto available =
           std::ranges::find_if(audio_backends, [](const std::string &backend) {
             return backend != BACKEND_NULLSOUND;
           });
       if (available != audio_backends.end())
-        impl->config.audio.backend = *available;
+        audio.backend = *available;
     }
   }
-  Config::SetBase(Config::MAIN_AUDIO_BACKEND, impl->config.audio.backend);
-  Config::SetBase(Config::MAIN_INPUT_BACKGROUND_INPUT,
-                  impl->config.input.background_input);
+  Config::SetBase(Config::MAIN_AUDIO_BACKEND, audio.backend);
+}
 
+void ApplyModuleSourceToJit(const ModuleSource &module) {
   auto &jit = Core::System::GetInstance().GetJitInterface();
-  if (impl->config.module.kind == ModuleSource::Kind::DynamicPath)
+  if (module.kind == ModuleSource::Kind::DynamicPath)
     jit.SetStaticRecompModuleSource(
-        StaticRecompModuleSource::Dynamic(impl->config.module.path.string()));
-  else if (impl->config.module.kind == ModuleSource::Kind::AttachedDescriptor)
+        StaticRecompModuleSource::Dynamic(module.path.string()));
+  else if (module.kind == ModuleSource::Kind::AttachedDescriptor)
     jit.SetStaticRecompModuleSource(StaticRecompModuleSource::Attached(
-        reinterpret_cast<const StaticRecompModuleDesc *>(
-            impl->config.module.descriptor)));
+        reinterpret_cast<const StaticRecompModuleDesc *>(module.descriptor)));
   else
     jit.SetStaticRecompModuleSource({});
+}
+
+// Takes whatever boot session data a host (netplay) staged for this run; the
+// slot is one-shot, so it is cleared whether or not anything was there.
+std::unique_ptr<BootParameters> TakeBootParameters(const std::string &main_dol) {
+  std::lock_guard lock(s_runtime_mutex);
+  std::unique_ptr<BootParameters> boot;
+  if (s_boot_session_data)
+    boot = BootParameters::GenerateFromFile(main_dol,
+                                            std::move(*s_boot_session_data));
+  else
+    boot = BootParameters::GenerateFromFile(main_dol);
+  s_boot_session_data.reset();
+  return boot;
+}
+
+// Dolphin only refreshes the window title from its own Host_UpdateTitle calls,
+// which stop while the core is paused, so drive it from here at ~1 Hz. The
+// inner loop sleeps in 100 ms slices so a stop request is honoured promptly.
+std::jthread StartTitleThread() {
+  return std::jthread([](std::stop_token stop_token) {
+    while (!stop_token.stop_requested()) {
+      Host_UpdateTitle({});
+      for (int i = 0; i < 10 && !stop_token.stop_requested(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  });
+}
+} // namespace
+
+Runtime::Runtime(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
+
+RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
+  std::lock_guard lock(s_runtime_mutex);
+  if (s_runtime_active)
+    return {
+        {},
+        RuntimeError{RuntimeErrorCode::AlreadyActive,
+                     "only one ModernGekko runtime may be active per process"}};
+
+  GameInspectResult inspected = InspectGame(config.game_root);
+  if (!inspected)
+    return {{}, RuntimeError{RuntimeErrorCode::InvalidGame, inspected.error}};
+
+  if (auto error = ResolveModuleSource(config, *inspected.metadata))
+    return {{}, std::move(*error)};
+
+  auto impl = std::make_unique<Impl>();
+  impl->config = std::move(config);
+  impl->metadata = std::move(*inspected.metadata);
+  impl->title = impl->config.window_title.value_or(
+      std::string(MODERNGEKKO_PROJECT_NAME) + " " + MODERNGEKKO_PROJECT_VERSION);
+
+  if (!s_external_ui_common) {
+    InitializeUICommon(impl->config.user_directory);
+    impl->ui_initialized = true;
+  }
+
+  impl->platform = CreateHostPlatform(impl->config);
+  if (!impl->platform || !impl->platform->Init()) {
+    if (impl->ui_initialized)
+      UICommon::Shutdown();
+    return {{},
+            RuntimeError{RuntimeErrorCode::PlatformUnavailable,
+                         "the requested Dolphin host platform is unavailable"}};
+  }
+
+  UICommon::InitControllers(impl->platform->GetWindowSystemInfo());
+  impl->controllers_initialized = true;
+  RebindPadsToPresentDevices();
+  impl->platform->SetTitle(impl->title);
+
+  ApplyCoreSettings(impl->metadata);
+  ApplyGraphicsSettings(impl->config.graphics, impl->config.headless);
+  ApplyAudioSettings(impl->config.audio, impl->config.headless);
+  Config::SetBase(Config::MAIN_INPUT_BACKGROUND_INPUT,
+                  impl->config.input.background_input);
+  ApplyModuleSourceToJit(impl->config.module);
 
   s_runtime_active = true;
   s_platform = impl->platform.get();
@@ -469,17 +525,8 @@ RuntimeRunResult Runtime::Run() {
             RuntimeError{RuntimeErrorCode::InvalidState,
                          "runtime is already running"}};
 
-  std::unique_ptr<BootParameters> boot;
-  {
-    std::lock_guard lock(s_runtime_mutex);
-    if (s_boot_session_data)
-      boot = BootParameters::GenerateFromFile(
-          m_impl->metadata.main_dol.string(), std::move(*s_boot_session_data));
-    else
-      boot =
-          BootParameters::GenerateFromFile(m_impl->metadata.main_dol.string());
-    s_boot_session_data.reset();
-  }
+  std::unique_ptr<BootParameters> boot =
+      TakeBootParameters(m_impl->metadata.main_dol.string());
   if (!boot) {
     m_impl->running = false;
     return {RuntimeExitReason::BootFailed,
@@ -504,15 +551,8 @@ RuntimeRunResult Runtime::Run() {
   if (!m_impl->config.headless)
     RecompMenu::ScheduleAutoResumeLoad();
   std::jthread title_thread;
-  if (!m_impl->config.headless && m_impl->config.show_fps_in_title) {
-    title_thread = std::jthread([](std::stop_token stop_token) {
-      while (!stop_token.stop_requested()) {
-        Host_UpdateTitle({});
-        for (int i = 0; i < 10 && !stop_token.stop_requested(); ++i)
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-    });
-  }
+  if (!m_impl->config.headless && m_impl->config.show_fps_in_title)
+    title_thread = StartTitleThread();
   m_impl->platform->MainLoop();
   title_thread.request_stop();
   if (title_thread.joinable())

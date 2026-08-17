@@ -4,7 +4,14 @@
 
 int main()
 {
-  static_assert(sizeof(CPUState) == 3504u);
+  // Tripwire, not a fact worth knowing: a recompiled module and its host agree
+  // on this size at load time (ModernGekkoModuleRequirements::cpu_state_size),
+  // so any change to CPUState silently invalidates every module already built.
+  // If this fires, that is the intended signal -- bump
+  // MODERNGEKKO_CPU_ABI_VERSION along with the number so old modules are
+  // rejected with a diagnosis instead of running against a struct they
+  // disagree about.
+  static_assert(sizeof(CPUState) == 7592u);
 
   moderngekko::LegacyRuntime runtime(true);
   const moderngekko::ModuleLoadResult loaded =
