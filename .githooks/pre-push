@@ -1,0 +1,72 @@
+#!/bin/bash
+# Run the same checks CI would, before anything leaves this machine.
+#
+# WHY THIS EXISTS. CI existed for months and never ran ctest, so five tests
+# rotted out of compiling entirely and nobody heard about it. The property that
+# was missing is not "a CI service" -- it is "something runs the checks without
+# being asked". A hook provides that, on the exact Debian 12 container CI uses
+# (same base image, same deck-deps.txt), for zero Actions minutes.
+#
+# Cost: ~40s with a warm ccache, a few minutes cold. Skip with `git push
+# --no-verify`, or SKIP_PREPUSH=1.
+set -uo pipefail
+
+[ "${SKIP_PREPUSH:-0}" = "1" ] && { echo "pre-push: skipped (SKIP_PREPUSH=1)"; exit 0; }
+
+REPO="$(git rev-parse --show-toplevel)"
+cd "$REPO" || exit 1
+
+# podman is how the container is reproduced here. Missing it is a reason to warn,
+# not a reason to block a push -- the hook must never be the thing that stops
+# work on a machine that simply is not set up for it.
+if ! command -v podman >/dev/null; then
+    echo "pre-push: podman not found -- skipping the build check" >&2
+    exit 0
+fi
+
+ZERO=0000000000000000000000000000000000000000
+RANGE=""
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$ZERO" ] && continue          # branch deletion
+    if [ "$remote_sha" = "$ZERO" ]; then
+        # New branch: diff against whatever it forked from, else just this commit.
+        base="$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "$local_sha^")"
+        RANGE="$base $local_sha"
+    else
+        RANGE="$remote_sha $local_sha"
+    fi
+done
+[ -z "$RANGE" ] && exit 0
+
+CHANGED="$(git diff --name-only $RANGE 2>/dev/null)"
+[ -z "$CHANGED" ] && exit 0
+
+# Only pay for the build when something that can break it moved. A README or a
+# memory note has no way to fail a compile.
+if ! grep -qE '^(ModernGekko/|DolRecomp/|\.github/(scripts|workflows)/|dist/[^/]+/module-src/)' <<<"$CHANGED"; then
+    echo "pre-push: no build-relevant changes -- skipping"
+    exit 0
+fi
+
+echo "pre-push: building and testing in the Debian 12 container..."
+if ! ./.github/scripts/build-deck.sh >/tmp/prepush-build.log 2>&1; then
+    echo "pre-push: BUILD FAILED -- push aborted. Log: /tmp/prepush-build.log" >&2
+    tail -20 /tmp/prepush-build.log >&2
+    exit 1
+fi
+
+IMAGE=ringout-deck-build
+if ! podman run --rm --userns=keep-id -v "$REPO:/src:Z" -w /src "$IMAGE" bash -c '
+        cmake --build /src/build-deck --target moderngekko-tests >/dev/null 2>&1 &&
+        ctest --test-dir /src/build-deck -j"$(nproc)" --output-on-failure
+     ' >/tmp/prepush-test.log 2>&1; then
+    echo "pre-push: TESTS FAILED -- push aborted. Log: /tmp/prepush-test.log" >&2
+    grep -E "Failed|tests passed|tests failed" /tmp/prepush-test.log | tail -15 >&2
+    exit 1
+fi
+
+echo "pre-push: $(grep -oE '[0-9]+% tests passed, [0-9]+ tests failed out of [0-9]+' /tmp/prepush-test.log | head -1), glibc floor $(
+    podman run --rm --userns=keep-id -v "$REPO:/src:Z" -w /src "$IMAGE" \
+      objdump -T /src/build-deck/moderngekko-run 2>/dev/null |
+      grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+exit 0
