@@ -140,13 +140,42 @@ echo "  ABI header matches the repo (v$(grep -oE 'STATICRECOMP_ABI_VERSION [0-9]
 # not reaching the other is a trap this project has hit before -- the module
 # still links, because a .so links with undefined symbols and only fails at
 # dlopen.
-for f in cpu/cpu.c cpu/cpu.h common/types.h; do
-  if ! cmp -s "$SRC/module-src/deps/dolrecomp-src/$f" "$REPO/DolRecomp/src/$f"; then
-    echo "  FAIL: module-src/deps/dolrecomp-src/$f differs from DolRecomp/src/$f" >&2
-    exit 1
+#
+# This used to check three files (cpu/cpu.c, cpu/cpu.h, common/types.h) on the
+# grounds that they are the ones actually COMPILED into the module. That is
+# true and it still missed the bug: by 2026-08-17 eight files had drifted, the
+# copy being an old snapshot, and cpu/cpu.c was among them -- it had lost
+# `unsigned dolrecomp_call_depth = 0;`, which the generated chunk headers
+# declare extern. Three names hand-maintained against a 49-file tree is the
+# same class of mistake as the drift it is meant to catch, so check all of them.
+#
+# The copy is a deliberate SUBSET -- backend/llvm/ and ir/ are not shipped --
+# so iterate the COPY and look each file up in the source, never the reverse.
+# A file newly added to DolRecomp/src is therefore not flagged: whether the
+# module needs it is a judgement call, not something this check can make.
+copy_root="$SRC/module-src/deps/dolrecomp-src"
+drift=0
+orphan=0
+checked=0
+while IFS= read -r f; do
+  checked=$((checked + 1))
+  if [ ! -f "$REPO/DolRecomp/src/$f" ]; then
+    echo "  FAIL: dolrecomp-src/$f has no counterpart in DolRecomp/src" >&2
+    orphan=$((orphan + 1))
+  elif ! cmp -s "$copy_root/$f" "$REPO/DolRecomp/src/$f"; then
+    echo "  FAIL: dolrecomp-src/$f differs from DolRecomp/src/$f" >&2
+    drift=$((drift + 1))
   fi
-done
-echo "  dolrecomp-src copy is in sync"
+done < <(cd "$copy_root" && find . -type f | sed 's|^\./||' | sort)
+# Report every offender before exiting: the failure mode this guards against
+# arrives in batches, and fixing them one re-run at a time is how a sync gets
+# abandoned half-done.
+if [ "$((drift + orphan))" -gt 0 ]; then
+  echo "  $drift file(s) drifted, $orphan orphaned, of $checked checked" >&2
+  echo "  fix with: cp DolRecomp/src/<file> $copy_root/<file>" >&2
+  exit 1
+fi
+echo "  dolrecomp-src copy is in sync ($checked files)"
 
 # A runtime older than the ABI header cannot know about it.
 rt_ts="$(stat -c %Y "$SRC/bin/moderngekko-run")"
