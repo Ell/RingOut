@@ -80,6 +80,23 @@ jobs:
       - name: Build runtime
         run: cmake --build build-deck --target moderngekko-run
 
+      # ENABLE_TESTS above is DOLPHIN's suite, which needs toolchain this
+      # container does not have. These are ModernGekko's and DolRecomp's own,
+      # gated by BUILD_TESTING, which defaults on -- they were already being
+      # configured by every run here and simply never built or executed.
+      #
+      # That is not hypothetical: five of them had rotted out of compiling
+      # entirely (a stale sizeof(CPUState), a renamed field, a module ABI
+      # pinned two versions back, and one written against an unpushed
+      # RecompCore fork), and nothing reported it because nothing ran them.
+      - name: Build tests
+        run: cmake --build build-deck --target moderngekko-tests
+
+      # Before Package on purpose: a red suite must not be able to produce a
+      # publishable zip.
+      - name: Test
+        run: ctest --test-dir build-deck --output-on-failure -j"$(nproc)"
+
       - name: Package
         # NATIVE=1 because this job IS the Debian 12 environment; there is no
         # podman on the runner and none is needed. The script resolves the

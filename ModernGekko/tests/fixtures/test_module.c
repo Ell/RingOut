@@ -15,7 +15,11 @@ static const uint64_t chunk_hashes[] = {
 
 static const ModernGekkoModuleDesc descriptor = {
     MODERNGEKKO_MODULE_ABI_VERSION,
-    2u,
+    /* Must be the symbol, never a literal. This was pinned to 2 back when that
+       was the current CPU ABI; the version moved to 3 and the fixture stayed
+       behind, which made module_loader_test's Attach() case fail against a
+       descriptor that was, correctly, using the symbol. */
+    MODERNGEKKO_CPU_ABI_VERSION,
     (uint32_t)sizeof(CPUState),
     "TEST01",
     0x80003100u,

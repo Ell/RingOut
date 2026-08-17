@@ -43,8 +43,10 @@ int main(void)
     };
     CPUState state = {0};
 
-    COMPILE_ASSERT(module_abi_version_is_two,
-                   MODERNGEKKO_MODULE_ABI_VERSION == 2u);
+    /* Same tripwire as runtime_test's sizeof(CPUState): pin the version so a
+       bump has to be deliberate, and update this line with it. */
+    COMPILE_ASSERT(module_abi_version_is_three,
+                   MODERNGEKKO_MODULE_ABI_VERSION == 3u);
     COMPILE_ASSERT(game_id_storage_is_eight_bytes,
                    sizeof(descriptor.game_id) == 8u);
     COMPILE_ASSERT(dispatch_follows_entry_point,

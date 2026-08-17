@@ -103,6 +103,14 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     endif()
     set(LINUX_LOCAL_DEV ON CACHE BOOL "" FORCE)
     set(DISTRIBUTOR "ModernGekko" CACHE STRING "" FORCE)
+    # zstd defaults ZSTD_BUILD_TESTS to BUILD_TESTING, so enabling our own tests
+    # also registered fullbench/fuzzer/zstreamtest with ctest. Their executables
+    # are EXCLUDE_FROM_ALL (nothing links them), so those three could only ever
+    # report "Not Run" -- three permanent failures in every ctest run, which is
+    # how a real regression gets ignored. Set here rather than in
+    # vendor/dolphin/Externals/zstd/CMakeLists.txt alongside its siblings, so an
+    # upstream sync cannot quietly revert it.
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     add_subdirectory(vendor/dolphin EXCLUDE_FROM_ALL)
     if(MODERNGEKKO_FRONTEND_SDK)
         # These two imported targets historically rely on X11 headers living
@@ -782,4 +790,29 @@ if(BUILD_TESTING)
     )
     add_test(NAME moderngekko.dolphin_shader
              COMMAND moderngekko_dolphin_shader_test)
+
+    # One target so CI can build the suite without either naming twenty-odd
+    # executables (the list drifts, and a dropped name fails as a silent gap in
+    # coverage) or falling back to `cmake --build`, which reaches the tests only
+    # by also compiling the imgui launcher, its SDL dependencies and the port
+    # tool -- none of which a test run needs.
+    #
+    # Discovered rather than listed: every test executable here ends in _test,
+    # and DolRecomp's live in their own directory. The fixture shared objects
+    # (moderngekko_test_module and friends) are already add_dependencies of the
+    # tests that load them, so they come along.
+    add_custom_target(moderngekko-tests)
+    get_property(_moderngekko_test_targets
+                 DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    get_property(_dolrecomp_test_targets
+                 DIRECTORY vendor/dolphin/DolRecomp PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_target IN LISTS _moderngekko_test_targets _dolrecomp_test_targets)
+        if(_target MATCHES "_test$|^test_")
+            add_dependencies(moderngekko-tests ${_target})
+        endif()
+    endforeach()
+    # Not caught by the pattern, and not optional: the disc_extract test takes
+    # $<TARGET_FILE:dolrecomp> as an argument and runs it, so building only the
+    # test executables leaves that one failing on a missing binary.
+    add_dependencies(moderngekko-tests dolrecomp)
 endif()

@@ -40,7 +40,7 @@ int main()
   }
   if (wii.GetCpuState().gpr[1] != 0x8004D4BCu || wii.GetCpuState().msr != 0x00002032u ||
       wii.GetCpuState().hid2 != 0xE0000000u ||
-      wii.GetCpuState().exram_size != moderngekko::AddressSpace::RetailMem2Size)
+      wii.GetCpuState().mem2_size != moderngekko::AddressSpace::RetailMem2Size)
   {
     return 4;
   }

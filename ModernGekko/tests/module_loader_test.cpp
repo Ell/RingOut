@@ -33,7 +33,9 @@ int main()
 {
   moderngekko::ModuleLibrary library;
   ModernGekkoModuleRequirements requirements = {
-      2u,
+      // See fixtures/test_module.c: this pair has to track the real CPU ABI,
+      // or the happy paths below start asserting a rejection.
+      MODERNGEKKO_CPU_ABI_VERSION,
       sizeof(CPUState),
       "TEST01",
   };
