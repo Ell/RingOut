@@ -17,30 +17,37 @@ on:
         description: 'Upload the release asset (default: build only)'
         type: boolean
         default: false
-  push:
-    branches: [main]
-    paths:
-      - 'ModernGekko/**'
-      # The recompiler that actually ships. It lives outside ModernGekko/ but
-      # ModernGekko builds it and the desktop package carries it, so a change
-      # here changes what this workflow produces -- and until 2026-08-17 the
-      # suite tested the stale copy under vendor/dolphin instead, so nothing
-      # here ever covered it.
-      - 'DolRecomp/**'
-      # The packaging scripts and the shipped scaffolding are part of what this
-      # workflow produces, so a change to them has to trigger it. Leaving them
-      # out meant a packaging fix pushed cleanly, triggered nothing, and looked
-      # green against the PREVIOUS run's result.
-      - '.github/workflows/deck.yml'
-      - '.github/scripts/build-deck.sh'
-      - '.github/scripts/package-deck.sh'
-      # package-deck.sh calls both of these, so a change to either changes what
-      # this workflow produces -- the same reasoning that put the packaging
-      # script itself on this list.
-      - '.github/scripts/privacy-scan.sh'
-      - '.github/scripts/publish-release-asset.sh'
-      - '.github/scripts/deck-deps.txt'
-      - 'dist/RingOut-1.0-deck/**'
+
+# DISPATCH ONLY, since 2026-08-17. There is no `push:` trigger any more.
+#
+# This job is ~25 minutes of recompiling vendored Dolphin, billed against 2,000
+# included Actions minutes a month on a private repo -- and it was firing on
+# essentially every commit, because `ModernGekko/**` matches nearly all of them.
+# August spent ~2,312 minutes and ran out; the allowance was exhausted for days
+# with every run failing in three seconds and no runner assigned.
+#
+# The checks it performed now run BEFORE the push instead, in .githooks/pre-push,
+# on the same debian:12 container (same base image, same deck-deps.txt) in ~13
+# seconds with a warm ccache. Paying a runner 25 minutes to repeat what already
+# passed locally is the duplication this removes.
+#
+# What is left here is the part a local machine genuinely cannot do: build the
+# release from a clean checkout and upload it with provenance. Run it by hand
+# when you want a release; tick `publish` to actually upload one.
+#
+# TO RESTORE per-push builds, put back:
+#
+#   push:
+#     branches: [main]
+#     paths: [ 'ModernGekko/**', 'DolRecomp/**', '.github/workflows/deck.yml',
+#              '.github/scripts/build-deck.sh', '.github/scripts/package-deck.sh',
+#              '.github/scripts/privacy-scan.sh',
+#              '.github/scripts/publish-release-asset.sh',
+#              '.github/scripts/deck-deps.txt', 'dist/RingOut-1.0-deck/**' ]
+#
+# Those paths were not arbitrary: the packaging scripts are part of what this
+# workflow PRODUCES, so leaving them out once meant a packaging fix pushed
+# cleanly, triggered nothing, and looked green against the previous run.
 
 permissions:
   contents: write
