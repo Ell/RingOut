@@ -158,8 +158,10 @@ back end is saturated at IPC 1.92. The workload is not inefficient, just large:
   a Debian 12 container, which clears SteamOS and essentially every current
   distro. A build made natively on SteamOS instead has a 2.38 floor and will not
   run on older SteamOS releases — so the container build stays the shipped one.
-- **Windows is behind.** It builds in CI, but its packaging checks have not been
-  exercised, and the last artifacts predate the current source shipment.
+- **Windows is retired.** There is no Windows CI job and no Windows package. The
+  workflow, packaging script, installer and launcher scaffolding are kept, unbuilt
+  and unmaintained, under `attic/windows/`. Linux and the Steam Deck are the
+  supported targets.
 - The `-march=native` build is machine-specific by design; setup compiles on your
   own machine, so this only matters if you copy a built folder to another CPU.
 

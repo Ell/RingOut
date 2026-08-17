@@ -8,7 +8,7 @@
 void print_usage(const char* argv0) {
     (void)argv0;
 
-    const char* prog = "dolrecomp.exe";
+    const char* prog = "dolrecomp";
 
     fprintf(stderr, "Usage: %s [options] <input> [wii-title-id] [output.c | output-dir]\n", prog);
     fprintf(stderr, "\n");

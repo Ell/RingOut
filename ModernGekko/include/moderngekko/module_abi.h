@@ -16,9 +16,7 @@ extern "C" {
 #define MODERNGEKKO_MODULE_ABI_VERSION 3u
 #define MODERNGEKKO_GET_MODULE_SYMBOL "staticrecomp_get_module"
 
-#if defined(_WIN32)
-#define MODERNGEKKO_MODULE_EXPORT __declspec(dllexport)
-#elif defined(__GNUC__)
+#if defined(__GNUC__)
 #define MODERNGEKKO_MODULE_EXPORT __attribute__((visibility("default")))
 #else
 #define MODERNGEKKO_MODULE_EXPORT

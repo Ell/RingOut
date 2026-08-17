@@ -7,6 +7,31 @@
 static void emit_exc_check_return(FILE* out, const char* indent);
 
 #include <stdlib.h>
+#include <string.h>
+#include <stdatomic.h>
+
+/* --ca-liveness: XER[CA] dead-write analysis. Reporting only for now -- see
+ * compute_ca_live(). emit_function() runs on the -jN workers, so the counters
+ * accumulate atomically rather than racing like the entry-point list would. */
+static bool s_ca_liveness = false;
+static _Atomic unsigned long long s_ca_defs;
+static _Atomic unsigned long long s_ca_dead;
+static _Atomic unsigned long long s_ca_uses;
+
+void emit_set_ca_liveness(bool enable) { s_ca_liveness = enable; }
+
+void emit_report_ca_stats(void) {
+    unsigned long long defs, dead, uses;
+    if (!s_ca_liveness)
+        return;
+    defs = atomic_load(&s_ca_defs);
+    dead = atomic_load(&s_ca_dead);
+    uses = atomic_load(&s_ca_uses);
+    printf("  XER[CA]: %llu write sites, %llu read sites, %llu provably dead"
+           " (%.1f%% of writes)\n",
+           defs, uses, dead,
+           defs ? 100.0 * (double)dead / (double)defs : 0.0);
+}
 
 static u32 cr_field_shift(u8 crf) {
     return 4u * (7u - (u32)crf);
@@ -34,10 +59,12 @@ static void emit_set_cr0_from_gpr(FILE* out, u8 reg) {
     fprintf(out, "        if (cr_value == 0) cr_bits |= 0x2u;\n");
     fprintf(out, "        cr_bits |= (ctx->xer >> 31) & 1u;\n");
     fprintf(out, "        ctx->cr = (ctx->cr & 0x0FFFFFFFu) | (cr_bits << 28);\n");
+    fprintf(out, "        PPC_CR_WRITE(0);\n");
 }
 
 static void emit_set_cr1_from_fpscr(FILE* out) {
     fprintf(out, "        ctx->cr = (ctx->cr & 0xF0FFFFFFu) | ((ctx->fpscr >> 4) & 0x0F000000u);\n");
+    fprintf(out, "        PPC_CR_WRITE(1);\n");
 }
 
 static void emit_compare_s32(FILE* out, u8 crf, const char* lhs, const char* rhs) {
@@ -53,6 +80,7 @@ static void emit_compare_s32(FILE* out, u8 crf, const char* lhs, const char* rhs
     fprintf(out, "        cr_bits |= (ctx->xer >> 31) & 1u;\n");
     fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (cr_bits << %u);\n",
             shift, shift);
+    fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)crf);
     fprintf(out, "    }\n");
 }
 
@@ -69,6 +97,7 @@ static void emit_compare_u32(FILE* out, u8 crf, const char* lhs, const char* rhs
     fprintf(out, "        cr_bits |= (ctx->xer >> 31) & 1u;\n");
     fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (cr_bits << %u);\n",
             shift, shift);
+    fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)crf);
     fprintf(out, "    }\n");
 }
 
@@ -85,6 +114,7 @@ static void emit_fcompare(FILE* out, const PPCInst* inst) {
     fprintf(out, "        else                     cr_bits = 0x1u;\n");
     fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (cr_bits << %u);\n",
             shift, shift);
+    fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)inst->crfD);
     /* A FLOAT compare also sets FPSCR's FPCC (bits 12-15); nothing was doing
      * that, so lockstep saw the interpreter carrying compare results in FPSCR
      * that we did not. Cleared then set, per the architecture: "the FPCC field
@@ -98,6 +128,13 @@ static void emit_fcompare(FILE* out, const PPCInst* inst) {
      * Copying that would leave stale FPCC bits the hardware clears, and the game
      * reads FPSCR (two mffs sites). Lockstep will keep reporting these; the
      * divergence is on the reference side. */
+    /* FPCC occupies FPSCR bits 12-15, which sits INSIDE the 0x1F<<12 FPRF
+     * mask, so a deferred FPRF flush arriving after this would wipe the
+     * compare result. Land the pending value first, exactly as the eager path
+     * ordered it. Found by tracing the last FPRF writer before each mffs:
+     * both builds named the same writer (0x80117330) yet disagreed on the
+     * value, which is only possible if something untagged wrote the range. */
+    fprintf(out, "        ppc_fprf_flush(ctx);\n");
     fprintf(out, "        ctx->fpscr = (ctx->fpscr & ~(0xFu << 12)) | (cr_bits << 12);\n");
     fprintf(out, "    }\n");
 }
@@ -314,6 +351,7 @@ static void emit_branch_condition(FILE* out, u8 bo, u8 bi) {
 
     if (!cond_ignored) {
         u32 mask = 0x80000000u >> bi;
+        fprintf(out, "        PPC_CR_READ(%uu);\n", 1u << (bi >> 2));
         fprintf(out, "        bool cr_ok = (((ctx->cr & 0x%08Xu) != 0) == %s);\n",
                 mask, ((bo >> 3) & 1u) ? "true" : "false");
     } else {
@@ -336,6 +374,112 @@ static void emit_branch_condition(FILE* out, u8 bo, u8 bi) {
  * skip would silently stop happening: measured, the idle PC really is a
  * back-edge target here. 0 = no idle PC, every back-edge stays native. */
 static u32 s_idle_pc = 0;
+
+/* Guest PCs that must always be reached through the chassis dispatcher.
+ *
+ * Call chaining (below) turns a local `bl` into a native goto, which is a win
+ * -- but the run loop recognises certain guest functions BY PC between
+ * dispatches (the FMV HLE entry points). A call that never returns to the
+ * dispatcher is a hook that never fires, so those targets are excluded by
+ * address rather than by hoping they are always reached indirectly. */
+/* Off by default: measured at 0.75% on the 600-frame harness -- inside the
+ * noise, where native loops showed a plain -11.5% on the same instrument. Only
+ * 8% of `bl` sites are local and chainable, and the matching `blr` is indirect
+ * and still dispatches, so this halves the dispatches for a minority of calls
+ * rather than removing a class of them. Kept because the measurement is cheap
+ * to repeat on a gameplay workload, which is the case it was never tested on. */
+static bool s_chain_calls = false;
+
+void emit_set_chain_calls(bool enable) {
+    s_chain_calls = enable;
+}
+
+/* --leader-cases: emit the chunk-entry switch only at block leaders.
+ *
+ * HYPOTHESIS TEST, not a shipping option. One case per guest instruction makes
+ * every instruction a switch-reachable join point, so the compiler must assume
+ * control can arrive there with unknown state and cannot keep guest registers
+ * in host registers across a block -- exactly the advantage Dolphin's JIT has.
+ *
+ * INCOMPLETE ON PURPOSE: an exception stores the faulting address in srr0 and
+ * rfi resumes there, mid-block, so a correct version needs leaders UNION fault
+ * sites (the refund work counts 89391 of those). This build can therefore wedge
+ * on a mid-block resume. It exists to answer "does it even help?" before that
+ * work is done -- the determinism harness detects the breakage immediately. */
+static bool s_leader_cases = false;
+
+/* Addresses the entry switch actually has a case for, accumulated across every
+ * emitted function. Only collected when the entry set is REDUCED: with the full
+ * per-instruction switch every address in a chunk is an entry, which is the
+ * assumption the chassis makes when no table is supplied. */
+static u32* s_entries = NULL;
+static u32 s_entry_count = 0;
+static u32 s_entry_cap = 0;
+
+/* MAIN THREAD ONLY. emit_function() runs on the -jN workers, so appending to a
+ * shared list from there is a data race -- it corrupted the heap and aborted the
+ * first time. The pipeline knows each chunk's instructions before it queues the
+ * job, so the entry set is collected there instead, off the workers entirely. */
+static void record_entry(u32 address) {
+    if (!s_leader_cases)
+        return;
+    if (s_entry_count == s_entry_cap) {
+        u32 cap = s_entry_cap ? s_entry_cap * 2u : 4096u;
+        u32* grown = (u32*)realloc(s_entries, cap * sizeof(u32));
+        if (!grown)
+            return;   /* the table is optional; losing it degrades, not breaks */
+        s_entries = grown;
+        s_entry_cap = cap;
+    }
+    s_entries[s_entry_count++] = address;
+}
+
+static int compare_u32(const void* a, const void* b) {
+    u32 x = *(const u32*)a, y = *(const u32*)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+int emit_write_entry_points(const char* path) {
+    FILE* out;
+    u32 i;
+    /* No file at all when the switch covers every instruction: its absence is
+     * what tells the chassis to keep treating a whole chunk range as entrable,
+     * which is what every module built before this flag existed relies on. */
+    if (!s_leader_cases)
+        return 1;
+    out = fopen(path, "w");
+    if (!out)
+        return 0;
+    qsort(s_entries, s_entry_count, sizeof(u32), compare_u32);
+    fprintf(out, "# Guest addresses the entry switch can be entered at.\n");
+    fprintf(out, "# Written only for a reduced entry set (--leader-cases).\n");
+    for (i = 0; i < s_entry_count; i++) {
+        if (i != 0 && s_entries[i] == s_entries[i - 1u])
+            continue;
+        fprintf(out, "%08X\n", s_entries[i]);
+    }
+    fclose(out);
+    return 1;
+}
+
+void emit_set_leader_cases(bool enable) {
+    s_leader_cases = enable;
+}
+
+static u32 s_dispatch_pcs[32];
+static u32 s_dispatch_pc_count = 0;
+
+void emit_add_dispatch_pc(u32 pc) {
+    if (pc != 0 && s_dispatch_pc_count < 32)
+        s_dispatch_pcs[s_dispatch_pc_count++] = pc;
+}
+
+static bool must_reach_dispatcher(u32 pc) {
+    for (u32 i = 0; i < s_dispatch_pc_count; ++i)
+        if (s_dispatch_pcs[i] == pc)
+            return true;
+    return false;
+}
 
 /* Cycles charged for the remainder of the current instruction's block: every
  * instruction after this one, up to the end of the block.
@@ -362,12 +506,28 @@ static void emit_exc_check_return(FILE* out, const char* indent) {
         fprintf(out, "%sif (ctx->exception) return;\n", indent);
 }
 
+static int s_llvm_backend = 0;
+void emit_set_llvm_backend(int enabled) { s_llvm_backend = enabled ? 1 : 0; }
+int emit_llvm_backend_enabled(void) { return s_llvm_backend; }
+
 void emit_set_idle_pc(u32 pc) {
     s_idle_pc = pc;
+    /* The idle loop is just the first member of the must-dispatch set. */
+    emit_add_dispatch_pc(pc);
 }
 
 static bool branch_target_is_local(u32 func_start, u32 func_end, u32 target) {
     return target >= func_start && target < func_end && ((target - func_start) & 3u) == 0;
+}
+
+// Upstream (98f77b6) emits direct calls between chunks and sets this table from
+// pipeline.c. This fork does not take that path yet: its own measurement is
+// still owed, and upstream reports +2.9% with overlapping ranges -- "not
+// demonstrated" by the standard used here. The entry point exists so the shared
+// pipeline links; passing a table would be the only thing needed to enable it.
+void emit_set_chunk_table(const u32* starts, u32 count) {
+    (void)starts;
+    (void)count;
 }
 
 static void emit_direct_branch(FILE* out, const PPCInst* inst, bool local_target) {
@@ -375,12 +535,29 @@ static void emit_direct_branch(FILE* out, const PPCInst* inst, bool local_target
 
     if (inst->lk) {
         fprintf(out, "            ctx->lr = 0x%08Xu;\n", inst->address + 4);
+        /* Call chaining. A local `bl` used to cost a full dispatcher round trip
+         * on the way IN; the matching `blr` is indirect and still dispatches, so
+         * this halves the dispatches per local call rather than removing them.
+         * A backward local call is also a loop shape, so it takes the same cycle
+         * budget as a back-edge -- without one the module could spin arbitrarily
+         * long before CoreTiming regains control. */
+        if (s_chain_calls && local_target &&
+            !must_reach_dispatcher(inst->branch_target)) {
+            if (local_backward) {
+                fprintf(out, "            if (ctx->downcount <= -%d) {\n", DOLRECOMP_LOOP_BUDGET);
+                fprintf(out, "                ctx->pc = 0x%08Xu;\n", inst->branch_target);
+                fprintf(out, "                return;\n");
+                fprintf(out, "            }\n");
+            }
+            fprintf(out, "            goto label_%08X;\n", inst->branch_target);
+            return;
+        }
         fprintf(out, "            ctx->pc = 0x%08Xu;\n", inst->branch_target);
         fprintf(out, "            return;\n");
         return;
     }
     /* The idle loop must keep reaching the chassis, or idle-skip dies with it. */
-    if (local_backward && s_idle_pc != 0 && inst->branch_target == s_idle_pc) {
+    if (local_backward && must_reach_dispatcher(inst->branch_target)) {
         fprintf(out, "            ctx->pc = 0x%08Xu;\n", inst->branch_target);
         fprintf(out, "            return;\n");
         return;
@@ -428,11 +605,14 @@ static void emit_dynamic_branch(FILE* out, const PPCInst* inst,
 
 static void emit_cr_logical(FILE* out, const PPCInst* inst, const char* expr) {
     fprintf(out, "    {\n");
+    fprintf(out, "        PPC_CR_READ(%uu);\n",
+            (1u << (inst->rA >> 2)) | (1u << (inst->rB >> 2)));
     fprintf(out, "        u32 a = (ctx->cr >> (31u - %uu)) & 1u;\n", inst->rA);
     fprintf(out, "        u32 b = (ctx->cr >> (31u - %uu)) & 1u;\n", inst->rB);
     fprintf(out, "        u32 mask = 0x80000000u >> %u;\n", inst->rD);
     fprintf(out, "        u32 value = (%s) & 1u;\n", expr);
     fprintf(out, "        ctx->cr = (ctx->cr & ~mask) | (value ? mask : 0u);\n");
+    fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)(inst->rD >> 2));
     fprintf(out, "    }\n");
 }
 
@@ -565,12 +745,29 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu) {
         "    return sign ? 0x08u : 0x04u;\n"
         "}\n"
         "\n"
+        "#ifdef RECOMP_NO_FPRF\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_d(CPUState* ctx, f64 value) { (void)ctx; (void)value; }\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_s(CPUState* ctx, f32 value) { (void)ctx; (void)value; }\n"
+        "#elif defined(RECOMP_EAGER_FPRF)\n"
         "DOLRECOMP_FPRF_FI void dolrecomp_fprf_d(CPUState* ctx, f64 value) {\n"
+        "    PPC_FPRF_WRITE();\n"
         "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_d(value) << 12);\n"
         "}\n"
         "DOLRECOMP_FPRF_FI void dolrecomp_fprf_s(CPUState* ctx, f32 value) {\n"
+        "    PPC_FPRF_WRITE();\n"
         "    ctx->fpscr = (ctx->fpscr & ~(0x1Fu << 12)) | (dolrecomp_classify_s(value) << 12);\n"
         "}\n"
+        "#else\n"
+        "/* Lazy: remember the result, classify only when FPSCR can be seen. */\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_d(CPUState* ctx, f64 value) {\n"
+        "    PPC_FPRF_WRITE(); (void)ctx;\n"
+        "    g_fprf_value = value; g_fprf_kind = 2u;\n"
+        "}\n"
+        "DOLRECOMP_FPRF_FI void dolrecomp_fprf_s(CPUState* ctx, f32 value) {\n"
+        "    PPC_FPRF_WRITE(); (void)ctx;\n"
+        "    g_fprf_value = (f64)value; g_fprf_kind = 1u;\n"
+        "}\n"
+        "#endif\n"
         "\n"
         ,
         emit_cpu_label(cpu),
@@ -618,7 +815,10 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 res = (u64)(u32)(s32)(%d) + (u64)(~ctx->gpr[%u]) + 1u;\n",
                 (int)inst->simm, inst->rA);
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(res >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         fprintf(out, "    }\n");
         break;
 
@@ -639,7 +839,10 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 b = (u32)(s32)(%d);\n", (int)inst->simm);
         fprintf(out, "        u64 res = a + b;\n");
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(res >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->op == PPC_OP_ADDIC_DOT) {
             emit_set_cr0_from_gpr(out, inst->rD);
         }
@@ -755,7 +958,10 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)a + (u64)b;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -765,13 +971,17 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_ADDE:
     case PPC_OP_ADDEO:
         fprintf(out, "    {\n");
+        fprintf(out, "        PPC_CA_READ();\n");
         fprintf(out, "        u32 carry = (ctx->xer >> 29) & 1u;\n");
         fprintf(out, "        u32 a = ctx->gpr[%u];\n", inst->rA);
         fprintf(out, "        u32 b = ctx->gpr[%u];\n", inst->rB);
         fprintf(out, "        u64 wide = (u64)a + (u64)b + carry;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -782,10 +992,14 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_ADDMEO:
         fprintf(out, "    {\n");
         fprintf(out, "        u32 input = ctx->gpr[%u];\n", inst->rA);
+        fprintf(out, "        PPC_CA_READ();\n");
         fprintf(out, "        u32 carry = (ctx->xer >> 29) & 1u;\n");
         fprintf(out, "        u64 res = (u64)input + 0xFFFFFFFFull + carry;\n");
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | ((res >> 32) ? 0x20000000u : 0u);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(input, 0xFFFFFFFFu, (u32)res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -796,10 +1010,14 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_ADDZEO:
         fprintf(out, "    {\n");
         fprintf(out, "        u32 a = ctx->gpr[%u];\n", inst->rA);
+        fprintf(out, "        PPC_CA_READ();\n");
         fprintf(out, "        u64 wide = (u64)a + ((ctx->xer >> 29) & 1u);\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, 0u, res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -827,7 +1045,10 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)b + (u64)a + 1u;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -839,11 +1060,15 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "    {\n");
         fprintf(out, "        u32 a = ~ctx->gpr[%u];\n", inst->rA);
         fprintf(out, "        u32 b = ctx->gpr[%u];\n", inst->rB);
+        fprintf(out, "        PPC_CA_READ();\n");
         fprintf(out, "        u32 carry = (ctx->xer >> 29) & 1u;\n");
         fprintf(out, "        u64 wide = (u64)a + (u64)b + carry;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -854,10 +1079,14 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_SUBFMEO:
         fprintf(out, "    {\n");
         fprintf(out, "        u32 input = ~ctx->gpr[%u];\n", inst->rA);
+        fprintf(out, "        PPC_CA_READ();\n");
         fprintf(out, "        u32 carry = (ctx->xer >> 29) & 1u;\n");
         fprintf(out, "        u64 res = (u64)input + 0xFFFFFFFFull + carry;\n");
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | ((res >> 32) ? 0x20000000u : 0u);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(input, 0xFFFFFFFFu, (u32)res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -868,10 +1097,14 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_SUBFZEO:
         fprintf(out, "    {\n");
         fprintf(out, "        u32 a = ~ctx->gpr[%u];\n", inst->rA);
+        fprintf(out, "        PPC_CA_READ();\n");
         fprintf(out, "        u64 wide = (u64)a + ((ctx->xer >> 29) & 1u);\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, 0u, res));\n");
         emit_record_if_needed(out, inst, inst->rD);
@@ -1036,7 +1269,10 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "            ctx->gpr[%u] = (u32)((s32)value >> sh);\n", inst->rA);
         fprintf(out, "            ca = (value & 0x80000000u) && ((value << (32u - sh)) != 0);\n");
         fprintf(out, "        }\n");
+        fprintf(out, "#ifndef RECOMP_NO_CA\n");
         fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (ca ? 0x20000000u : 0u);\n");
+        fprintf(out, "#endif\n");
+        fprintf(out, "        PPC_CA_WRITE();\n");
         emit_record_if_needed(out, inst, inst->rA);
         fprintf(out, "    }\n");
         break;
@@ -1082,24 +1318,28 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         // so a later psq_st reads the correct second lane (fixes warped geometry).
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] + ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSUBS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] - ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FMULS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] * ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rC);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FDIVS:
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)(ctx->fpr[%u] / ctx->fpr[%u]);\n",
                 inst->rD, inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
@@ -1128,24 +1368,28 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_FADD:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] + ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FSUB:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] - ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FMUL:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] * ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rC);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
     case PPC_OP_FDIV:
         fprintf(out, "    ctx->fpr[%u] = ctx->fpr[%u] / ctx->fpr[%u];\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_d(ctx, ctx->fpr[%u]);\n", inst->rD);
         break;
 
@@ -1201,6 +1445,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         // frsp broadcasts to both lanes too (Dolphin: ps[FD].Fill(rounded)).
         fprintf(out, "    ctx->fpr[%u] = ctx->ps1[%u] = (f64)(f32)ctx->fpr[%u];\n",
                 inst->rD, inst->rD, inst->rB);
+        fprintf(out, "    PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "    dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         break;
 
@@ -1217,6 +1462,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_MTFSB0:
     case PPC_OP_MTFSB1:
         fprintf(out, "    {\n");
+        /* Only PPC bits 15-19 land in FPRF (u32 bits 12-16). rD is known here,
+         * so drop the pending classification for exactly those and leave it
+         * alone for every other bit. */
+        if (inst->rD >= 15u && inst->rD <= 19u)
+            fprintf(out, "        ppc_fprf_drop();\n");
         fprintf(out, "        u32 mask = 0x80000000u >> %u;\n", inst->rD);
         if (inst->op == PPC_OP_MTFSB0) {
             fprintf(out, "        if (%u != 1 && %u != 2) ctx->fpscr &= ~mask;\n",
@@ -1232,6 +1482,9 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         break;
 
     case PPC_OP_MFFS:
+        fprintf(out, "    PPC_FPRF_READ();\n");
+        fprintf(out, "    ppc_fprf_flush(ctx);\n");
+        fprintf(out, "    PPC_FPRF_TRACE_MFFS(ctx);\n");
         fprintf(out, "    ctx->fpr[%u] = dolrecomp_f64_from_bits(0xFFF8000000000000ull | ctx->fpscr);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
@@ -1240,16 +1493,20 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         u32 shift = cr_field_shift(inst->crfS);
         u32 dst_shift = cr_field_shift(inst->crfD);
         fprintf(out, "    {\n");
+        fprintf(out, "        PPC_FPRF_READ();\n");
+        fprintf(out, "        ppc_fprf_flush(ctx);\n");
         fprintf(out, "        u32 field = (ctx->fpscr >> %u) & 0xFu;\n", shift);
         fprintf(out, "        ctx->fpscr &= ~((0xFu << %u) & 0x83F80700u);\n", shift);
         fprintf(out, "        ppc_fpscr_updated(ctx);\n");
         fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (field << %u);\n", dst_shift, dst_shift);
+        fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)inst->crfD);
         fprintf(out, "    }\n");
         break;
     }
 
     case PPC_OP_MTFSFI: {
         u32 shift = cr_field_shift(inst->crfD);
+        fprintf(out, "    ppc_fprf_drop();\n");
         fprintf(out, "    ctx->fpscr = (ctx->fpscr & ~(0xFu << %u)) | (0x%Xu << %u);\n",
                 shift, inst->imm, shift);
         fprintf(out, "    ppc_fpscr_updated(ctx);\n");
@@ -1262,6 +1519,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u32 mask = 0;\n");
         fprintf(out, "        for (u32 i = 0; i < 8; i++) if (0x%02Xu & (1u << i)) mask |= 0xFu << (i * 4);\n", inst->fm);
         fprintf(out, "        u32 source = (u32)dolrecomp_f64_to_bits(ctx->fpr[%u]);\n", inst->rB);
+        fprintf(out, "        ppc_fprf_drop();\n");
         fprintf(out, "        ctx->fpscr = (ctx->fpscr & ~mask) | (source & mask);\n");
         fprintf(out, "        ppc_fpscr_updated(ctx);\n");
         if (inst->rc) emit_set_cr1_from_fpscr(out);
@@ -1274,6 +1532,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
@@ -1285,6 +1544,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] - (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
@@ -1296,6 +1556,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rC);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rC);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
@@ -1307,6 +1568,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rD, inst->rA, inst->rB);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round((f32)ctx->ps1[%u] / (f32)ctx->ps1[%u]);\n",
                 inst->rD, inst->rA, inst->rB);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
@@ -1346,6 +1608,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         }
         fprintf(out, "        ctx->fpr[%u] = dolrecomp_ps_round(ps0);\n", inst->rD);
         fprintf(out, "        ctx->ps1[%u] = dolrecomp_ps_round(ps1);\n", inst->rD);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         fprintf(out, "    }\n");
@@ -1390,6 +1653,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
                 inst->rA, inst->rB);
         fprintf(out, "      f64 d1 = dolrecomp_ps_round(ctx->ps1[%u]);\n", inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
@@ -1399,6 +1663,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->fpr[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
@@ -1409,6 +1674,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->fpr[%u]);\n",
                 inst->rA, inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
@@ -1419,6 +1685,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
@@ -1429,6 +1696,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->fpr[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
@@ -1439,6 +1707,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "      f64 d1 = dolrecomp_ps_round((f32)ctx->ps1[%u] * (f32)ctx->ps1[%u] + (f32)ctx->ps1[%u]);\n",
                 inst->rA, inst->rC, inst->rB);
         fprintf(out, "      ctx->fpr[%u] = d0; ctx->ps1[%u] = d1; }\n", inst->rD, inst->rD);
+        fprintf(out, "        PPC_FPRF_TAG(0x%08Xu);\n", inst->address);
         fprintf(out, "        dolrecomp_fprf_s(ctx, (f32)ctx->fpr[%u]);\n", inst->rD);
         if (inst->rc) emit_set_cr1_from_fpscr(out);
         break;
@@ -1490,6 +1759,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        else                     cr_bits = 0x1u;\n");
         fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (cr_bits << %u);\n",
                 cr_field_shift(inst->crfD), cr_field_shift(inst->crfD));
+        fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)inst->crfD);
         fprintf(out, "    }\n");
         break;
 
@@ -1656,6 +1926,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        ctx->reserve_valid = false;\n");
         fprintf(out, "        if (success) mem_write32(ctx, ea, ctx->gpr[%u]);\n", inst->rS);
         fprintf(out, "        ctx->cr = (ctx->cr & 0x0FFFFFFFu) | ((success ? 2u : 0u) << 28) | ((ctx->xer >> 3) & 0x10000000u);\n");
+        fprintf(out, "        PPC_CR_WRITE(0);\n");
         fprintf(out, "    }\n");
         break;
 
@@ -1786,9 +2057,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         u32 dst_shift = cr_field_shift(inst->crfD);
         u32 src_shift = cr_field_shift(inst->crfS);
         fprintf(out, "    {\n");
+        fprintf(out, "        PPC_CR_READ(%uu);\n", 1u << inst->crfS);
         fprintf(out, "        u32 bits = (ctx->cr >> %u) & 0xFu;\n", src_shift);
         fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (bits << %u);\n",
                 dst_shift, dst_shift);
+        fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)inst->crfD);
         fprintf(out, "    }\n");
         break;
     }
@@ -1796,15 +2069,18 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     case PPC_OP_MCRXR: {
         u32 dst_shift = cr_field_shift(inst->crfD);
         fprintf(out, "    {\n");
+        fprintf(out, "        PPC_CA_READ();\n");
         fprintf(out, "        u32 bits = (ctx->xer >> 28) & 0xFu;\n");
         fprintf(out, "        ctx->cr = (ctx->cr & ~(0xFu << %u)) | (bits << %u);\n",
                 dst_shift, dst_shift);
+        fprintf(out, "        PPC_CR_WRITE(%u);\n", (u32)inst->crfD);
         fprintf(out, "        ctx->xer &= ~0xE0000000u;\n");
         fprintf(out, "    }\n");
         break;
     }
 
     case PPC_OP_MFCR:
+        fprintf(out, "    PPC_CR_READ(0xFFu);\n");
         fprintf(out, "    ctx->gpr[%u] = ctx->cr;\n", inst->rD);
         break;
 
@@ -1817,6 +2093,9 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         if (mask) {
             fprintf(out, "    ctx->cr = (ctx->cr & ~0x%08Xu) | (ctx->gpr[%u] & 0x%08Xu);\n",
                     mask, inst->rS, mask);
+            for (u32 crf = 0; crf < 8; crf++)
+                if (inst->crm & (0x80u >> crf))
+                    fprintf(out, "    PPC_CR_WRITE(%u);\n", crf);
         } else {
             fprintf(out, "    // mtcrf mask selects no CR fields\n");
         }
@@ -1857,7 +2136,10 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
 
     case PPC_OP_MFSPR:
         switch (inst->spr) {
-        case 1: fprintf(out, "    ctx->gpr[%u] = ctx->xer;\n", inst->rD); break;
+        case 1:
+            fprintf(out, "    PPC_CA_READ();\n");
+            fprintf(out, "    ctx->gpr[%u] = ctx->xer;\n", inst->rD);
+            break;
         case 8: fprintf(out, "    ctx->gpr[%u] = ctx->lr;\n", inst->rD); break;
         case 9: fprintf(out, "    ctx->gpr[%u] = ctx->ctr;\n", inst->rD); break;
         case 26: fprintf(out, "    ctx->gpr[%u] = ctx->srr0;\n", inst->rD); break;
@@ -2011,6 +2293,137 @@ static bool inst_ends_block(const PPCInst* inst) {
     }
 }
 
+/* ---- XER[CA] liveness ---------------------------------------------------
+ *
+ * XER[CA] is written 1.255 G times per gameplay run and read 20.2 M -- 98.4%
+ * of the writes are dead. Unlike FPRF it cannot simply be stubbed out (a
+ * RECOMP_NO_CA build produces zero frames: some early multi-word arithmetic
+ * loop depends on the carry to terminate), and unlike FPRF it cannot be made
+ * lazy for free either, because six instructions consume it as an INPUT. So
+ * the only way to skip the computation is to prove, per site, that nothing
+ * reads the value before it is overwritten.
+ *
+ * This is a backward dataflow over one function's blocks, and it is
+ * deliberately SOUND rather than aggressive: any point where control leaves
+ * the function -- a call, a return, an indirect branch, a non-local branch, a
+ * fallback to the interpreter, sc/rfi -- is treated as a reader, because the
+ * code on the other side is not being analysed. Interprocedural propagation
+ * would capture more, but a wrong answer here is silent guest-state
+ * corruption, and the measurement below decides whether that is worth it.
+ *
+ * MEASURE THE CAPTURE RATE BEFORE WIRING ANY ELISION. The 98.4%-dead figure
+ * is DYNAMIC; what this can prove STATICALLY under the escape rule is a
+ * different and probably much smaller number, and if it is small the whole
+ * idea is dead for ~1% of headroom.
+ */
+static bool inst_defs_ca(const PPCInst* inst) {
+    switch (inst->op) {
+    case PPC_OP_SUBFIC:
+    case PPC_OP_ADDIC:   case PPC_OP_ADDIC_DOT:
+    case PPC_OP_ADDC:    case PPC_OP_ADDCO:
+    case PPC_OP_ADDE:    case PPC_OP_ADDEO:
+    case PPC_OP_ADDME:   case PPC_OP_ADDMEO:
+    case PPC_OP_ADDZE:   case PPC_OP_ADDZEO:
+    case PPC_OP_SUBFC:   case PPC_OP_SUBFCO:
+    case PPC_OP_SUBFE:   case PPC_OP_SUBFEO:
+    case PPC_OP_SUBFME:  case PPC_OP_SUBFMEO:
+    case PPC_OP_SUBFZE:  case PPC_OP_SUBFZEO:
+    case PPC_OP_SRAW:    case PPC_OP_SRAWI:
+        return true;
+    case PPC_OP_MTSPR:
+        return inst->spr == 1u;      /* mtxer rewrites CA wholesale */
+    default:
+        return false;
+    }
+}
+
+static bool inst_uses_ca(const PPCInst* inst) {
+    switch (inst->op) {
+    case PPC_OP_ADDE:    case PPC_OP_ADDEO:
+    case PPC_OP_ADDME:   case PPC_OP_ADDMEO:
+    case PPC_OP_ADDZE:   case PPC_OP_ADDZEO:
+    case PPC_OP_SUBFE:   case PPC_OP_SUBFEO:
+    case PPC_OP_SUBFME:  case PPC_OP_SUBFMEO:
+    case PPC_OP_SUBFZE:  case PPC_OP_SUBFZEO:
+    case PPC_OP_MCRXR:
+        return true;
+    case PPC_OP_MFSPR:
+        return inst->spr == 1u;      /* mfxer exposes CA to the guest */
+    default:
+        return false;
+    }
+}
+
+/* Does control leave the analysed function here? Then CA must be assumed read. */
+static bool ca_escapes(const PPCInst* inst, u32 func_addr, u32 func_end) {
+    if (inst_routes_to_fallback(inst))
+        return true;
+    switch (inst->op) {
+    case PPC_OP_SC:
+    case PPC_OP_RFI:
+    case PPC_OP_BCLR:
+    case PPC_OP_BCCTR:
+        return true;
+    case PPC_OP_B:
+    case PPC_OP_BC:
+        if (inst->lk)
+            return true;             /* a call: the callee may read CA */
+        return !branch_target_is_local(func_addr, func_end, inst->branch_target);
+    default:
+        return false;
+    }
+}
+
+#define CA_LIVE_IN(k) \
+    (inst_uses_ca(&insts[k]) ? 1u \
+     : (inst_defs_ca(&insts[k]) ? 0u : live_out[k]))
+
+/* live_out[i] = is CA live immediately AFTER instruction i? */
+static void compute_ca_live(const PPCInst* insts, u32 count, u32 func_addr,
+                            u8* live_out) {
+    u32 func_end = func_addr + count * 4u;
+    bool changed = true;
+    u32 guard = 0;
+
+    memset(live_out, 0, count);
+    /* Monotone (liveness only ever turns on), so this terminates; the guard is
+     * belt-and-braces against a malformed branch target making it oscillate. */
+    while (changed && guard++ < 256u) {
+        u32 k;
+        changed = false;
+        for (k = count; k-- > 0;) {
+            const PPCInst* inst = &insts[k];
+            u8 out;
+
+            if (inst->embedded_data) {
+                out = 1u;            /* not really code; assume the worst */
+            } else if (k + 1u >= count) {
+                out = 1u;            /* falls off the end into the unknown */
+            } else if (!inst_ends_block(inst)) {
+                out = (u8)CA_LIVE_IN(k + 1u);
+            } else if (ca_escapes(inst, func_addr, func_end)) {
+                out = 1u;
+            } else {
+                out = 0u;
+                if (inst->op == PPC_OP_B || inst->op == PPC_OP_BC) {
+                    u32 t = (inst->branch_target - func_addr) / 4u;
+                    if (t < count)
+                        out |= (u8)CA_LIVE_IN(t);
+                }
+                /* A conditional bc also falls through. bo bit pattern 1z1zz is
+                 * "branch always", which does not. */
+                if (inst->op == PPC_OP_BC && (inst->bo & 0x14u) != 0x14u)
+                    out |= (u8)CA_LIVE_IN(k + 1u);
+            }
+
+            if (out != live_out[k]) {
+                live_out[k] = out;
+                changed = true;
+            }
+        }
+    }
+}
+
 static u32 inst_cycle_cost(const PPCInst* inst) {
     if (inst->embedded_data || inst_routes_to_fallback(inst))
         return 0;
@@ -2065,13 +2478,14 @@ static u32 inst_cycle_cost(const PPCInst* inst) {
     }
 }
 
-void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
-    u32 i;
+/* Block leaders: the function entry, whatever follows a block-ending
+ * instruction, and every local branch target. Shared by the emitter and the
+ * entry-point collector so the switch and the table can never disagree -- if
+ * they did, the chassis would dispatch into a chunk at an address the switch
+ * has no case for. */
+static void compute_leaders(const PPCInst* insts, u32 count, u32 func_addr, u8* leader) {
     u32 func_end = func_addr + count * 4u;
-
-    u8* leader = (u8*)calloc(count ? count : 1u, sizeof(u8));
-    u32* block_cost = (u32*)calloc(count ? count : 1u, sizeof(u32));
-
+    u32 i;
     if (count)
         leader[0] = 1;
     for (i = 0; i < count; i++) {
@@ -2085,6 +2499,52 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
             leader[(inst->branch_target - func_addr) / 4u] = 1;
         }
     }
+}
+
+void emit_collect_entry_points(const PPCInst* insts, u32 count, u32 func_addr) {
+    u8* leader;
+    u32 i;
+    if (!s_leader_cases || count == 0)
+        return;
+    leader = (u8*)calloc(count, sizeof(u8));
+    if (!leader)
+        return;
+    compute_leaders(insts, count, func_addr, leader);
+    for (i = 0; i < count; i++) {
+        if (leader[i])
+            record_entry(insts[i].address);
+    }
+    free(leader);
+}
+
+void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
+    u32 i;
+    u32 func_end = func_addr + count * 4u;
+
+    u8* leader = (u8*)calloc(count ? count : 1u, sizeof(u8));
+    u32* block_cost = (u32*)calloc(count ? count : 1u, sizeof(u32));
+
+    compute_leaders(insts, count, func_addr, leader);
+
+    if (s_ca_liveness && count) {
+        u8* ca_live = (u8*)calloc(count, sizeof(u8));
+        if (ca_live) {
+            compute_ca_live(insts, count, func_addr, ca_live);
+            for (i = 0; i < count; i++) {
+                if (insts[i].embedded_data)
+                    continue;
+                if (inst_uses_ca(&insts[i]))
+                    atomic_fetch_add(&s_ca_uses, 1ull);
+                if (inst_defs_ca(&insts[i])) {
+                    atomic_fetch_add(&s_ca_defs, 1ull);
+                    if (!ca_live[i])
+                        atomic_fetch_add(&s_ca_dead, 1ull);
+                }
+            }
+            free(ca_live);
+        }
+    }
+
     /* Per-instruction cost of the REST of its block, for the exception refund.
      * Walked with exactly the same block bounds the charge uses, so the refund
      * can never exceed what was charged. */
@@ -2112,6 +2572,8 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
     fprintf(out, "void func_%08X(CPUState* ctx) {\n", func_addr);
     fprintf(out, "    switch (ctx->pc) {\n");
     for (i = 0; i < count; i++) {
+        if (s_leader_cases && !leader[i])
+            continue;
         fprintf(out, "    case 0x%08Xu: goto label_%08X;\n",
                 insts[i].address, insts[i].address);
     }

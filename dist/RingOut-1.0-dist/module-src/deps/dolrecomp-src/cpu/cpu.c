@@ -7,11 +7,7 @@
 #include <string.h>
 #include <math.h>
 
-#if defined(_MSC_VER)
-#include <intrin.h>
-#else
 #include <stdatomic.h>
-#endif
 
 // glibc 2.38 added a new symbol version for fmod, and the linker binds whatever
 // the BUILD host has. That silently sets this module's glibc floor to 2.38 on
@@ -338,6 +334,14 @@ void ppc_program_exception(CPUState* cpu, u32 cause, u32 cia) {
     cpu->program_exception |= cause;
     ppc_take_exception(cpu, PPC_EXC_PROGRAM, PPC_VECTOR_PROGRAM, cia, cause);
 }
+
+/* Depth of the generated code's native call chain. Cross-chunk direct calls
+   turn guest recursion into host recursion, and the chunk headers declare this
+   extern so all ~180 chunk translation units share one counter -- as a static
+   in the header each would get its own and the guard would bound nothing.
+   It lives here because the C backend compiles only chunk source files, so generated.c
+   is not linked and cannot hold the definition. */
+unsigned dolrecomp_call_depth = 0;
 
 /* ppc_fp_available is now a static inline fast path in cpu.h. */
 
@@ -1231,15 +1235,7 @@ bool ppc_fma(CPUState* cpu, f64 a, f64 c, f64 b, bool single,
 }
 
 void ppc_memory_fence(void) {
-#if defined(_MSC_VER)
-    _ReadWriteBarrier();
-#if defined(_M_IX86) || defined(_M_X64)
-    _mm_mfence();
-#endif
-    _ReadWriteBarrier();
-#else
     atomic_thread_fence(memory_order_seq_cst);
-#endif
 }
 
 static f64 round_nearest_even(f64 value) {

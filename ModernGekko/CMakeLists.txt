@@ -17,12 +17,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/ringout)
 endif()
 
-if(WIN32)
-    set(MODERNGEKKO_DYNAMIC_MODULES_DEFAULT ON)
-else()
-    check_include_file_cxx(dlfcn.h MODERNGEKKO_HAS_DLFCN)
-    set(MODERNGEKKO_DYNAMIC_MODULES_DEFAULT ${MODERNGEKKO_HAS_DLFCN})
-endif()
+check_include_file_cxx(dlfcn.h MODERNGEKKO_HAS_DLFCN)
+set(MODERNGEKKO_DYNAMIC_MODULES_DEFAULT ${MODERNGEKKO_HAS_DLFCN})
 option(MODERNGEKKO_ENABLE_DYNAMIC_MODULES
        "Load game modules through the host dynamic-library API"
        ${MODERNGEKKO_DYNAMIC_MODULES_DEFAULT})
@@ -78,7 +74,7 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     set(ENCODE_FRAMEDUMPS OFF CACHE BOOL "" FORCE)
     set(ENABLE_LLVM OFF CACHE BOOL "" FORCE)
     # Cubeb is Dolphin's only audio backend on macOS
-    if(APPLE OR WIN32)
+    if(APPLE)
         set(ENABLE_CUBEB ON CACHE BOOL "" FORCE)
     else()
         set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
@@ -131,39 +127,6 @@ if(BUILD_TESTING)
     add_subdirectory(vendor/dolphin/DolRecomp)
 else()
     add_subdirectory(vendor/dolphin/DolRecomp EXCLUDE_FROM_ALL)
-endif()
-
-# Dolphin's headers assume the Windows settings Dolphin's own build applies, and
-# targets declared here do not inherit them: Dolphin sets them in
-# vendor/dolphin/Source/CMakeLists.txt, a CHILD directory. Each missing one
-# surfaces as an error deep inside a Dolphin header rather than in our code:
-#   /Zc:preprocessor  HookableEvent.h uses __VA_OPT__, which MSVC's legacy
-#                     preprocessor rejects outright.
-#   UNICODE/_UNICODE  StringUtil.h's TStr helpers only have a valid definition
-#                     in the _UNICODE branch; the #else returns std::string
-#                     from a std::string_view, which does not compile.
-#   NOMINMAX          <windows.h> defines min/max as macros, breaking every
-#                     std::numeric_limits<T>::max() in BitField.h, SpanUtils.h.
-#
-# ** Placement is load-bearing. ** These are directory-scoped, so they apply
-# only to targets created AFTER this point -- i.e. ours, and deliberately NOT
-# the vendored trees added above. Dolphin confines them to Source/ for the same
-# reason: applied tree-wide, WIN32_LEAN_AND_MEAN excludes the headers that
-# declare PROPERTYKEY and Externals/hidapi stops compiling.
-if(WIN32)
-    add_compile_definitions(
-        NOMINMAX
-        UNICODE
-        _UNICODE
-        WIN32_LEAN_AND_MEAN
-        _SCL_SECURE_NO_WARNINGS
-        _CRT_SECURE_NO_WARNINGS
-        _CRT_SECURE_NO_DEPRECATE
-        _CRT_NONSTDC_NO_WARNINGS
-        _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
-endif()
-if(MSVC)
-    add_compile_options(/Zc:preprocessor)
 endif()
 
 add_library(moderngekko_abi INTERFACE)
@@ -233,10 +196,6 @@ set_target_properties(moderngekko_dolphin_video PROPERTIES
     CXX_EXTENSIONS OFF
 )
 target_compile_features(moderngekko_dolphin_video PUBLIC cxx_std_23)
-if(MSVC)
-    target_compile_options(moderngekko_dolphin_video PUBLIC /Zc:preprocessor)
-    target_compile_definitions(moderngekko_dolphin_video PUBLIC UNICODE _UNICODE)
-endif()
 target_include_directories(moderngekko_dolphin_video
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
            "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin_legacy"
@@ -257,11 +216,6 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         vendor/dolphin/Source/Core/DolphinNoGUI/Platform.cpp
         vendor/dolphin/Source/Core/DolphinNoGUI/PlatformHeadless.cpp
     )
-    if(WIN32)
-        target_sources(moderngekko PRIVATE
-            vendor/dolphin/Source/Core/DolphinNoGUI/PlatformWin32.cpp)
-        target_link_libraries(moderngekko PRIVATE dwmapi)
-    endif()
     if(APPLE)
         # Dolphin's windowed backend for macOS
         target_sources(moderngekko PRIVATE
@@ -480,10 +434,7 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     # Dolphin static libraries still require the Host_* callbacks implemented
     # in the runtime object. Keep that object from being discarded by the
     # static linker.
-    if(MINGW)
-        target_link_libraries(moderngekko-launcher PRIVATE
-            ModernGekko::Runtime discio imgui ${_moderngekko_sdl_target})
-    elseif(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
         target_link_libraries(moderngekko-launcher PRIVATE
             "$<LINK_LIBRARY:WHOLE_ARCHIVE,moderngekko>"
             discio imgui ${_moderngekko_sdl_target})
@@ -556,10 +507,7 @@ if(BUILD_TESTING)
         else()
             target_compile_definitions(moderngekko_netplay_protocol_test PRIVATE _M_GENERIC=1)
         endif()
-        if(MINGW)
-            target_link_libraries(moderngekko_netplay_protocol_test PRIVATE
-                "-Wl,--whole-archive" moderngekko "-Wl,--no-whole-archive" core uicommon)
-        elseif(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
             target_link_libraries(moderngekko_netplay_protocol_test PRIVATE
                 "$<LINK_LIBRARY:WHOLE_ARCHIVE,moderngekko>" core uicommon)
         elseif(UNIX AND NOT APPLE)
