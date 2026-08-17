@@ -690,7 +690,15 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu) {
         "    return bits;\n"
         "}\n"
         "\n"
+        /* PPC_PS_LANE expands to nothing unless -DRECOMP_CR_STATS, so the
+           shipped generation is unchanged. Hooked HERE rather than in each
+           ps_* case because every paired-single lane operation routes through
+           this round and nothing else does -- the scalar single forms
+           (fadds/fsubs/...) cast inline and never call it. Counts LANES, so
+           halve it for operations; includes ps_merge*, which is a shuffle
+           rather than arithmetic. */
         "static inline f64 dolrecomp_ps_round(f64 value) {\n"
+        "    PPC_PS_LANE();\n"
         "    return (f64)(f32)value;\n"
         "}\n"
         "\n"

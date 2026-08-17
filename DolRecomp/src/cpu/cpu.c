@@ -1363,7 +1363,18 @@ void ppc_ca_note_read(void) {
  * traffic. This counts it on actual gameplay.
  */
 static unsigned long long g_fprf_writes, g_fprf_reads, g_fprf_dead;
+
+/* Paired-single LANE operations. Hooked in the emitted dolrecomp_ps_round, so
+   one increment per lane, two per two-lane op. The question it answers is
+   whether interleaving ps0/ps1 and emitting packed SSE is worth a CPU ABI
+   break -- which needs the dynamic volume, since static ps_* site counts have
+   mispredicted execution in this codebase every time. */
+static unsigned long long g_ps_lanes;
 static bool g_fprf_pending;
+
+void ppc_ps_note_lane(void) {
+    g_ps_lanes++;
+}
 
 void ppc_fprf_note_write(void) {
     if (g_fprf_pending) g_fprf_dead++;
@@ -1396,5 +1407,7 @@ static void ppc_cr_report(void) {
     fprintf(stderr, "[ca-stats] FPRF   %12llu  %12llu  %12llu  %5.1f%%\n",
             g_fprf_writes, g_fprf_reads, g_fprf_dead,
             g_fprf_writes ? 100.0 * (double)g_fprf_dead / (double)g_fprf_writes : 0.0);
+    fprintf(stderr, "[ps-stats] ps lanes %12llu   ops(approx) %12llu\n",
+            g_ps_lanes, g_ps_lanes / 2ull);
 }
 #endif /* RECOMP_CR_STATS */
