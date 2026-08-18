@@ -637,7 +637,13 @@ void StaticRecompCore::Run()
         ++m_bursts;
         do
         {
-          const bool do_ls = m_lockstep_verifier->ShouldCheck(m_guest.pc);
+          // IsEnabled() is inline and ShouldCheck() is not, so calling the
+          // latter unconditionally puts an out-of-line call on the dispatch
+          // path of every normal run to answer "no". Measured at 0.23% of a
+          // Deck profile doing nothing. ShouldCheck's own first test is this
+          // same flag, so short-circuiting here is identical by construction.
+          const bool do_ls = m_lockstep_verifier->IsEnabled() &&
+                             m_lockstep_verifier->ShouldCheck(m_guest.pc);
           if (do_ls)
           {
             m_lockstep_verifier->Prepare(m_guest);
