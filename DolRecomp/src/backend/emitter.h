@@ -51,6 +51,13 @@ void emit_set_leader_cases(bool enable);
    the number that decides whether eliding them is worth the risk. Emitted code
    is identical either way. */
 void emit_set_ca_liveness(bool enable);
+
+/* Elide XER[CA] writes the liveness pass proves dead. SEPARATE from
+   --ca-liveness, which only reports and must leave codegen alone. Off by
+   default: 98.4% of CA writes are dead, but CA READS are load-bearing (a
+   RECOMP_NO_CA build produces zero frames), so a wrong verdict here is a silent
+   divergence rather than a crash. Gate any build on the frame hashes. */
+void emit_set_ca_elide(bool enable);
 void emit_report_ca_stats(void);
 
 /* Writes the entry-point sidecar. No-op (and writes nothing) unless the entry

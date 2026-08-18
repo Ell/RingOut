@@ -14,11 +14,36 @@ static void emit_exc_check_return(FILE* out, const char* indent);
  * compute_ca_live(). emit_function() runs on the -jN workers, so the counters
  * accumulate atomically rather than racing like the entry-point list would. */
 static bool s_ca_liveness = false;
+/* Opt-in ELISION, deliberately separate from --ca-liveness: that flag's --help
+   promises codegen is unchanged, and test_emitter_flags asserts it.
+ *
+ * MEASURED 2026-08-17 AND IT IS UNSOUND. DO NOT SHIP A MODULE BUILT WITH THIS.
+ * It elides 1117 of 3769 static sites (29%) and the resulting module DIVERGES:
+ * frame 465 of arcade-match.txt on the Deck, 4 frames of 4000, and only in the
+ * heap CRC -- OS globals and L1 match, so it is a real difference in game state,
+ * not a register artefact. It diverges and re-converges, which is the worst
+ * possible signature: no crash, nothing visibly wrong, and netplay peers desync.
+ *
+ * The likely hole is exceptions: ca_escapes() covers calls, returns, indirect
+ * branches, sc/rfi and non-local branches, but ANY load or store can fault into
+ * a handler that saves and restores XER, and that handler would see a stale CA.
+ * A sound analysis must treat those as escapes, which can only shrink the 29%.
+ *
+ * And the ceiling does not justify the work: the unsound module measured
+ * 0.4-0.7% faster on the Deck (123.61s -> 122.80s over 10000 fixed frames), so
+ * a CORRECT version is worth less than that. Kept behind a flag because the
+ * wiring is done and the analysis is here if anyone fixes it. */
+static bool s_ca_elide = false;
+/* Verdict for the site currently being emitted. _Thread_local because
+   emit_function() runs on the -jN workers -- a plain file-static would be a
+   data race across chunks, the trap record_entry() documents. */
+static _Thread_local int s_ca_dead_here = 0;
 static _Atomic unsigned long long s_ca_defs;
 static _Atomic unsigned long long s_ca_dead;
 static _Atomic unsigned long long s_ca_uses;
 
 void emit_set_ca_liveness(bool enable) { s_ca_liveness = enable; }
+void emit_set_ca_elide(bool enable) { s_ca_elide = enable; }
 
 void emit_report_ca_stats(void) {
     unsigned long long defs, dead, uses;
@@ -823,9 +848,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 res = (u64)(u32)(s32)(%d) + (u64)(~ctx->gpr[%u]) + 1u;\n",
                 (int)inst->simm, inst->rA);
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(res >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(res >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         fprintf(out, "    }\n");
         break;
@@ -847,9 +874,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 b = (u32)(s32)(%d);\n", (int)inst->simm);
         fprintf(out, "        u64 res = a + b;\n");
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(res >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(res >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->op == PPC_OP_ADDIC_DOT) {
             emit_set_cr0_from_gpr(out, inst->rD);
@@ -966,9 +995,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)a + (u64)b;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
@@ -986,9 +1017,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)a + (u64)b + carry;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
@@ -1004,9 +1037,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u32 carry = (ctx->xer >> 29) & 1u;\n");
         fprintf(out, "        u64 res = (u64)input + 0xFFFFFFFFull + carry;\n");
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | ((res >> 32) ? 0x20000000u : 0u);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | ((res >> 32) ? 0x20000000u : 0u);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(input, 0xFFFFFFFFu, (u32)res));\n");
@@ -1022,9 +1057,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)a + ((ctx->xer >> 29) & 1u);\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, 0u, res));\n");
@@ -1053,9 +1090,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)b + (u64)a + 1u;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
@@ -1073,9 +1112,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)a + (u64)b + carry;\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, b, res));\n");
@@ -1091,9 +1132,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u32 carry = (ctx->xer >> 29) & 1u;\n");
         fprintf(out, "        u64 res = (u64)input + 0xFFFFFFFFull + carry;\n");
         fprintf(out, "        ctx->gpr[%u] = (u32)res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | ((res >> 32) ? 0x20000000u : 0u);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | ((res >> 32) ? 0x20000000u : 0u);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(input, 0xFFFFFFFFu, (u32)res));\n");
@@ -1109,9 +1152,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "        u64 wide = (u64)a + ((ctx->xer >> 29) & 1u);\n");
         fprintf(out, "        u32 res = (u32)wide;\n");
         fprintf(out, "        ctx->gpr[%u] = res;\n", inst->rD);
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (((u32)(wide >> 32) & 1u) << 29);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         if (inst->oe)
             fprintf(out, "        ppc_set_xer_ov(ctx, ppc_add_overflowed(a, 0u, res));\n");
@@ -1277,9 +1322,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
         fprintf(out, "            ctx->gpr[%u] = (u32)((s32)value >> sh);\n", inst->rA);
         fprintf(out, "            ca = (value & 0x80000000u) && ((value << (32u - sh)) != 0);\n");
         fprintf(out, "        }\n");
-        fprintf(out, "#ifndef RECOMP_NO_CA\n");
-        fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (ca ? 0x20000000u : 0u);\n");
-        fprintf(out, "#endif\n");
+        if (!s_ca_dead_here) {
+            fprintf(out, "#ifndef RECOMP_NO_CA\n");
+            fprintf(out, "        ctx->xer = (ctx->xer & ~0x20000000u) | (ca ? 0x20000000u : 0u);\n");
+            fprintf(out, "#endif\n");
+        }
         fprintf(out, "        PPC_CA_WRITE();\n");
         emit_record_if_needed(out, inst, inst->rA);
         fprintf(out, "    }\n");
@@ -2246,6 +2293,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
 }
 
 void emit_instruction(FILE* out, const PPCInst* inst) {
+    s_ca_dead_here = 0;   /* no liveness context outside emit_function() */
     emit_instruction_with_range(out, inst, 0, (u32)-1);
 }
 
@@ -2534,11 +2582,12 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
 
     compute_leaders(insts, count, func_addr, leader);
 
-    if (s_ca_liveness && count) {
-        u8* ca_live = (u8*)calloc(count, sizeof(u8));
+    u8* ca_live = NULL;
+    if ((s_ca_liveness || s_ca_elide) && count) {
+        ca_live = (u8*)calloc(count, sizeof(u8));
         if (ca_live) {
             compute_ca_live(insts, count, func_addr, ca_live);
-            for (i = 0; i < count; i++) {
+            for (i = 0; s_ca_liveness && i < count; i++) {
                 if (insts[i].embedded_data)
                     continue;
                 if (inst_uses_ca(&insts[i]))
@@ -2549,7 +2598,6 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
                         atomic_fetch_add(&s_ca_dead, 1ull);
                 }
             }
-            free(ca_live);
         }
     }
 
@@ -2604,10 +2652,17 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
                 fprintf(out, "    ctx->downcount -= %u;\n", block_cost[i]);
         }
         s_block_suffix = suffix[i];
+        /* live_out[i] is "is CA live AFTER instruction i", so a defining
+           instruction whose CA is not live afterwards is writing a value
+           nothing reads. Only elide when asked: the analysis is conservative
+           but a wrong answer here is a silent divergence, not a crash. */
+        s_ca_dead_here = (s_ca_elide && ca_live && !ca_live[i]) ? 1 : 0;
         emit_instruction_with_range(out, &insts[i], func_addr, func_end);
     }
     s_block_suffix = 0;
+    s_ca_dead_here = 0;
 
+    free(ca_live);
     free(leader);
     free(block_cost);
     free(suffix);
