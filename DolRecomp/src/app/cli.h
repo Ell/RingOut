@@ -25,6 +25,7 @@ typedef struct {
     int chain_calls;
     int leader_cases;
     int ca_liveness;
+    int ca_elide;       // --ca-elide (changes codegen; off by default)
     int cpu_explicit;
     int rel_base_set;
     int setup_mode;
