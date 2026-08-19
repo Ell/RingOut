@@ -542,8 +542,34 @@ void StaticRecompCore::Run()
   // The recomp is single-thread-bound, so scheduler migration between cores
   // (cold caches, contention with the GPU/audio/host threads) costs real fps.
   // Pin this CPU-emulation thread to a dedicated core. STATICRECOMP_CPU_AFFINITY
-  // overrides the core (-1 disables). Default core 2 keeps it off core 0 (IRQs)
-  // and away from the GPU submission thread, leaving siblings free.
+  // overrides the core (-1 disables). Default core 2 keeps it off core 0 (IRQs).
+  //
+  // MEASURED ON THE DECK 2026-08-19 -- keep the pin, but do not trust the
+  // reasoning this comment used to give ("away from the GPU submission thread,
+  // leaving siblings free"). That assumes BLOCKED cpu numbering. The Deck is
+  // INTERLEAVED: cpu2's SMT sibling is cpu3, not cpu8, so the pin leaves the
+  // other half of its own physical core free rather than a whole core. The
+  // conclusion survives only because nothing meaningful lands there -- cpu3
+  // measured 3.5% busy in Desktop Mode, 4.8% in Game Mode.
+  //
+  // 12000 frames of arcade-match.txt, unthrottled, AB/BA order:
+  //   Game Mode  pinned 82.17 (n=4) vs unpinned 82.23 (n=4)  -> -0.07%
+  //   Desktop    pinned 80.39 (n=8) vs unpinned 80.31 (n=4)  -> +0.10%
+  // THE PIN IS WORTH NOTHING EITHER WAY. It is kept because it costs nothing
+  // and bounds the worst case, not because it was measured to help.
+  //
+  // Two earlier verdicts here were BOTH artifacts, which is why the sample is
+  // this large. "-0.96%, the pin hurts" came from running 3 arms per rep with
+  // the order reversed on even reps -- reversing a 3-element list leaves the
+  // MIDDLE fixed, so the unpinned arm sat in the fastest position every time.
+  // "+1.53%, the pin helps" came from the first two runs after a fresh session
+  // restart reading 82.59 twice; eight further runs never beat 81.97, and a
+  // 6-minute cooldown did not bring it back (53C -> 48C, nowhere near
+  // throttling). Run-to-run spread on this fixed workload is 4.1%, so any Deck
+  // A/B needs n>=8 per arm or it will manufacture effects like those two.
+  //
+  // Core 0 is ~0.9% slower than core 2 (4/4 reps, position-balanced) -- the one
+  // part of the original reasoning that held up, and the reason for the default.
 #ifdef __linux__
   {
     static bool s_pinned = false;
