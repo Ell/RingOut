@@ -242,6 +242,38 @@ if(MODULE_PGO_PROFILE AND CMAKE_C_COMPILER_ID MATCHES "Clang")
     set(CMAKE_REQUIRED_FLAGS "-fprofile-use=${MODULE_PGO_PROFILE}")
     check_c_source_compiles("int main(void){return 0;}" MODULE_PGO_USABLE)
     unset(CMAKE_REQUIRED_FLAGS)
+
+    # A profile can be structurally VALID and still say every block is cold.
+    # A collection run that never reached gameplay -- or was not headless when
+    # it needed to be -- writes a file that -fprofile-use accepts happily and
+    # that tells the optimiser nothing is hot. The result is a "PGO" build that
+    # is WORSE than an unprofiled one, and the only warnings that would say so
+    # (-Wprofile-instr-unprofiled) are suppressed below because unprofiled
+    # non-chunk code is expected here. So check the counts directly.
+    #
+    # Falls back to building WITH the profile if llvm-profdata is missing: the
+    # player's machine is not required to have LLVM's tools, and a missing tool
+    # is not evidence of a bad profile. Same philosophy as the lld and compiler
+    # probes -- degrade, never hard-fail a player's build.
+    if(MODULE_PGO_USABLE)
+      get_filename_component(_pgo_bindir "${CMAKE_C_COMPILER}" DIRECTORY)
+      find_program(MODULE_LLVM_PROFDATA NAMES llvm-profdata HINTS "${_pgo_bindir}")
+      if(MODULE_LLVM_PROFDATA)
+        execute_process(COMMAND "${MODULE_LLVM_PROFDATA}" show "${MODULE_PGO_PROFILE}"
+                        OUTPUT_VARIABLE _pgo_show ERROR_QUIET RESULT_VARIABLE _pgo_rc)
+        if(_pgo_rc EQUAL 0 AND _pgo_show MATCHES "Total count: ([0-9]+)")
+          if(CMAKE_MATCH_1 STREQUAL "0")
+            message(WARNING "module: PGO profile has a total count of ZERO -- the "
+                            "collection run recorded nothing. Building WITHOUT it, "
+                            "because a cold profile is worse than none.")
+            set(MODULE_PGO_USABLE OFF)
+          else()
+            message(STATUS "module: PGO profile total count ${CMAKE_MATCH_1}")
+          endif()
+        endif()
+      endif()
+    endif()
+
     if(MODULE_PGO_USABLE)
       # The warnings are expected, not a problem: the profile covers the chunks
       # and the runtime helpers, and anything else in the build is legitimately
