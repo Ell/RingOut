@@ -2467,7 +2467,9 @@ void PollMenuGamepad()
   };
 
   // Edge-triggered: a held button must not repeat, or one press would run the
-  // whole way down a list. Sized for the bindings plus Back and B.
+  // whole way down a list. Sized for the bindings plus B; Back is handled
+  // separately below because it needs a hold, not an edge, and so keeps its own
+  // state. The spare slot is left rather than renumbering B's index.
   static bool held[std::size(kBindings) + 2] = {};
   const auto pressed = [&](const char* name, bool* was_held) {
     const auto* const input = device->FindInput(name);
@@ -2477,11 +2479,59 @@ void PollMenuGamepad()
     return edge;
   };
 
-  if (pressed("Back", &held[std::size(kBindings)]))
+  // BACK OPENS ON A HOLD, NOT A TAP.
+  //
+  // View (the SDL "Back" input) was bound as a plain edge so Game Mode could
+  // reach this overlay without a keyboard. But opening PAUSES THE CORE, and on
+  // a handheld that button sits right under the thumb: sessions were ending
+  // mid-play with nobody meaning to touch it. Instrumenting the edge settled
+  // what was happening -- every occurrence logged `Back=1.00` from
+  // 'SDL/0/Steam Deck Controller', with no device churn -- so these were real
+  // presses, just unintended ones.
+  //
+  // Only the OPENING direction gets the friction. Opening by accident stops the
+  // game; closing by accident just resumes it, so a tap still dismisses.
   {
-    OnEscape();
-    return;
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kHoldToOpen = std::chrono::milliseconds(500);
+
+    const auto* const back = device->FindInput("Back");
+    const bool down = back != nullptr && back->GetState() > 0.5;
+
+    static bool was_down = false;
+    static bool consumed = false;   // this press has already done something
+    static Clock::time_point down_since{};
+
+    const bool press = down && !was_down;
+    if (press)
+    {
+      down_since = Clock::now();
+      consumed = false;
+    }
+    was_down = down;
+
+    if (IsOpen())
+    {
+      // Dismiss on the PRESS, not the release: waiting for release made closing
+      // feel laggy, which is the wrong trade for the direction that costs
+      // nothing. `consumed` is what stops the hold that OPENED the menu from
+      // closing it again -- that press is already spent, and only a NEW press
+      // can dismiss.
+      if (press && !consumed)
+      {
+        consumed = true;
+        OnEscape();
+        return;
+      }
+    }
+    else if (down && !consumed && Clock::now() - down_since >= kHoldToOpen)
+    {
+      consumed = true;   // one open per press, however long it is held
+      OnEscape();
+      return;
+    }
   }
+
   if (!IsOpen())
   {
     // Still sample the rest so a button held while opening is not seen as a
