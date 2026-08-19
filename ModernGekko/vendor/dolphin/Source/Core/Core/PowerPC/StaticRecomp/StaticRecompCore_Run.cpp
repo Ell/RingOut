@@ -542,8 +542,21 @@ void StaticRecompCore::Run()
   // The recomp is single-thread-bound, so scheduler migration between cores
   // (cold caches, contention with the GPU/audio/host threads) costs real fps.
   // Pin this CPU-emulation thread to a dedicated core. STATICRECOMP_CPU_AFFINITY
-  // overrides the core (-1 disables). Default core 2 keeps it off core 0 (IRQs)
-  // and away from the GPU submission thread, leaving siblings free.
+  // overrides the core (-1 disables). Default core 2 keeps it off core 0 (IRQs).
+  //
+  // MEASURED ON THE DECK 2026-08-19 -- keep the pin, but do not trust the
+  // reasoning this comment used to give ("away from the GPU submission thread,
+  // leaving siblings free"). That assumes BLOCKED cpu numbering. The Deck is
+  // INTERLEAVED: cpu2's SMT sibling is cpu3, not cpu8, so the pin leaves the
+  // other half of its own physical core free rather than a whole core. The
+  // conclusion survives only because nothing meaningful lands there -- cpu3
+  // measured 3.5% busy in Desktop Mode, 4.8% in Game Mode.
+  //
+  // 12000 frames of arcade-match.txt, unthrottled, n=4 per arm, AB/BA order:
+  //   Game Mode  pinned 82.17 vs unpinned 82.23  -> no effect
+  //   Desktop    pinned 81.54 vs unpinned 80.31  -> +1.5%, but sd 1.29 vs 0.23
+  // Core 0 is ~0.9% slower than core 2 (4/4 reps), which is the one part of the
+  // original reasoning that held up. Off-core-0 is why this default exists.
 #ifdef __linux__
   {
     static bool s_pinned = false;
