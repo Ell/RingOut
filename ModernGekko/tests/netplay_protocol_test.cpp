@@ -23,6 +23,11 @@
 // original for the checks that survived, so an old failure number still means
 // the same thing.
 
+// Needed again for `sf::Packet << MessageID`: the generic enum operator lives
+// here, and the pad-routing case below is the only thing that serialises a
+// message by hand. It was dropped when this test was ported off the fork's
+// netplay API and no sf:: remained.
+#include "Common/SFMLHelper.h"
 #include "Core/Boot/Boot.h"
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/NetPlay/NetPlayClient.h"
@@ -237,6 +242,60 @@ int main() {
   server->AdjustPadBufferSize(2);
   if (!WaitFor([&] { return first_ui.buffer == 2 && second_ui.buffer == 2; }))
     return 18;
+
+  // ---- input routing -------------------------------------------------------
+  //
+  // The gap left open in #13. The server relays MessageID::PadData only from
+  // the player who OWNS that port, and DISCONNECTS anyone sending for a port
+  // they do not:
+  //
+  //     if (!IsValidPadIndex(m_pad_map, map) || m_pad_map.at(map) != player.pid)
+  //         return 1;                       // NetPlayServer.cpp
+  //
+  // That guard is the whole reason a peer cannot inject input on someone else's
+  // controller, and nothing exercised it. It is also what made this test
+  // awkward to write: sending unmapped pad data does not fail politely, it
+  // drops the connection.
+  //
+  // The RECEIVED pad data is deliberately not asserted here. GetNetPads()
+  // returns false unless m_is_running is set, so observing the far side's
+  // buffer needs a booted core -- an integration test, not this. What is
+  // checked is the routing decision itself, which is the part that protects
+  // the port.
+  {
+    NetPlay::PadMappingArray pads{};   // 0 = unassigned
+    pads[0] = first->GetLocalPlayerId();
+    server->SetPadMapping(pads);
+    if (!WaitFor([&] { return first->GetPadMapping()[0] == first->GetLocalPlayerId(); }))
+      return 19;
+
+    const auto pad_packet = [](NetPlay::PadIndex map) {
+      sf::Packet p;
+      p << NetPlay::MessageID::PadData << map;
+      p << static_cast<u16>(0x0100);                     // button
+      p << u8(0) << u8(0) << u8(128) << u8(128)          // analogA/B, stickX/Y
+        << u8(128) << u8(128) << u8(0) << u8(0) << u8(1); // substick, triggers, isConnected
+      return p;
+    };
+
+    // The owner may send for its port, and must stay connected.
+    first->SendAsync(pad_packet(0));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    if (!first->IsConnected())
+      return 20;
+
+    // A peer that does NOT own port 0 must be dropped for claiming it. If this
+    // ever stops disconnecting, one client can drive another's character.
+    second->SendAsync(pad_packet(0));
+    // Observed through the OTHER peer's roster: the server drops the offender
+    // (OnData != 0 -> OnDisconnect), and that is what the rest of the lobby
+    // sees. The offender's own IsConnected() is a less reliable witness.
+    if (!WaitFor([&] { return first->GetPlayers().size() == 1; }))
+      return 21;
+    // ...and dropping the impostor must not take the legitimate peer with it.
+    if (!first->IsConnected())
+      return 22;
+  }
 
   second.reset();
   first.reset();
