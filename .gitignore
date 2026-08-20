@@ -68,6 +68,7 @@
 # reason as the container ones above.
 /build-dist-native/
 /build-dolrecomp-static/
+/build-dolrecomp/
 # root-level ccache/CMake cache written by those trees -- 700 MB+ and never
 # wanted. The per-project /*/.cache/ rules above do not reach the repo root.
 /.cache/
