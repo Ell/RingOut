@@ -38,6 +38,10 @@ struct Config
   u64 frames = 0;  // 0 = run until the game is stopped by hand
   bool active = false;
 
+  // Whether to actually hash. See OnFrame: the hash IS the cost of this
+  // harness, and a performance run wants the scripted route without it.
+  bool hash = true;
+
   // Whole-RAM snapshot at one frame. A hash says two runs differ; only a dump
   // says where, and an address is what turns a divergence into a subsystem.
   std::string dump_path;
@@ -160,6 +164,12 @@ Config& GetConfig()
     if (const char* const frames = std::getenv("RINGOUT_DETERMINISM_FRAMES"))
       result.frames = std::strtoull(frames, nullptr, 10);
 
+    // RINGOUT_DETERMINISM_NOHASH: keep the frame-keyed input and the frame
+    // counter, drop the per-frame hash. Turns this into a PERFORMANCE harness.
+    // Ignored when a dump or a watch is asked for, because both read guest RAM
+    // and rely on the same quiesce the hash does.
+    result.hash = std::getenv("RINGOUT_DETERMINISM_NOHASH") == nullptr;
+
     if (const char* const dump = std::getenv("RINGOUT_DETERMINISM_DUMP"))
     {
       result.dump_path = dump;
@@ -213,6 +223,18 @@ Config& GetConfig()
         result.rb_len = std::strtoull(len, nullptr, 10);
       result.rb_on = result.rb_len != 0;
     }
+
+    // A dump or a watch reads guest RAM and needs the same GPU quiesce the hash
+    // does, so NOHASH is refused rather than silently making them racy.
+    if (!result.hash && (!result.dump_path.empty() || result.watch))
+    {
+      std::fprintf(stderr, "[determinism] NOHASH ignored: a dump or a watch "
+                           "needs the per-frame quiesce\n");
+      result.hash = true;
+    }
+    if (!result.hash)
+      std::fprintf(stderr, "[determinism] NOHASH: input and frame counter only, "
+                           "no hashing -- this run cannot verify determinism\n");
 
     result.active = true;
     return result;
@@ -344,12 +366,26 @@ void OnFrame(Core::System& system)
   // the CPU thread rather than waiting on a race, so the quiesce is itself
   // reproducible. It perturbs timing, but identically in every run, which is all
   // a comparison between two runs requires.
-  system.GetFifo().SyncGPUForRegisterAccess();
-
   auto& memory = system.GetMemory();
   const u8* const ram = memory.GetRAM();
   if (ram == nullptr)
     return;
+
+  // THE QUIESCE AND THE HASH ARE THE ENTIRE COST OF THIS HARNESS: a CRC32 over
+  // all 24 MB of MEM1 every frame -- ~1.7 GB/s at 72 fps -- plus a full GPU
+  // sync. Correct when the question is "do two runs agree". Ruinous when the
+  // question is "how fast is this", because it does not merely add CPU work, it
+  // SERIALISES the CPU and GPU threads that dual-core exists to overlap, so the
+  // measured shape is the harness's and not the game's.
+  //
+  // With NOHASH the line is still written, with zeros: the frame counter is how
+  // a run is located against the route's landmarks, and it costs nothing.
+  const u32 ram_size = memory.GetRamSizeReal();
+  u32 low_hash = 0;
+  u32 rest_hash = 0;
+  u32 l1_hash = 0;
+  if (config.hash)
+  {
 
   // Hashed in two pieces, because "the RAM differs" is not a usable answer.
   //
@@ -359,13 +395,14 @@ void OnFrame(Core::System& system)
   // that is not a core defect -- it is why netplay pins the RTC across peers
   // rather than hoping. Splitting it out separates that expected difference
   // from a genuine one in the heap, where the game's actual state lives.
-  const u32 ram_size = memory.GetRamSizeReal();
-  const u32 low_size = std::min<u32>(kOSGlobalsSize, ram_size);
-  const u32 low_hash = Common::ComputeCRC32(ram, low_size);
-  const u32 rest_hash = Common::ComputeCRC32(ram + low_size, ram_size - low_size);
-  u32 l1_hash = 0;
-  if (const u8* const l1 = memory.GetL1Cache())
-    l1_hash = Common::ComputeCRC32(l1, memory.GetL1CacheSize());
+    system.GetFifo().SyncGPUForRegisterAccess();
+
+    const u32 low_size = std::min<u32>(kOSGlobalsSize, ram_size);
+    low_hash = Common::ComputeCRC32(ram, low_size);
+    rest_hash = Common::ComputeCRC32(ram + low_size, ram_size - low_size);
+    if (const u8* const l1 = memory.GetL1Cache())
+      l1_hash = Common::ComputeCRC32(l1, memory.GetL1CacheSize());
+  }
 
   std::fprintf(config.out, "%llu %08x %08x %08x\n", static_cast<unsigned long long>(s_frame),
                low_hash, rest_hash, l1_hash);
