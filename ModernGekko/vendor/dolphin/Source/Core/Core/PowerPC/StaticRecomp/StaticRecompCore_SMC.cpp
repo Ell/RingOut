@@ -29,6 +29,11 @@ void StaticRecompCore::InitLookupTable(u32 ram_size, u32 exram_size)
   if (!m_module)
   {
     m_chunk_lookup_table.clear();
+    // Or the dispatcher keeps answering from a bitmap for a module that is
+    // gone. FastDispatchableAt no longer consults m_chunk_lookup_table, so
+    // clearing that alone is not enough any more.
+    m_fast_entry_bits.clear();
+    m_fast_entry_count = 0;
     return;
   }
 
@@ -64,6 +69,10 @@ void StaticRecompCore::InitLookupTable(u32 ram_size, u32 exram_size)
       }
     }
   }
+
+  // Fold the three arrays into the dispatcher's bit array. Last, because it
+  // reads all of them.
+  RebuildFastEntryBits();
 }
 
 int StaticRecompCore::ChunkIndexOf(u32 address) const
@@ -107,20 +116,72 @@ bool StaticRecompCore::IsModuleEntry(u32 address) const
 // FastDispatchableAt at 2.32% of the CPU thread.
 bool StaticRecompCore::FastDispatchableAt(u32 address) const
 {
-  if (!m_module_active || m_chunk_lookup_table.empty())
+  // ONE load from a 2.75 MB bit array, where this used to walk three arrays --
+  // an 88 MB vector<int>, the chunk state, and a bool bitmap -- at a random
+  // index per dispatch. The answer is identical; see RebuildFastEntryChunk.
+  if (!m_module_active)
     return false;
 
   const int idx = GetAddressLookupIndex(address);
-  if (idx < 0 || idx >= static_cast<int>(m_chunk_lookup_table.size()))
+  if (idx < 0 || static_cast<std::size_t>(idx) >= m_fast_entry_count)
     return false;
 
-  const int chunk = m_chunk_lookup_table[idx];
-  if (chunk < 0 || m_chunk_state[chunk] != CHUNK_VERIFIED)
-    return false;
+  return (m_fast_entry_bits[static_cast<std::size_t>(idx) >> 6] >>
+          (static_cast<unsigned>(idx) & 63u)) &
+         1u;
+}
 
-  if (m_entry_bitmap.empty())
-    return true;  // Pre-v3 module: every in-range address is an entry.
-  return idx < static_cast<int>(m_entry_bitmap.size()) && m_entry_bitmap[idx];
+// The AND of the three arrays, for one chunk's address range. Called on every
+// chunk state transition -- there are only four, and a session sees a couple of
+// hundred of them against tens of millions of dispatches.
+void StaticRecompCore::RebuildFastEntryChunk(u32 chunk_index)
+{
+  if (m_fast_entry_bits.empty() || m_module == nullptr ||
+      chunk_index >= m_module->num_chunk_ranges)
+    return;
+
+  const auto& chunk = m_module->chunk_ranges[chunk_index];
+  const int start_idx = GetAddressLookupIndex(chunk.start);
+  const int end_idx = GetAddressLookupIndex(chunk.end);
+  if (start_idx < 0 || end_idx < start_idx)
+    return;
+
+  const bool verified = m_chunk_state[chunk_index] == CHUNK_VERIFIED;
+  // A pre-v3 module ships no entry-point list, and every in-range address is an
+  // entry -- the same fallback the three-array form had.
+  const bool all_entries = m_entry_bitmap.empty();
+
+  for (int idx = start_idx; idx < end_idx; ++idx)
+  {
+    if (static_cast<std::size_t>(idx) >= m_fast_entry_count)
+      break;
+    // Only claim slots this chunk actually owns: ranges can overlap in a
+    // malformed module, and claiming another chunk's slot would dispatch into
+    // the wrong code.
+    if (static_cast<std::size_t>(idx) < m_chunk_lookup_table.size() &&
+        m_chunk_lookup_table[idx] != static_cast<int>(chunk_index))
+      continue;
+
+    const bool entry =
+        verified && (all_entries || (static_cast<std::size_t>(idx) < m_entry_bitmap.size() &&
+                                     m_entry_bitmap[idx]));
+    const std::size_t word = static_cast<std::size_t>(idx) >> 6;
+    const u64 bit = 1ull << (static_cast<unsigned>(idx) & 63u);
+    if (entry)
+      m_fast_entry_bits[word] |= bit;
+    else
+      m_fast_entry_bits[word] &= ~bit;
+  }
+}
+
+void StaticRecompCore::RebuildFastEntryBits()
+{
+  m_fast_entry_count = m_chunk_lookup_table.size();
+  m_fast_entry_bits.assign((m_fast_entry_count + 63u) / 64u, 0ull);
+  if (m_module == nullptr)
+    return;
+  for (u32 i = 0; i < m_module->num_chunk_ranges; ++i)
+    RebuildFastEntryChunk(i);
 }
 
 bool StaticRecompCore::DispatchableAt(u32 address)
@@ -145,6 +206,7 @@ void StaticRecompCore::VerifyChunk(u32 index)
   if (chunk.start < 0x80000000u || offset >= ram_size || length > ram_size - offset)
   {
     m_chunk_state[index] = CHUNK_FAILED;
+    RebuildFastEntryChunk(index);
     ++m_failed_chunks;
     ERROR_LOG_FMT(POWERPC, "StaticRecomp: chunk [0x{:08X},0x{:08X}) outside guest RAM",
                   chunk.start, chunk.end);
@@ -163,10 +225,12 @@ void StaticRecompCore::VerifyChunk(u32 index)
   if (hash == m_module->chunk_hashes[index])
   {
     m_chunk_state[index] = CHUNK_VERIFIED;
+    RebuildFastEntryChunk(index);
   }
   else
   {
     m_chunk_state[index] = CHUNK_FAILED;
+    RebuildFastEntryChunk(index);
     ++m_failed_chunks;
     std::fprintf(stderr,
                  "[staticrecomp] SMC: chunk [0x%08X,0x%08X) hash mismatch; interpreter until "
@@ -213,6 +277,7 @@ void StaticRecompCore::OnICacheInvalidate(u32 address, u32 length)
       if (m_chunk_state[i] == CHUNK_FAILED)
         --m_failed_chunks;
       m_chunk_state[i] = CHUNK_UNVERIFIED;
+      RebuildFastEntryChunk(i);
       ++m_reverify_events;
     }
   }
