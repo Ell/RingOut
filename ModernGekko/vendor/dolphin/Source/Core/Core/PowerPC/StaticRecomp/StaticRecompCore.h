@@ -55,6 +55,21 @@ public:
   bool IsModuleActive() const;
   bool DispatchableAt(u32 address);
   bool FastDispatchableAt(u32 address) const;
+
+  // One bit per guest instruction slot: "this address is an entry point of a
+  // VERIFIED chunk", the exact question the dispatcher asks on every dispatch.
+  // It is the AND of the three arrays FastDispatchableAt used to walk, folded
+  // ahead of time because chunk state changes a couple of hundred times in a
+  // session and the dispatcher asks tens of millions of times.
+  //
+  // SIZE IS THE POINT, not the instruction count. The three-array form touched
+  // an 88 MB vector<int>, a bool bitmap and a state array on every dispatch, at
+  // a random index; this is 2.75 MB, which mostly fits the Deck's 4 MB L3.
+  std::vector<u64> m_fast_entry_bits;
+  std::size_t m_fast_entry_count = 0;
+
+  void RebuildFastEntryBits();
+  void RebuildFastEntryChunk(u32 chunk_index);
   bool IsModuleEntry(u32 address) const;
 
   void ClearCache() override;
