@@ -21,11 +21,16 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${OUT:-$REPO/dist}"
+# The RELEASE version. It names the zip and the folder inside it -- NOT the
+# working package directory, which keeps its historical RingOut-1.0-* name:
+# that is 1.3 GB of developer state referenced by .gitignore and a dozen
+# scripts, and renaming it would churn all of them for nothing a player sees.
+VERSION="${VERSION:-1.1}"
 PKG="RingOut-1.0-dist"
 SRC="$REPO/dist/$PKG"
 WORK="$OUT/_dist-stage"
-STAGE="$WORK/RingOut-1.0-linux"
-ZIP="$OUT/RingOut-1.0-linux-x86_64.zip"
+STAGE="$WORK/RingOut-$VERSION-linux"
+ZIP="$OUT/RingOut-$VERSION-linux-x86_64.zip"
 
 [ -d "$SRC" ] || { echo "no working package at $SRC" >&2; exit 1; }
 

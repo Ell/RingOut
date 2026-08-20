@@ -29,14 +29,19 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE="ringout-deck-build"
 OUT="${OUT:-$REPO/dist}"
+# The RELEASE version. It names the zip and the folder inside it -- NOT the
+# working package directory, which keeps its historical RingOut-1.0-* name:
+# that is 1.3 GB of developer state referenced by .gitignore and a dozen
+# scripts, and renaming it would churn all of them for nothing a player sees.
+VERSION="${VERSION:-1.1}"
 PKG="RingOut-1.0-deck"
 SRC="$REPO/dist/$PKG"
 
 # Staging happens in its own directory. Never stage into dist/RingOut-1.0-deck:
 # that is the live working package, and this script would delete it.
 WORK="$OUT/_deck-stage"
-STAGE="$WORK/$PKG"
-ZIP="$OUT/RingOut-1.0-steamdeck-x86_64.zip"
+STAGE="$WORK/RingOut-$VERSION-deck"
+ZIP="$OUT/RingOut-$VERSION-steamdeck-x86_64.zip"
 
 case "$STAGE" in
   "$SRC"|"$SRC"/*) echo "refusing to stage into the working package ($SRC)" >&2; exit 1 ;;
@@ -190,13 +195,17 @@ esac
 # 755 file still unpacks 755, and the canary below would catch it if it did.
 echo "==> zipping"
 rm -f "$ZIP"
-( cd "$WORK" && TZ=UTC zip -X -qr "$ZIP" "$PKG" )
+( cd "$WORK" && TZ=UTC zip -X -qr "$ZIP" "$(basename "$STAGE")" )
 
 verify="$WORK/_verify"
 mkdir -p "$verify"
 unzip -qq "$ZIP" -d "$verify"
-[ -x "$verify/$PKG/RingOut" ] || { echo "  FAIL: RingOut is not executable after unzip" >&2; exit 1; }
-[ -x "$verify/$PKG/bin/moderngekko-run" ] || { echo "  FAIL: runtime is not executable after unzip" >&2; exit 1; }
+# Check the extracted tree by the name it actually has, not by $PKG: the stage
+# is named for the RELEASE version while $PKG is the working directory, and
+# assuming they match silently checked a path that did not exist.
+unpacked="$verify/$(basename "$STAGE")"
+[ -x "$unpacked/RingOut" ] || { echo "  FAIL: RingOut is not executable after unzip" >&2; exit 1; }
+[ -x "$unpacked/bin/moderngekko-run" ] || { echo "  FAIL: runtime is not executable after unzip" >&2; exit 1; }
 rm -rf "$verify"
 
 echo

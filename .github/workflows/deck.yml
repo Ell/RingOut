@@ -168,7 +168,7 @@ jobs:
         run: |
           apt-get install -y --no-install-recommends curl
           .github/scripts/publish-release-asset.sh deck-latest \
-            "Steam Deck build (rolling)" dist/RingOut-1.0-steamdeck-x86_64.zip
+            "Steam Deck build (rolling)" dist/RingOut-1.1-steamdeck-x86_64.zip
 
       # A failed configure/build leaves the useful detail in these logs rather
       # than in the step output.

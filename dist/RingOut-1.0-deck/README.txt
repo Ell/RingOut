@@ -1,4 +1,4 @@
-Ring Out - Ver 1.0
+Ring Out - Ver 1.1
 Steam Deck / SteamOS build
 ==========================
 
