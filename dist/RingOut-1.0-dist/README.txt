@@ -1,4 +1,4 @@
-Ring Out - Ver 1.0
+Ring Out - Ver 1.1
 =======================
 
 This package contains NO game data and NO game code. You supply a
@@ -13,6 +13,16 @@ QUICK START
 
   You can also do the setup step directly:
       ./setup.sh /path/to/your/disc.iso
+
+ON A STEAM DECK?
+  Download RingOut-1.1-steamdeck-x86_64.zip instead -- it ships prebuilt
+  binaries, because SteamOS mounts /usr read-only and has no C headers, so
+  nothing can be compiled on the device.
+
+  You still need THIS package once, on a desktop: run its setup to build
+  the module from your disc, then copy game/ and bin/g<ID>_recomp.so into
+  the Deck package. Add its RingOut launcher to Steam as a non-Steam game
+  to run it from Game Mode.
 
 REQUIREMENTS
   - A GameCube disc image you already have
