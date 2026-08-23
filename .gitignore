@@ -143,3 +143,4 @@ compile_commands.json
 
 # Deck-targeted module build tree (clang + PGO + -march=znver2), like /build-dolrecomp/
 /build-module-deck/
+/build-module-aug12/
