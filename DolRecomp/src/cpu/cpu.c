@@ -27,6 +27,84 @@
 __asm__(".symver fmod,fmod@GLIBC_2.2.5");
 #endif
 
+// Write-gather pipe direct path. GX command and vertex traffic reaches the
+// host as ordinary guest stores to the write-gather pipe page, and every one of
+// them used to leave the module: mem_writeN_slow -> resolve_addr miss ->
+// cpu->external_write, an indirect call across the .so boundary into
+// HookExternalWrite, which then wrote a few bytes into a buffer. On a
+// draw-call-heavy scene that is the single busiest thing the chassis does.
+//
+// The pipe is just a byte buffer plus a cursor, so the module can write it
+// directly and only call out when it fills -- once per 32 bytes instead of once
+// per word. This is what Dolphin's own JITs do (optimizeGatherPipe): inline the
+// write, keep the flush out of line.
+//
+// Wired up through a setter, in the same style as ppc_set_mem_write_journal
+// below and for the same reason: a CPUState field would be tidier but bumps the
+// module ABI, which couples module and runtime deployment (see the lazy-FPRF
+// note in cpu.h). Unset, every field here is NULL and the code below falls
+// straight through to the old external_write path, so an old runtime drives a
+// new module and vice versa.
+typedef void (*PPCGatherPipeFlush)(void* user);
+static u8** g_gp_cursor = NULL;      // &ppc_state.gather_pipe_ptr, owned by the chassis
+// The ADDRESS of the base pointer, not its value: the chassis fills
+// gather_pipe_base_ptr in GPFifoManager::Init(), which need not have run when
+// this is installed, so a snapshot taken here could be a permanent NULL.
+// Re-reading it also survives any later reset. One extra load from a hot line.
+static u8* const* g_gp_base = NULL;
+static PPCGatherPipeFlush g_gp_flush = NULL;
+static void* g_gp_user = NULL;
+// Non-zero while the lockstep verifier is journaling. Those runs need every
+// MMIO write recorded by the chassis hook, so the fast path stands down rather
+// than silently dropping entries from the journal.
+static const unsigned char* g_gp_bypass = NULL;
+
+__attribute__((visibility("default"))) void ppc_set_gather_pipe(u8** cursor, u8* const* base,
+                                                                PPCGatherPipeFlush flush,
+                                                                void* user,
+                                                                const unsigned char* bypass) {
+    g_gp_cursor = cursor;
+    g_gp_base = base;
+    g_gp_flush = flush;
+    g_gp_user = user;
+    g_gp_bypass = bypass;
+}
+
+#define GATHER_PIPE_PAGE 0xCC008000u
+#define GATHER_PIPE_FILL 32u
+
+// Returns 1 when the store was serviced here. Keyed on the effective page,
+// exactly as the chassis hook is, so which addresses take this path does not
+// change -- only how they are serviced.
+static inline int gather_pipe_store(u32 addr, u64 value, u32 size) {
+    if (g_gp_cursor == NULL || (addr & 0xFFFFF000u) != GATHER_PIPE_PAGE)
+        return 0;
+    if (g_gp_bypass != NULL && *g_gp_bypass)
+        return 0;
+
+    const u8* base = *g_gp_base;
+    if (base == NULL)
+        return 0;  // GPFifoManager::Init has not run yet
+
+    u8* p = *g_gp_cursor;
+    switch (size) {
+    case 1: *p = (u8)value; break;
+    case 2: write_be16(p, (u16)value); break;
+    case 4: write_be32(p, (u32)value); break;
+    case 8: write_be64(p, value); break;
+    default: return 0;
+    }
+    p += size;
+    *g_gp_cursor = p;
+
+    // The buffer carries GATHER_PIPE_EXTRA_SIZE bytes of slack past the fill
+    // mark, so overshooting by one store before flushing is what the design
+    // expects -- the same order FastWriteN + FastCheckGatherPipe uses.
+    if ((u32)(p - base) >= GATHER_PIPE_FILL)
+        g_gp_flush(g_gp_user);
+    return 1;
+}
+
 // Lockstep memory-write journal: the chassis installs a callback via
 // ppc_set_mem_write_journal so it can capture the pre-image of flat-RAM writes
 // and re-run a block on Dolphin's interpreter for register/memory comparison.
@@ -212,6 +290,8 @@ u64 mem_read64_slow(CPUState* cpu, u32 addr) {
 }
 
 void mem_write64_slow(CPUState* cpu, u32 addr, u64 value) {
+    if (gather_pipe_store(addr, value, 8))
+        return;
     u32 avail;
     u8* host = resolve_addr(cpu, addr, &avail);
     if (!host || avail < 8) {
@@ -240,6 +320,8 @@ u32 mem_read32_slow(CPUState* cpu, u32 addr) {
 }
 
 void mem_write32_slow(CPUState* cpu, u32 addr, u32 value) {
+    if (gather_pipe_store(addr, value, 4))
+        return;
     u32 avail;
     u8* host = resolve_addr(cpu, addr, &avail);
     if (!host || avail < 4) {
@@ -268,6 +350,8 @@ u16 mem_read16_slow(CPUState* cpu, u32 addr) {
 }
 
 void mem_write16_slow(CPUState* cpu, u32 addr, u16 value) {
+    if (gather_pipe_store(addr, value, 2))
+        return;
     u32 avail;
     u8* host = resolve_addr(cpu, addr, &avail);
     if (!host || avail < 2) {
@@ -296,6 +380,8 @@ u8 mem_read8_slow(CPUState* cpu, u32 addr) {
 }
 
 void mem_write8_slow(CPUState* cpu, u32 addr, u8 value) {
+    if (gather_pipe_store(addr, value, 1))
+        return;
     u32 avail;
     u8* host = resolve_addr(cpu, addr, &avail);
     if (!host) {
