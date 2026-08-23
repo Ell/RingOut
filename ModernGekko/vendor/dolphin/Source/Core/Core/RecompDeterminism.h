@@ -62,6 +62,11 @@ void ReportWatchWrite(u32 block_pc, u32 lr, u32 size, u32 old_value, u64 timebas
 // Returns true when it filled `status`, in which case the host controller is
 // ignored entirely -- a stray keypress during a measurement run must not be able
 // to perturb it.
+//
+// Per SI port: a script line may carry a leading "P1"/"P2" selector (default
+// P1), and only the ports the script names are driven -- an unscripted port
+// still falls through to the host pad. A VS-mode route needs this, because each
+// side confirms its own character and health and the stage pick belongs to 2P.
 bool ScriptedPad(int device_number, ::GCPadStatus* status);
 
 // Reports that the watched word changed to `value`, seen from `site`. The

@@ -4,6 +4,7 @@
 #include "Core/RecompDeterminism.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cctype>
 #include <cstdlib>
@@ -74,8 +75,11 @@ struct Config
     u16 button;
     u8 stick_x, stick_y, substick_x, substick_y, trigger_l, trigger_r;
   };
-  std::vector<PadFrame> input;
-  std::size_t input_cursor = 0;
+  // One script per SI port. A port with no lines of its own is left alone and
+  // falls through to the host pad, so scripting pad 1 cannot fake a pad 2.
+  static constexpr int kPorts = 4;
+  std::array<std::vector<PadFrame>, kPorts> input;
+  std::array<std::size_t, kPorts> input_cursor{};
 
   // Rollback probe. Save at frame `rb_at`, run `rb_len` frames, restore, replay
   // the same `rb_len` frames, and require the state to come out identical --
@@ -105,15 +109,36 @@ constexpr PadName kPadNames[] = {
     {"LEFT", PAD_BUTTON_LEFT},   {"RIGHT", PAD_BUTTON_RIGHT},
 };
 
-// One line: "<frame> <buttons|-> [stick_x stick_y [substick_x substick_y [l r]]]".
+// One line: "[P<n>] <frame> <buttons|-> [stick_x stick_y [substick_x substick_y [l r]]]".
 // Buttons are comma-separated, '-' meaning none. Blank lines and '#' comments
 // are skipped. Sticks default to centred (0x80) and triggers to 0.
-bool ParseInputLine(const std::string& line, Config::PadFrame* out)
+//
+// The optional leading "P1"/"P2" selects the SI port and defaults to P1, so
+// every existing single-pad script parses exactly as it did before. A second
+// port is what a VS-mode route needs: character lock, health and stage select
+// are each confirmed by the side that owns them, and the stage pick is 2P's.
+bool ParseInputLine(const std::string& line, Config::PadFrame* out, int* pad)
 {
   std::string text = line.substr(0, line.find('#'));
   std::istringstream stream(text);
   std::string frame_token, buttons;
-  if (!(stream >> frame_token >> buttons))
+  if (!(stream >> frame_token))
+    return false;
+
+  // A frame is digits, so a leading 'P' can only be a port selector -- the two
+  // forms cannot be confused.
+  *pad = 0;
+  if (frame_token.size() >= 2 && (frame_token[0] == 'P' || frame_token[0] == 'p') &&
+      std::isdigit(static_cast<unsigned char>(frame_token[1])))
+  {
+    const int port = std::atoi(frame_token.c_str() + 1) - 1;
+    if (port < 0 || port >= Config::kPorts)
+      return false;
+    *pad = port;
+    if (!(stream >> frame_token))
+      return false;
+  }
+  if (!(stream >> buttons))
     return false;
 
   *out = Config::PadFrame{};
@@ -128,10 +153,23 @@ bool ParseInputLine(const std::string& line, Config::PadFrame* out)
     {
       for (char& c : name)
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      bool matched = false;
       for (const PadName& known : kPadNames)
       {
         if (name == known.name)
+        {
           out->button |= known.bit;
+          matched = true;
+        }
+      }
+      // Silence here is expensive: a name this table does not know used to be
+      // dropped without a word, so the line pressed NOTHING and the route ran
+      // on into whatever the next press confirmed. The d-pad is "DOWN", not the
+      // Pipe backend's "D_DOWN", and that one difference is easy to carry over.
+      if (!matched)
+      {
+        std::fprintf(stderr, "[input] unknown button '%s' in: %s\n", name.c_str(),
+                     line.c_str());
       }
     }
   }
@@ -203,15 +241,22 @@ Config& GetConfig()
         while (std::getline(file, line))
         {
           Config::PadFrame entry;
-          if (ParseInputLine(line, &entry))
-            result.input.push_back(entry);
+          int pad = 0;
+          if (ParseInputLine(line, &entry, &pad))
+            result.input[pad].push_back(entry);
         }
-        std::stable_sort(result.input.begin(), result.input.end(),
-                         [](const Config::PadFrame& a, const Config::PadFrame& b) {
-                           return a.frame < b.frame;
-                         });
-        std::fprintf(stderr, "[input] %zu scripted pad state(s) from %s\n",
-                     result.input.size(), input);
+        for (int port = 0; port < Config::kPorts; ++port)
+        {
+          std::stable_sort(result.input[port].begin(), result.input[port].end(),
+                           [](const Config::PadFrame& a, const Config::PadFrame& b) {
+                             return a.frame < b.frame;
+                           });
+          if (!result.input[port].empty())
+          {
+            std::fprintf(stderr, "[input] P%d: %zu scripted pad state(s) from %s\n", port + 1,
+                         result.input[port].size(), input);
+          }
+        }
       }
     }
 
@@ -312,10 +357,17 @@ void PollWatch(const char* site, u32 pc, u32 value)
 bool ScriptedPad(int device_number, ::GCPadStatus* status)
 {
   Config& config = GetConfig();
-  // Port 1 only: the harness drives one controller, and silently feeding the
-  // same script to every port would fake a four-player game.
-  if (!config.active || config.input.empty() || device_number != 0 || status == nullptr)
+  // Only ports the script actually names are driven. Feeding one port's script
+  // to every port would fake a four-player game, so an unscripted port falls
+  // through to the host pad exactly as it did before ports existed here.
+  if (!config.active || status == nullptr || device_number < 0 ||
+      device_number >= Config::kPorts || config.input[device_number].empty())
+  {
     return false;
+  }
+
+  const std::vector<Config::PadFrame>& script = config.input[device_number];
+  std::size_t& cursor = config.input_cursor[device_number];
 
   // The script is sorted and s_frame only advances, so this walks forward once
   // over the run rather than searching per poll -- SI polls the pad several
@@ -324,15 +376,12 @@ bool ScriptedPad(int device_number, ::GCPadStatus* status)
   // rewound by the same amount or the replay would receive DIFFERENT input and
   // 'prove' non-determinism that is really just a different button press.
   const u64 input_frame = s_frame - config.rb_input_offset;
-  while (config.input_cursor + 1 < config.input.size() &&
-         config.input[config.input_cursor + 1].frame <= input_frame)
-  {
-    ++config.input_cursor;
-  }
-  while (config.input_cursor > 0 && config.input[config.input_cursor].frame > input_frame)
-    --config.input_cursor;
+  while (cursor + 1 < script.size() && script[cursor + 1].frame <= input_frame)
+    ++cursor;
+  while (cursor > 0 && script[cursor].frame > input_frame)
+    --cursor;
 
-  const Config::PadFrame& entry = config.input[config.input_cursor];
+  const Config::PadFrame& entry = script[cursor];
   // Nothing scripted yet: hold neutral rather than falling through to the host
   // pad, so a stray keypress cannot perturb a measurement run.
   const bool pending = entry.frame > input_frame;
