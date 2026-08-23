@@ -23,7 +23,21 @@
 // representable, so both symbol versions return identical values. Verified by
 // frame hashes, not assumed. The single call site is the round-half-to-even
 // tiebreak in ppc_round_to_nearest below.
-#if defined(__linux__) && defined(__GLIBC__)
+//
+// SCOPED TO THE MODULE BUILD (MODULE_GAME_ID is defined only there). cpu.c is
+// also linked into the recompiler tool, which ships STATICALLY -- setup.sh runs
+// it directly, so its glibc floor decides which distros can run setup at all.
+// A static link has no symbol versioning, so this directive leaves an
+// unresolvable `fmod@GLIBC_2.2.5` and the tool fails to link:
+//
+//   libdr_cpu.a(cpu.c.o): in function `ppc_fctiw':
+//   undefined reference to `fmod@GLIBC_2.2.5'
+//
+// That broke the static tool build from the moment this pin was added, and went
+// unnoticed because the shipped binary predates it and install(1) re-stamped its
+// mtime, so it looked current. The pin is only ever needed for the module, which
+// is the thing that gets dlopened on a Deck.
+#if defined(__linux__) && defined(__GLIBC__) && defined(MODULE_GAME_ID)
 __asm__(".symver fmod,fmod@GLIBC_2.2.5");
 #endif
 
