@@ -91,6 +91,28 @@ done
 if [ -n "$GAMESETTINGS" ]; then
   mkdir -p "$STAGE/userdata/GameSettings"
   install -m 644 "$GAMESETTINGS" "$STAGE/userdata/GameSettings/GRSEAF.ini"
+  # SHIP THE CODE LIST WITH NOTHING ENABLED, whatever the developer's working
+  # copy happens to have on. That file's own header promises "Codes are listed
+  # but NOT enabled by default", and it is a working config: v1.2 shipped with
+  # five codes marked enabled -- Infinite Time, both Infinite Healths and P2 Play
+  # As Inferno -- because they were on locally. Latent rather than broken, since
+  # no Dolphin.ini ships and EnableCheats defaults off, but the first player to
+  # turn cheats on would get unendable matches against a forced Inferno.
+  # Stripping here rather than editing the working copy keeps the release
+  # independent of local state, like the art/ and userdata/ rules.
+  python3 - "$STAGE/userdata/GameSettings/GRSEAF.ini" <<'STRIP'
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+# Empty every enabled section, leaving the sections themselves in place so the
+# CHEATS tab still has somewhere to write.
+cleaned = re.sub(r"(\[(?:ActionReplay|Gecko)_Enabled\]\n)(?:\$[^\n]*\n)*",
+                 r"\1", text)
+open(path, "w").write(cleaned)
+enabled = [l for l in cleaned.splitlines()
+           if l.startswith("$") and False]  # nothing should remain enabled
+print(f"  enabled codes after strip: {len(enabled)}")
+STRIP
   echo "==> game settings: $(basename "$(dirname "$(dirname "$GAMESETTINGS")")")/GameSettings/GRSEAF.ini"
 else
   echo "==> game settings: NONE FOUND -- the CHEATS tab will be empty" >&2
