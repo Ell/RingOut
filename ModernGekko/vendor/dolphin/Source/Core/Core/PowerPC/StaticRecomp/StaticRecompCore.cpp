@@ -14,6 +14,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/StaticRecompSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/HW/GPFifo.h"
 #include "Core/HW/Memmap.h"
 #include "Core/MemTools.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
@@ -95,6 +96,54 @@ StaticRecompCore::StaticRecompCore(Core::System& system, StaticRecompModuleSourc
 
 StaticRecompCore::~StaticRecompCore() = default;
 
+// GX command and vertex traffic reaches the host as ordinary guest stores to the
+// write-gather pipe page, and every one of them crossed the .so boundary into
+// HookExternalWrite to move a few bytes into a buffer. On a draw-call-heavy
+// scene that is the busiest thing the chassis does.
+//
+// Hand the module the buffer instead. It writes the bytes inline and calls back
+// only when the pipe fills: once per 32 bytes rather than once per word. This is
+// what Dolphin's own JITs do with optimizeGatherPipe.
+//
+// Installed through an optional export rather than a CPUState field, so no ABI
+// bump and no coupling of module and runtime deployment (the same reasoning as
+// the lazy-FPRF note in the module's cpu.h). A module without the symbol keeps
+// the old path and still works with this runtime.
+void StaticRecompCore::InstallGatherPipeFastPath()
+{
+  if (!m_module)
+    return;
+  const auto set_gather_pipe =
+      reinterpret_cast<SetGatherPipeFn>(m_library.GetSymbolAddress("ppc_set_gather_pipe"));
+  if (!set_gather_pipe)
+  {
+    std::fprintf(stderr, "[staticrecomp] module lacks ppc_set_gather_pipe export; gather-pipe "
+                         "stores stay on the external-write hook.\n");
+    return;
+  }
+
+  auto& ppc_state = m_system.GetPPCState();
+  // Addresses, not values: GPFifoManager::Init() may not have run yet, so the
+  // module re-reads both every time rather than snapshotting a NULL here.
+  //
+  // m_ls_journaling is the stand-down flag. While the lockstep verifier is
+  // journaling it needs every MMIO write recorded by the hook, so the module
+  // must route these stores back through HookExternalWrite instead of servicing
+  // them silently. bool is one byte, hence the unsigned char view.
+  set_gather_pipe(&ppc_state.gather_pipe_ptr, &ppc_state.gather_pipe_base_ptr,
+                  &StaticRecompCore::GatherPipeFlushTrampoline, this,
+                  reinterpret_cast<const unsigned char*>(&m_lockstep_verifier->m_ls_journaling));
+}
+
+// Called by the module only when the pipe has reached its fill mark.
+// FastCheckGatherPipe re-checks the count and flushes; it is deliberately the
+// Fast variant, for the reason spelled out in HookExternalWrite.
+void StaticRecompCore::GatherPipeFlushTrampoline(void* user)
+{
+  auto* core = static_cast<StaticRecompCore*>(user);
+  core->m_system.GetGPFifo().FastCheckGatherPipe();
+}
+
 void StaticRecompCore::Init()
 {
   g_static_recomp_core = this;
@@ -125,6 +174,7 @@ void StaticRecompCore::Init()
     m_idle_pc = static_cast<u32>(std::strtoul(e, nullptr, 0));
   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
   m_lockstep_verifier->Init();
+  InstallGatherPipeFastPath();
   InitDeterminismWatch();
   m_gqr_log = std::getenv("STATICRECOMP_GQRLOG") != nullptr;
 

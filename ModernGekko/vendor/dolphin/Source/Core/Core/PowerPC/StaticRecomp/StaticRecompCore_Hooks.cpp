@@ -61,26 +61,42 @@ void StaticRecompCore::HookExternalWrite(CPUState* cpu, u32 ea, u64 value, u8 si
   {
     if (core->m_lockstep_verifier->m_ls_journaling)
       core->m_lockstep_verifier->m_journal.native_mmio.push_back({ea, static_cast<u32>(value), size});
+    // FastWriteN + FastCheckGatherPipe, not WriteN. The only difference is that
+    // WriteN's CheckGatherPipe also calls
+    // JitInterface::CompileExceptionCheck(FIFOWrite), which reads ppc_state.pc,
+    // decides whether the instruction there is a store, and INVALIDATES THE JIT
+    // BLOCK at that pc so it is recompiled with a gather-pipe check.
+    //
+    // That is bookkeeping for a write issued by a JIT block. A write arriving
+    // here was issued by recompiled static code, so ppc_state.pc is whatever the
+    // last fallback left behind: the lookup is wasted on every gather-pipe
+    // flush, and on a miss it invalidates an unrelated block. Dolphin's own JITs
+    // call FastCheckGatherPipe on their inlined path for the same reason and
+    // keep CheckGatherPipe for the case where the pc really is the storing
+    // instruction. The FIFO flush itself (UpdateGatherPipe -> GatherPipeBursted)
+    // is in the fast variant, so nothing about emulation changes.
     auto& gpfifo = core->m_system.GetGPFifo();
     switch (size)
     {
     case 1:
-      gpfifo.Write8(static_cast<u8>(value));
-      return;
+      gpfifo.FastWrite8(static_cast<u8>(value));
+      break;
     case 2:
-      gpfifo.Write16(static_cast<u16>(value));
-      return;
+      gpfifo.FastWrite16(static_cast<u16>(value));
+      break;
     case 4:
-      gpfifo.Write32(static_cast<u32>(value));
-      return;
+      gpfifo.FastWrite32(static_cast<u32>(value));
+      break;
     default:
       for (u32 i = size * 8u; i > 0;)
       {
         i -= 8;
-        gpfifo.Write8(static_cast<u8>(value >> i));
+        gpfifo.FastWrite8(static_cast<u8>(value >> i));
       }
-      return;
+      break;
     }
+    gpfifo.FastCheckGatherPipe();
+    return;
   }
 
   core->PropagateGuestMSR();

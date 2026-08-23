@@ -184,6 +184,12 @@ private:
   EmptyBlockCache m_block_cache{*this};
 
   CPUState m_guest{};
+  // Optional module export: hands the module the write-gather pipe so GX stores
+  // are serviced inline instead of crossing the .so boundary per word.
+  using SetGatherPipeFn = void (*)(u8**, u8* const*, void (*)(void*), void*, const unsigned char*);
+  void InstallGatherPipeFastPath();
+  static void GatherPipeFlushTrampoline(void* user);
+
   Common::DynamicLibrary m_library;
   StaticRecompModuleSource m_module_source;
   const StaticRecompModuleDesc* m_module = nullptr;

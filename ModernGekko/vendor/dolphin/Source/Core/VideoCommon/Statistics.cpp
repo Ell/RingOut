@@ -3,6 +3,8 @@
 
 #include "VideoCommon/Statistics.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -498,11 +500,65 @@ void Statistics::DisplayScissor()
   ImGui::End();
 }
 
+namespace
+{
+// RINGOUT_GX_STATS=<n>: every n displayed frames, print the mean per-frame GX
+// counters. A profile can say that the FIFO path got more expensive on one
+// stage; only a count can say how much command and vertex traffic the scene
+// actually pushed, which is the difference between a hypothesis and a
+// measurement.
+//
+// Read on after_frame_event, the one moment where a frame's counters are
+// complete and not yet cleared -- before_frame_event resets them. Sampling them
+// anywhere else (the PE finish interrupt, say) would catch a partial frame, and
+// would do it differently on a heavier scene, which is exactly the sampling bias
+// that would fake the effect being looked for.
+struct GXStatsAccumulator
+{
+  u64 frames = 0;
+  u64 prims = 0;
+  u64 draw_calls = 0;
+  u64 dlists = 0;
+  u64 xf_loads = 0;
+  u64 bp_loads = 0;
+  u64 cp_loads = 0;
+  int textures_at_last_report = 0;
+};
+GXStatsAccumulator s_gx;
+u64 s_gx_every = 0;
+}  // namespace
+
 void Statistics::Init()
 {
+  if (const char* const every = std::getenv("RINGOUT_GX_STATS"))
+    s_gx_every = std::strtoull(every, nullptr, 10);
+
   s_before_frame_event = GetVideoEvents().before_frame_event.Register([] { g_stats.ResetFrame(); });
 
   s_after_frame_event = GetVideoEvents().after_frame_event.Register([](const Core::System& system) {
+    if (s_gx_every != 0)
+    {
+      const Statistics::ThisFrame& frame = g_stats.this_frame;
+      ++s_gx.frames;
+      s_gx.prims += static_cast<u64>(frame.num_prims) + static_cast<u64>(frame.num_dl_prims);
+      s_gx.draw_calls += static_cast<u64>(frame.num_draw_calls);
+      s_gx.dlists += static_cast<u64>(frame.num_dlists_called);
+      s_gx.xf_loads += static_cast<u64>(frame.num_xf_loads);
+      s_gx.bp_loads += static_cast<u64>(frame.num_bp_loads);
+      s_gx.cp_loads += static_cast<u64>(frame.num_cp_loads);
+      if (s_gx.frames % s_gx_every == 0)
+      {
+        const double n = static_cast<double>(s_gx.frames);
+        std::fprintf(stderr,
+                     "[gx] frames=%llu prims=%.1f draws=%.1f dlists=%.1f xf=%.1f bp=%.1f "
+                     "cp=%.1f textures_uploaded=%d\n",
+                     static_cast<unsigned long long>(s_gx.frames), s_gx.prims / n,
+                     s_gx.draw_calls / n, s_gx.dlists / n, s_gx.xf_loads / n, s_gx.bp_loads / n,
+                     s_gx.cp_loads / n, g_stats.num_textures_uploaded);
+        std::fflush(stderr);
+      }
+    }
+
     DolphinAnalytics::Instance().ReportPerformanceInfo({
         .speed_ratio = system.GetSystemTimers().GetEstimatedEmulationPerformance(),
         .num_prims = g_stats.this_frame.num_prims + g_stats.this_frame.num_dl_prims,

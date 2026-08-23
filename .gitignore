@@ -140,3 +140,6 @@ compile_commands.json
 # game, the recompiled module, and memory-card saves. Kept out of dist/ so
 # nothing globbing dist/*.zip can upload them.
 /private-artifacts/
+
+# Deck-targeted module build tree (clang + PGO + -march=znver2), like /build-dolrecomp/
+/build-module-deck/
