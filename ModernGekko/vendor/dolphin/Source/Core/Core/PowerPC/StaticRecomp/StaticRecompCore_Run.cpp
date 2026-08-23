@@ -639,6 +639,12 @@ void StaticRecompCore::Run()
   // PC histogram (16KB buckets) while a movie plays, to find the hot decode
   // function. Dumped by OnFmvStartAfs on the next movie / here.
   static const bool s_fmv_hist = std::getenv("STATICRECOMP_FMV_HIST") != nullptr;
+  // Hoisted for the same reason as the flags above, and it was missed when they
+  // were: a function-local static inside the dispatch loop costs a thread-safe
+  // initialisation guard check on EVERY pass. Measured at 6.1% of Run()'s own
+  // samples -- the single hottest instruction in the loop after the timebase
+  // arithmetic -- for a flag that is almost always false.
+  static const bool s_spinlog = std::getenv("STATICRECOMP_SPINLOG") != nullptr;
 
   while (*state_ptr == CPU::State::Running)
   {
@@ -797,7 +803,6 @@ void StaticRecompCore::Run()
             // symptom is a silent hang with a huge dispatch count and no error.
             // This found the LLVM backend's psq_load return-type mismatch in one
             // run after hours of hypotheses: it printed 0x80180BD4, a psq_l.
-            static const bool s_spinlog = std::getenv("STATICRECOMP_SPINLOG") != nullptr;
             if (s_spinlog)
             {
               static u64 s_same = 0;
