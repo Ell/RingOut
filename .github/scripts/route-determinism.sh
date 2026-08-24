@@ -11,7 +11,7 @@
 # why this runs before any PGO work on the new route.
 set -u
 
-REPO=/mnt/hera/projects/soulcalibur
+REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PKG="$REPO/dist/RingOut-1.0-deck"
 MODULE="${MODULE:-$REPO/dist/RingOut-1.0-dist/bin/gGRSEAF_recomp.so}"
 INPUT="$REPO/.github/input-scripts/arcade-final.txt"

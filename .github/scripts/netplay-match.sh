@@ -19,7 +19,7 @@
 # VS Battle is greyed out unless a second controller is present, so reaching it
 # at all depends on netplay's pad 2 being live.
 set -u
-P=/mnt/hera/projects/soulcalibur
+P="${P:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 W="${1:-/tmp/netplay-match}"
 PLAY="${2:-60}"
 PORT="${3:-2640}"

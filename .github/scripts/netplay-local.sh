@@ -28,7 +28,7 @@
 #                 the session should still come out at 1.0.
 #   TIMEOUT=s     lobby timeout per peer (default 90)
 set -u
-P=/mnt/hera/projects/soulcalibur
+P="${P:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 W="${1:-/tmp/netplay-local}"
 PLAY="${2:-60}"
 PORT="${3:-2626}"

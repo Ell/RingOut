@@ -20,7 +20,7 @@
 # the 60fps cap every configuration may report the same number while consuming
 # very different amounts of CPU, and headroom is the thing being bought.
 set -u
-P=/mnt/hera/projects/soulcalibur
+P="${P:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 W="${1:-/tmp/fmv-ab}"
 WINDOW="${2:-30}"     # measurement window, seconds
 REPS="${3:-2}"

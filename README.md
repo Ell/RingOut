@@ -33,8 +33,8 @@ Two packages, from the [Releases](../../releases) page:
 
 | | for | needs a toolchain? |
 | --- | --- | --- |
-| `RingOut-1.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
-| `RingOut-1.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
+| `RingOut-1.2.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
+| `RingOut-1.2.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
 
 The Deck package ships no module: build one on a desktop with the package below,
 then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a

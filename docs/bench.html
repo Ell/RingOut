@@ -1,0 +1,1176 @@
+<title>The RingOut Bench</title>
+<style>
+  :root {
+    --ground:      #F1F0F4;
+    --surface:     #FFFFFF;
+    --surface-2:   #E7E5EE;
+    --ink:         #191627;
+    --ink-muted:   #575270;
+    --ink-faint:   #817C96;
+    --hairline:    #D9D6E3;
+    --accent:      #453C99;
+    --accent-soft: #E3E0F4;
+    --trap:        #9A5220;
+    --trap-soft:   #F6E8DC;
+    --ok:          #2C6349;
+    --ok-soft:     #DFEDE5;
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --measure: 66ch;
+    --page: 58rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #121019;
+      --surface:     #1A1725;
+      --surface-2:   #232030;
+      --ink:         #E7E4F0;
+      --ink-muted:   #9A94B0;
+      --ink-faint:   #77728C;
+      --hairline:    #2C2840;
+      --accent:      #A79AF0;
+      --accent-soft: #241F45;
+      --trap:        #DB9A63;
+      --trap-soft:   #2E2015;
+      --ok:          #74C29B;
+      --ok-soft:     #16271F;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #121019;
+    --surface:     #1A1725;
+    --surface-2:   #232030;
+    --ink:         #E7E4F0;
+    --ink-muted:   #9A94B0;
+    --ink-faint:   #77728C;
+    --hairline:    #2C2840;
+    --accent:      #A79AF0;
+    --accent-soft: #241F45;
+    --trap:        #DB9A63;
+    --trap-soft:   #2E2015;
+    --ok:          #74C29B;
+    --ok-soft:     #16271F;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 1.5rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: var(--page); margin: 0 auto; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  /* ---------- masthead ---------- */
+
+  header.top {
+    padding: 4rem 0 2rem;
+    border-bottom: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.9rem, 5vw, 2.9rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    font-size: clamp(1rem, 2.2vw, 1.1rem);
+    color: var(--ink-muted);
+    max-width: var(--measure);
+    margin: 0;
+  }
+
+  /* ---------- index ---------- */
+
+  nav.index {
+    margin: 2rem 0 0;
+    padding: 1.1rem 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+  }
+
+  nav.index p {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 0.7rem;
+  }
+
+  nav.index ol {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 0.3rem 1.5rem;
+    margin: 0;
+    padding: 0;
+    font-size: 0.92rem;
+  }
+
+  /* ---------- sections ---------- */
+
+  section { margin: 3.25rem 0 0; }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--hairline);
+    padding-bottom: 0.55rem;
+    margin-bottom: 1.5rem;
+  }
+
+  h2 {
+    font-size: 1.45rem;
+    font-weight: 620;
+    letter-spacing: -0.012em;
+    margin: 0;
+  }
+
+  .sec-tag {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-left: auto;
+  }
+
+  h3 {
+    font-size: 1.03rem;
+    font-weight: 640;
+    margin: 2rem 0 0.6rem;
+    letter-spacing: -0.005em;
+  }
+
+  p { max-width: var(--measure); margin: 0 0 0.85rem; }
+
+  ul.plain { max-width: var(--measure); padding-left: 1.1rem; margin: 0 0 0.9rem; }
+  ul.plain li { margin-bottom: 0.4rem; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--surface-2);
+    padding: 0.08em 0.32em;
+    border-radius: 2px;
+  }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.65;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    padding: 0.85rem 1rem;
+    margin: 0 0 0.9rem;
+    overflow-x: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  pre b { color: var(--accent); font-weight: 600; }
+
+  /* ---------- spec rows ---------- */
+
+  dl.spec {
+    display: grid;
+    grid-template-columns: minmax(9rem, 13rem) 1fr;
+    gap: 0;
+    margin: 0 0 1rem;
+    border-top: 1px solid var(--hairline);
+  }
+
+  dl.spec dt {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    color: var(--ink-faint);
+    padding: 0.6rem 1rem 0.6rem 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  dl.spec dd {
+    margin: 0;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.94rem;
+  }
+
+  @media (max-width: 34rem) {
+    dl.spec { grid-template-columns: 1fr; }
+    dl.spec dt { padding-bottom: 0; border-bottom: 0; }
+    dl.spec dd { padding-top: 0.15rem; }
+  }
+
+  /* ---------- traps ---------- */
+
+  .trap {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--trap);
+    padding: 1rem 1.15rem 1.05rem;
+    margin: 0 0 0.8rem;
+  }
+
+  .trap-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+  }
+
+  .trap-head h4 {
+    font-size: 0.98rem;
+    font-weight: 640;
+    margin: 0;
+    flex: 1 1 14rem;
+    line-height: 1.4;
+  }
+
+  .cost {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 0.22rem 0.5rem;
+    border-radius: 2px;
+    white-space: nowrap;
+    background: var(--trap-soft);
+    color: var(--trap);
+  }
+
+  h3 .cost { vertical-align: 0.18em; margin-left: 0.55rem; }
+
+  .trap p { margin-bottom: 0.55rem; }
+  .trap p:last-child { margin-bottom: 0; }
+  .trap pre { margin-bottom: 0.55rem; }
+
+  /* ---------- tables ---------- */
+
+  .tbl { overflow-x: auto; margin: 0 0 1rem; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 0.45rem 1rem 0.45rem 0;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: top;
+  }
+
+  th {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  td.num { font-family: var(--mono); white-space: nowrap; }
+  td.win { color: var(--ok); font-weight: 600; }
+  td.no  { color: var(--trap); }
+
+  /* ---------- callout ---------- */
+
+  .note {
+    background: var(--accent-soft);
+    border: 1px solid var(--hairline);
+    padding: 1.1rem 1.25rem;
+    margin: 0 0 1rem;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note strong { color: var(--ink); }
+
+  footer {
+    margin-top: 3.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--hairline);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    line-height: 1.85;
+  }
+
+  @media (max-width: 34rem) {
+    body { padding: 0 1rem 4rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="top">
+    <p class="eyebrow">RingOut · SOULCALIBUR II static recompilation · engineering reference</p>
+    <h1>The RingOut Bench</h1>
+    <p class="standfirst">The two machines, the toolchain, the measuring instruments, and every trap that has
+      cost this project a session. Written so the next person — or the next session — starts from what is
+      already known instead of rediscovering it. Every number here came from a run on this hardware.</p>
+  </header>
+
+  <nav class="index">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#machines">The two machines</a></li>
+      <li><a href="#os">OS and toolchain</a></li>
+      <li><a href="#tools">Supporting software</a></li>
+      <li><a href="#layout">Repository layout</a></li>
+      <li><a href="#instruments">Measuring instruments</a></li>
+      <li><a href="#discipline">Measurement discipline</a></li>
+      <li><a href="#shipped">Optimizations that shipped</a></li>
+      <li><a href="#rejected">Optimizations rejected</a></li>
+      <li><a href="#graphics">Graphics settings</a></li>
+      <li><a href="#deck">The Steam Deck</a></li>
+      <li><a href="#desktoptraps">Desktop environment traps</a></li>
+      <li><a href="#open">Open questions</a></li>
+    </ol>
+  </nav>
+
+  <!-- ================= MACHINES ================= -->
+  <section id="machines">
+    <div class="sec-head">
+      <h2>The two machines</h2>
+      <span class="sec-tag">hardware</span>
+    </div>
+    <p>Every result in this project belongs to one of these two. They are not interchangeable: the desktop
+      has GPU headroom the Deck does not, and the Deck is the machine where the frame rate is actually
+      tight. A result measured on one transfers to the other only when the bottleneck is the same.</p>
+
+    <h3>Development desktop</h3>
+    <dl class="spec">
+      <dt>CPU</dt><dd>AMD Ryzen 5 5600X — 6 cores / 12 threads, Zen 3, single CCD. Boost ceiling 4762 MHz; 4573 MHz observed under emulation load.</dd>
+      <dt>GPU</dt><dd>NVIDIA GeForce RTX 3050, 8 GB, driver 610.57.04</dd>
+      <dt>Memory</dt><dd>31 GiB, plus 63 GiB swap</dd>
+      <dt>Displays</dt><dd>Three outputs: <code>DP-3</code> 1024×1280 portrait at x=0 · <code>DP-2</code> 1920×1080 at x=1024 (priority 1) · <code>HDMI-A-1</code> 1920×1080 at x=2944</dd>
+      <dt>Role</dt><dd>All builds, all A/B benchmarking, PGO profile training, packaging</dd>
+    </dl>
+
+    <h3>Steam Deck</h3>
+    <dl class="spec">
+      <dt>CPU</dt><dd>Zen 2, 4 cores / 8 threads. Effective clock under load 3.275–3.327 GHz measured as cycles ÷ wall.</dd>
+      <dt>GPU</dt><dd>RDNA2 integrated, Mesa RADV</dd>
+      <dt>OS</dt><dd>SteamOS — <code>/usr</code> read-only, glibc ~2.37</dd>
+      <dt>Power</dt><dd>8 W package draw during emulation against a 15 W cap — the workload never approaches the limit</dd>
+      <dt>Network</dt><dd>Static address over the dock's ethernet. Undocked it moves to wifi on a different subnet, where netplay cannot reach the desktop at all.</dd>
+      <dt>Install path</dt><dd><code>~/Desktop/steamdeck/</code> — the only install, and the Steam shortcut target</dd>
+      <dt>Role</dt><dd>Target hardware. Frame-rate truth: 45–49 fps before optimization, 56.9 fps after.</dd>
+    </dl>
+  </section>
+
+  <!-- ================= OS / TOOLCHAIN ================= -->
+  <section id="os">
+    <div class="sec-head">
+      <h2>OS and toolchain</h2>
+      <span class="sec-tag">environment</span>
+    </div>
+
+    <dl class="spec">
+      <dt>OS</dt><dd>CachyOS (Arch-family), kernel 7.2.0-rc7-1-cachyos-rc-gcc</dd>
+      <dt>Desktop</dt><dd>KDE Plasma on Wayland, KWin 6.7.4. Konsole as terminal, fish as the interactive shell.</dd>
+      <dt>Compiler</dt><dd>clang 22.1.8, target <code>x86_64-pc-linux-gnu</code></dd>
+      <dt>Linker</dt><dd>LLD 22.1.8 — <em>required</em>, not preferred: <code>--thinlto-cache-dir</code> is an lld option. It is probed with <code>check_c_source_compiles</code> rather than assumed, because lld ships as a separate package from clang on Arch, Debian and Fedora alike.</dd>
+      <dt>Build</dt><dd>CMake 4.4.2, Ninja 1.13.2</dd>
+      <dt>Profiles</dt><dd><code>llvm-profdata</code> 22.1.8 for merging and inspecting PGO data</dd>
+      <dt>LLVM backend</dt><dd>Pinned to <b>LLVM 19–20 only</b> — it hard-fails outside that window. Debian 12 ships 14, this host has 22, Arch offers 18, so it lives in <code>.github/containers/llvm19.Containerfile</code>.</dd>
+      <dt>Containers</dt><dd>podman (daemonless, rootless) for the Debian 12 build container. Docker is present only for the WinBoat Windows VM.</dd>
+    </dl>
+
+    <h3>Compile flags that matter</h3>
+    <pre>-march=native -O3 -flto=thin -fvisibility=hidden -fno-semantic-interposition -ffp-contract=off</pre>
+    <p><code>-march=native</code> is passed by <code>setup.sh</code> as <code>CMAKE_C_FLAGS</code>;
+      <code>-O3</code> comes from <code>CMAKE_BUILD_TYPE=Release</code>. <code>-ffp-contract=off</code> is
+      not optional — floating point must stay bit-exact for netplay lockstep. There is no
+      <code>-ffast-math</code> anywhere and there must not be.</p>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Adding flags to <code>CMAKE_C_FLAGS</code> cannot raise the optimization level</h4>
+        <span class="cost">recurring</span>
+      </div>
+      <p>CMake emits <code>CMAKE_C_FLAGS</code> <em>before</em> the per-configuration Release flags, so
+        appending <code>-O3</code> there changes nothing — the later flag wins. Three separate suggestion
+        documents have proposed adding <code>-O3</code>, <code>-march=native</code>,
+        <code>-fomit-frame-pointer</code> or <code>-mmovbe</code>; all four are already in effect, and
+        <code>-fomit-frame-pointer</code>'s only observable effect would be breaking <code>perf</code>'s
+        frame-pointer unwinding.</p>
+      <p><strong>Check the actual compile line before adding a flag.</strong> Byte-swapping is the clearest
+        case: <code>-march=native</code> already defines <code>__MOVBE__</code>, and the generated code for a
+        big-endian load is a single <code>movbel (%rdi), %eax</code> with no <code>bswap</code> anywhere.</p>
+    </div>
+  </section>
+
+  <!-- ================= TOOLS ================= -->
+  <section id="tools">
+    <div class="sec-head">
+      <h2>Supporting software</h2>
+      <span class="sec-tag">what each is for</span>
+    </div>
+
+    <dl class="spec">
+      <dt>perf</dt><dd>Cycle and instruction counts, PMU attribution. <code>perf_event_paranoid</code> is 2 on this host, so only <code>:u</code> (userspace) counters are permitted — every script uses <code>cycles:u,instructions:u</code>.</dd>
+      <dt>nvidia-smi</dt><dd>GPU utilization, VRAM, power draw, SM clock. <b>No RADV equivalent</b> — on the Deck use <code>/sys/class/drm/card*/device/gpu_busy_percent</code> and the amdgpu hwmon node instead.</dd>
+      <dt>xdotool</dt><dd>Reads the game's window geometry and title. Works because the game is an <b>XWayland</b> window; it cannot see native Wayland windows such as Konsole.</dd>
+      <dt>qdbus6</dt><dd>Drives KWin's scripting API over D-Bus — the only way to see and place every window regardless of Wayland or XWayland.</dd>
+      <dt>ssh / sshfs</dt><dd><code>ssh steamdeck</code> (key auth, alias in <code>~/.ssh/config</code>). The Deck's home is mounted at <code>~/steamdeck</code> by the <code>steamdeck-share</code> systemd user unit.</dd>
+      <dt>coredumpctl</dt><dd><code>coredumpctl info</code> on the Deck. Needs no reproduction and answers "is this my code?" in one screen.</dd>
+      <dt>WinBoat (Docker)</dt><dd>A Windows VM, 2 vCPUs and 4 GB, used for the Windows packaging path. <b>Stop it before benchmarking</b> — <code>docker stop -t 120 WinBoat</code>.</dd>
+    </dl>
+  </section>
+
+  <!-- ================= LAYOUT ================= -->
+  <section id="layout">
+    <div class="sec-head">
+      <h2>Repository layout</h2>
+      <span class="sec-tag">where things live</span>
+    </div>
+
+    <dl class="spec">
+      <dt>DolRecomp/src</dt><dd>The recompiler. <code>app/</code> CLI and pipeline · <code>backend/</code> the C emitter and dispatcher generator · <code>backend/llvm/</code> the object backend · <code>cpu/</code> the runtime header the generated code calls into · <code>ir/</code>, <code>analysis/</code>, <code>frontend/</code></dd>
+      <dt>RecompCore</dt><dd>Module template and the chassis ABI glue — <code>module_export.c</code> is 44 lines and wraps <code>dolrecomp_call</code>.</dd>
+      <dt>ModernGekko</dt><dd>The vendored Dolphin fork that hosts the recompiled module</dd>
+      <dt>.github/scripts</dt><dd>Every benchmark, determinism and packaging script</dd>
+      <dt>dist/RingOut-1.0-dist</dt><dd>The desktop package — no module; the player builds one</dd>
+      <dt>dist/RingOut-1.0-deck</dt><dd>The Deck package — ships a prebuilt runtime</dd>
+      <dt>work/</dt><dd>Gitignored scratch that survives <code>/tmp</code> cleaning. Experiment artifacts belong here, not in a job scratchpad.</dd>
+    </dl>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>The desktop package has three artifacts that drift, and none updates itself</h4>
+        <span class="cost">shipped broken twice</span>
+      </div>
+      <p>The desktop release ships no module — <code>setup.sh</code> extracts the player's own ISO and
+        recompiles on their machine. So improvements reach desktop users only when all three of these are
+        refreshed:</p>
+      <ul class="plain">
+        <li><code>module-src/deps/dolrecomp-src/</code> — tracked in git, a copy of <code>DolRecomp/src</code></li>
+        <li><code>tools/dolrecomp</code> — the prebuilt recompiler, gitignored</li>
+        <li><code>bin/moderngekko-run</code> — the prebuilt runtime, gitignored</li>
+      </ul>
+      <p>A stale <em>runtime</em> fails loudly at <code>dlopen</code>. A stale <em>recompiler</em> ships old
+        codegen in silence — setup runs, the module builds, the game plays, just slower. Both have happened.
+        Freshness guards now exist for each, but <strong>check all three every release.</strong></p>
+      <p><strong>The general rule this taught:</strong> the module is built on the player's machine, so no
+        packaging gate ever sees it. Any property of the player-built module is unguarded by construction —
+        check it in <code>setup.sh</code> or nowhere.</p>
+    </div>
+  </section>
+
+  <!-- ================= INSTRUMENTS ================= -->
+  <section id="instruments">
+    <div class="sec-head">
+      <h2>Measuring instruments</h2>
+      <span class="sec-tag">which one answers which question</span>
+    </div>
+    <p>Picking the wrong instrument has cost this project more time than any bug. Each of these answers one
+      question and is misleading outside it.</p>
+
+    <h3>module-bench.sh — is this module faster?</h3>
+    <pre>.github/scripts/module-bench.sh &lt;package-dir&gt; &lt;frames&gt; &lt;input-script&gt; &lt;reps&gt; &lt;tag&gt;=&lt;so&gt; ...</pre>
+    <p>Fixed-work A/B over real gameplay. Drives the determinism harness with
+      <code>.github/input-scripts/arcade-match.txt</code>, a frame-keyed pad script: boot → title → Arcade →
+      Talim → battle 1 on the bridge → stage 2, then a 240-frame attack loop that keeps the fight alive. At
+      24000 frames, gameplay is ~81% of the run.</p>
+    <p>Arms alternate and the order reverses on even reps, so a result tracking run order is visible rather
+      than averaged away. Any run whose hash count ≠ frames is discarded — without that check, a module that
+      crashes at frame 300 wins every comparison. Each run gets a fresh user directory seeded from the
+      package.</p>
+    <p><strong>The metric is cycles, not wall time.</strong> The same module over the same 24000 frames took
+      229 s, 298 s and 352 s in three runs — a 54% spread — because the machine was in use.
+      <code>instructions:u</code> doubles as a checksum that both arms did identical work.</p>
+
+    <h3>timeline.py — when and why does the frame rate drop?</h3>
+    <pre>timeline.py &lt;seconds&gt; &lt;csv&gt;    1 Hz: fps, GPU util, VRAM, power, per-thread CPU</pre>
+    <p>Records continuously so a slowdown can be found <em>after</em> the fact. fps comes from the window
+      title (<code>show_fps_in_title=true</code> in <code>config.ini</code>). Every fps reading carries the
+      GPU and CPU numbers from the same second, so the cause travels with the symptom.</p>
+    <p>The two signatures are unambiguous, because the guest is a single PowerPC thread: <b>GPU-bound</b> is
+      GPU near 100% with the guest thread below it; <b>CPU-bound</b> is the guest thread pinned at ~100% with
+      the GPU well under.</p>
+
+    <h3>determinism-check.sh — did this change guest behaviour?</h3>
+    <p>Runs two instances with the same frame-keyed input and compares per-frame RAM hashes. This is the gate
+      every optimization must pass: a codegen change may alter host instructions freely, but identical frame
+      hashes mean a modified module and a stock one remain netplay peers.</p>
+    <p>Environment variables the runtime reads: <code>RINGOUT_DETERMINISM_FRAMES</code>,
+      <code>RINGOUT_DETERMINISM_INPUT</code>, <code>RINGOUT_DETERMINISM_LOG</code>.</p>
+
+    <h3>llvm-profdata — what does the PGO profile actually cover?</h3>
+    <pre>llvm-profdata show --all-functions --counts &lt;profdata&gt;</pre>
+    <div class="trap">
+      <div class="trap-head">
+        <h4>"Total functions" and "Total number of blocks" are static counts</h4>
+        <span class="cost">one wrong conclusion, published</span>
+      </div>
+      <p>Every instrumented function has an entry whether or not it ever ran, so those totals are identical
+        across every profile of the same binary and say nothing about coverage. The meaningful figure is the
+        count of <b>non-zero counters</b>.</p>
+      <pre>shipped profile     259,449 of 1,426,365 blocks executed   <b>18.19%</b>
++ full match        302,564                                21.21%
++ attract mode      346,983                                24.33%</pre>
+      <p>Reading the static totals produced the confident and wrong claim that broadening the training set
+        reached no new code. It reached 87,534 more blocks.</p>
+    </div>
+
+    <h3>Others</h3>
+    <ul class="plain">
+      <li><code>hot-guest-code.sh</code> — guest-level attribution, needs <code>-g1</code>. Answers "which guest function is hot", not "which host instruction".</li>
+      <li><code>opcode-cycles.sh</code> / <code>.py</code> — cycles per guest opcode class. Built to test whether any opcode is both hot and wastefully emitted; none is.</li>
+      <li><code>privacy-scan.sh</code> — fails a release stage carrying personal data. Earned: a zip once leaked uid and timezone.</li>
+      <li><code>netplay-local.sh</code>, <code>netplay-match.sh</code> — two local peers, byte-identical over 6470 frames.</li>
+    </ul>
+  </section>
+
+  <!-- ================= DISCIPLINE ================= -->
+  <section id="discipline">
+    <div class="sec-head">
+      <h2>Measurement discipline</h2>
+      <span class="sec-tag">every rule was paid for</span>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>The machine must be idle, and noise looks like data</h4>
+        <span class="cost">two false results in one day</span>
+      </div>
+      <p>With a browser and a 4 GB Windows VM running, per-arm spread was <b>12–16%</b> and clean builds
+        varied by 25 seconds. That noise had <em>structure</em>: it produced confident, non-overlapping
+        readings twice — "lld is 7% faster to build" and "ld.bfd is 8% cheaper in-game" — in opposite
+        directions, from adjacent run pairs that looked properly controlled. Both evaporated on an idle
+        machine, where the same instrument resolves <b>0.15%</b>.</p>
+      <p>Before any timing run: no browser, no VM, nothing streaming, and do not play the game on the machine
+        being measured. The other machine is fine to use.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Isolating one variable can hide the interaction that matters</h4>
+        <span class="cost">a full day</span>
+      </div>
+      <p>Internal resolution was tested at 8×, 3× and 1× and they tied exactly — a correct result, and the
+        card was only 32–36% utilized. MSAA was switched <em>off</em> in all three runs so resolution would be
+        isolated, and its own cost was recorded as "not tested, plausibly also free".</p>
+      <p>It was not. MSAA multiplies per-sample work on whatever target resolution provides, so the two are
+        not separable that way. With both enabled the final fight runs at 56.2 fps; removing MSAA alone
+        restores a locked 59.9 with 8× resolution still on. <strong>When two settings compose
+        multiplicatively, test the combination as well as the parts.</strong></p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>A single sample can invert the answer</h4>
+        <span class="cost">one wrong diagnosis</span>
+      </div>
+      <p>An 8-second sample taken at a <em>menu</em> showed the video thread at 99% of a core and pointed
+        squarely at a host-CPU bottleneck. The moment real geometry appeared, it flipped to GPU-bound at 100%
+        utilization with the guest thread at 66–74%. Record a continuous timeline and locate the slow stretch
+        afterwards.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Check which arm a number came from before building a mechanism on it</h4>
+        <span class="cost">a published explanation, wrong</span>
+      </div>
+      <p>The MSAA saturation was first written up as a low-wattage memory-bandwidth stall, from reading 37 W
+        off the <em>1× control arm</em> and attributing it to the MSAA arms — which actually drew the most
+        power of any configuration at 89–91 W. There was no subtlety in the mechanism: the card was simply
+        full.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>A staging directory is not evidence about what ships</h4>
+        <span class="cost">two wrong conclusions in one day</span>
+      </div>
+      <p>Both packages have a <code>dist/…/userdata/</code> tree in the working copy that looks exactly like
+        what a player receives. Neither is. <code>package-deck.sh</code> lists <code>userdata</code> as
+        <b>forbidden</b> and hard-fails if it reaches the stage, alongside the disc, the save card and the
+        module — the shipped zip contains <code>bin lib shaders tools RingOut README CREDITS</code> and zero
+        <code>.ini</code> files.</p>
+      <p>Reading those trees produced two confident and wrong claims on 13 August: that the Deck "ships 7×
+        internal resolution", and that this was costing every Deck player 9.4%. In fact the Deck's live
+        install had been at 1× the whole time and no player ever receives a config at all.</p>
+      <p><strong>One command settles it either way</strong> — <code>unzip -l</code> the actual artifact, or
+        read the file off the machine over ssh. Do that before describing anything as shipped.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Instantaneous clock readings lie</h4>
+        <span class="cost">fooled twice</span>
+      </div>
+      <p><code>/proc/cpuinfo</code> showed 3204 MHz on powersave against 3499.7 MHz on performance —
+        apparently 8.5% of recovered headroom. Sustained throughput moved 1.4%. <strong>Cycles ÷ wall is the
+        honest clock</strong>, and it is free when a benchmark already records both. A snapshot catches a
+        boosting core, not what the run averaged.</p>
+    </div>
+
+    <div class="note">
+      <p><strong>The pattern behind all of it.</strong> Across six suggestion documents and 31 claims, not one
+        headline figure written from reading configuration files survived contact with a counter. The
+        optimizations that paid were the ones nobody could have reasoned their way to — PGO's benefit is
+        spread thinly across the whole instruction stream, with no hot spot to find by reading code. And the
+        two real bugs of the project were found by <em>doing</em> rather than reading: a package that built in
+        four seconds, and a release script with no concept of a binary being older than its sources.</p>
+    </div>
+  </section>
+
+  <!-- ================= SHIPPED ================= -->
+  <section id="shipped">
+    <div class="sec-head">
+      <h2>Optimizations that shipped</h2>
+      <span class="sec-tag">measured, merged</span>
+    </div>
+
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Change</th><th>Measured</th><th>Mechanism</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Profile-guided optimization</td>
+            <td class="num win">−11.9% cycles<br>54.5 → 59.6 fps</td>
+            <td>−9.9% retired instructions plus 2.4% IPC. Needs <code>-mllvm -runtime-counter-relocation</code>, the flag for instrumented <em>shared</em> libraries. PGO was recorded as dead here; that was true of GCC only.</td>
+          </tr>
+          <tr>
+            <td>ThinLTO cache + probed lld</td>
+            <td class="num win">edit loop 61.5s → 1.31s</td>
+            <td>ThinLTO codegen runs inside the linker, so editing one generated chunk re-optimized all 132 modules. The cache reuses the 131 unchanged. Cache at <code>~/.cache/ringout/thinlto</code>, 2 GB cap, 7-day prune.</td>
+          </tr>
+          <tr>
+            <td>Lazy FPRF</td>
+            <td class="num win">−2.45% cycles</td>
+            <td>FPRF measured 100% dead — 3.073 G writes against 15,885 reads. Every FP op sets it unconditionally by architecture. Hash-identical.</td>
+          </tr>
+          <tr>
+            <td>Dispatcher single lookup</td>
+            <td class="num win">−1.23% instructions</td>
+            <td><code>FastDispatchableAt</code> called <code>GetAddressLookupIndex</code> twice per dispatch and discarded one result. Four FMV env flags were also declared inside the loop, each paying a static-init guard per dispatch.</td>
+          </tr>
+          <tr>
+            <td>Dual-core netplay</td>
+            <td class="num win">41 → 46 fps on the Deck</td>
+            <td>Netplay had forced single-core for determinism. Dolphin's actual answer is a deterministic GPU thread — which <em>requires</em> dual-core, so forcing single-core disabled the mechanism built for the problem.</td>
+          </tr>
+          <tr>
+            <td><code>fmod</code> symbol version pin</td>
+            <td>desktop modules now load on a Deck</td>
+            <td>See the glibc floor trap below.</td>
+          </tr>
+          <tr>
+            <td>Stale-artifact guards</td>
+            <td>silent staleness now caught</td>
+            <td>Both packagers refuse to ship a binary older than its sources.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= REJECTED ================= -->
+  <section id="rejected">
+    <div class="sec-head">
+      <h2>Optimizations rejected</h2>
+      <span class="sec-tag">do not revisit without new information</span>
+    </div>
+    <p>Each of these was built or measured, not reasoned about. The numbers are why they are closed.</p>
+
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Idea</th><th>Result</th><th>Why it fails here</th></tr></thead>
+        <tbody>
+          <tr><td>BOLT post-link layout</td><td class="num no">−8.1%</td><td>A flat profile is BOLT's worst case, not its best. It had more information about the binary than the compiler did and still lost.</td></tr>
+          <tr><td>Leaders-only case labels<br><code>--leader-cases</code></td><td class="num no">82.4M interpreter steps<br>vs 0.48M</td><td>Module 19.5% smaller, and 81% of execution leaves the recompiled code — block leaders do not cover indirect-branch targets. Flag exists, off by default.</td></tr>
+          <tr><td>Broadened PGO training set</td><td class="num no">+2.18% cycles</td><td>Adding attract mode pulls weights toward the intro FMV — the game's software MPEG decoder, which the project deliberately bypasses.</td></tr>
+          <tr><td>XER[CA] elimination</td><td class="num no">~1% ceiling</td><td>98.4% of carry writes are dead, but <code>RECOMP_NO_CA</code> hangs the game outright: the 20.2 M reads are load-bearing. Needs a backward liveness pass for ~1%.</td></tr>
+          <tr><td>Fastmem / mmap + SIGSEGV</td><td class="num no">bounded at 8.54%</td><td>That is the entire memory and paired-single budget, and fastmem does not empty it. It also silences the write journal that the determinism tooling and rollback run on.</td></tr>
+          <tr><td>Guest CPU underclock</td><td class="num no">rejected on risk</td><td>Changes emulated timing, so frame hashes change and two peers desync immediately.</td></tr>
+          <tr><td>Governor and TDP on the Deck</td><td class="num no">1.4% / nothing</td><td>Package power is 8 W against a 15 W cap. The workload never approaches the limit.</td></tr>
+          <tr><td>Context-sensitive PGO</td><td class="num no">no change, twice</td><td>Produced an identical binary.</td></tr>
+          <tr><td>Hand-inlined memory fast paths</td><td class="num no">+6.1% CPU</td><td>ThinLTO already inlines them.</td></tr>
+          <tr><td>Hot/cold block splitting<br><code>-fsplit-machine-functions</code></td><td class="num no">+0.07%<br>t = 0.31</td><td>The cleanest test of layout yet — it had the exact instrumented profile, so it avoided BOLT's misclassification, and still did nothing. IPC did not move (2.551 → 2.549) despite 141 cold parts extracted.</td></tr>
+          <tr><td>PGO retrained on the final fight</td><td class="num no">−0.10%<br>(noise)</td><td>Coverage did rise, 18.19% → 22.29% of blocks, and it bought nothing: the full route moved −0.10% while the early stages got <b>1.26% worse</b>. The Deck's missing 18% is not a profile-coverage problem, and cold layout of boss-fight code was the most plausible remaining mechanism.</td></tr>
+          <tr><td>LLVM object backend<br><code>--backend llvm</code></td><td class="num no">+77.2%<br>cycles</td><td>Emits 75% more host instructions for the same work, at the same IPC as the shipped module (2.47 vs 2.51) and with its 43% dispatch advantage already counted in. PGO cannot apply to it at all, and it is 724 MB against 38.8 MB.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p><strong>Layout is closed.</strong> Three interventions have now tested instruction locality from
+        different angles — BOLT −8.1%, <code>-O2</code> −9.1% with 12.5% less code, and machine-function
+        splitting +0.07%. The reason they all fail is one counter: <code>ic_stall_dq_empty</code> is
+        <b>2.4% of cycles</b>, so that is the entire budget any of them could win, and each traded back-end
+        efficiency to chase it.</p>
+      <p>This is worth knowing because the profile <em>looks</em> perfect for the technique: 99.4% of
+        execution comes from 3.5% of the blocks, scattered through 37.9 MB of <code>.text</code>. A peaked
+        profile is a necessary condition for layout work, not a sufficient one — the front end also has to be
+        the limiter, and here the back end is saturated.</p>
+    </div>
+
+    <div class="note">
+      <p><strong>The LLVM object backend is closed.</strong> It was the last structural item open, on the
+        thesis that its <b>43% fewer dispatches</b> (13.7 M vs 23.9 M) would convert into the ~15% the
+        dispatcher was thought to be worth. Measured over 2900 frames of fixed work, 3 reps, order reversed:</p>
+      <table>
+        <thead><tr><th>arm</th><th class="num">mean Gcyc</th><th class="num">mean Ginsn</th><th class="num">IPC</th><th class="num">vs shipped C</th></tr></thead>
+        <tbody>
+          <tr><td>C backend, shipped (PGO)</td><td class="num">61.53</td><td class="num">154.48</td><td class="num">2.51</td><td class="num">—</td></tr>
+          <tr><td>C backend, pre-PGO</td><td class="num">70.37</td><td class="num">157.36</td><td class="num">2.24</td><td class="num no">+14.4%</td></tr>
+          <tr><td>LLVM backend</td><td class="num">109.04</td><td class="num">269.82</td><td class="num">2.47</td><td class="num no">+77.2%</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Its IPC matches the shipped module's and it still loses by 77%.</strong> That rules out
+        stalls, layout and the dispatcher as explanations: the backend emits <b>75% more host instructions
+        for the same emulated work</b>. The dispatch advantage is already counted inside that number, so the
+        thesis is tested and refuted rather than untried.</p>
+      <div class="trap">
+        <div class="trap-head">
+          <h4>Check what the A/B partner actually is before quoting a margin</h4>
+          <span class="cost">a 55% gap that was really 77%</span>
+        </div>
+        <p>The first run of this comparison used <code>dist/RingOut-1.0-deck/bin/gGRSEAF_recomp.c.so</code>
+          as the C arm because it sits next to the LLVM module and is obviously the A/B partner. It is dated
+          9 August; PGO landed on the 12th. So the margin was quoted against a module <b>12.6% slower than
+          the one that ships</b>, and the third row above is the number that matters.</p>
+        <p>The tell was available without re-running anything: the arm's IPC was 2.24 where the shipped
+          module's is 2.51. <strong>Date the artifact against the commit that changed it</strong> — the same
+          discipline as reading the zip rather than the staging tree.</p>
+      </div>
+      <p>The deficit is also larger than it looks. PGO is structurally unavailable to this path — it emits
+        526 <code>.o</code> objects and one <code>.c</code>, so <code>-fprofile-use</code> has nothing to act
+        on — and PGO is worth <b>−11.9%</b> on the C side, putting the real gap near 67%. Measurement was on
+        boot and menus, which carry ~0.1% of a session's paired-single traffic; since the LLVM path
+        <em>calls out</em> to <code>cpu_llvm_abi.c</code> for every float and paired op where the C emitter
+        inlines them, gameplay would widen the gap, not close it. And at <b>724 MB against 38.8 MB</b>, with
+        91 minutes to generate on 12 desktop cores while <code>setup.sh</code> recompiles on the player's
+        machine, it was never shippable in this form.</p>
+      <p><strong>One thing worth keeping came out of it.</strong> Getting far enough to measure meant fixing a
+        real miscompile in the shared IR: it wrote paired-single lane 1 on <em>every</em> FP load and on the
+        ps0-only moves, where <code>emitter.c</code> writes it only for <code>lfs</code>. Games use
+        <code>lfd</code> as a fast 8-byte move, so lane 1 ended up holding two packed f32s. Dolphin's
+        lockstep verifier put it beyond argument — 585 <code>ps1</code> divergences before the fix, 3 after,
+        against the C module's 0.</p>
+    </div>
+  </section>
+
+  <!-- ================= GRAPHICS ================= -->
+  <section id="graphics">
+    <div class="sec-head">
+      <h2>Graphics settings</h2>
+      <span class="sec-tag">measured on the Arcade final fight</span>
+    </div>
+
+    <p>Reported from play: the final fight slowed down. Five configurations of the same fight, sampled once a
+      second. The guest CPU thread sat between 66% and 80% of a core in every arm, so no codegen change could
+      have moved this.</p>
+
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Configuration</th><th>n</th><th>fps</th><th>min</th><th>&lt;58 fps</th><th>GPU</th><th>Power</th></tr></thead>
+        <tbody>
+          <tr><td>everything off — 1× res, no CRT</td><td class="num">523</td><td class="num">59.90</td><td class="num">58.0</td><td class="num">0%</td><td class="num">41%</td><td class="num">37 W</td></tr>
+          <tr><td>8× res + 8× MSAA + CRT</td><td class="num">292</td><td class="num">56.23</td><td class="num">45.3</td><td class="num">60%</td><td class="num">95%</td><td class="num">89 W</td></tr>
+          <tr><td>8× res + 8× MSAA, no CRT</td><td class="num">442</td><td class="num">57.28</td><td class="num">50.1</td><td class="num">56%</td><td class="num">96%</td><td class="num">91 W</td></tr>
+          <tr><td>8× res, no MSAA, no CRT</td><td class="num">186</td><td class="num win">59.90</td><td class="num">59.9</td><td class="num">0%</td><td class="num">62%</td><td class="num">65 W</td></tr>
+          <tr><td>8× res, no MSAA, <b>CRT on</b></td><td class="num">534</td><td class="num win">59.90</td><td class="num">59.9</td><td class="num">0%</td><td class="num">63%</td><td class="num">65 W</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><b>8× MSAA is the entire cost.</b> The CRT post-processing shader costs about 1 fps when the card is
+      already saturated and is free once MSAA is gone — 59.90 either way.</p>
+
+    <h3>Recommended configuration</h3>
+    <pre>userdata/Config/GFX.ini
+  InternalResolution   = 8         <b>MSAA = 0x00000001</b>   (1 sample = off)
+  PostProcessingShader = crt        SSAA = False
+  wideScreenHack       = True       AspectRatio = 1
+
+userdata/config.ini
+  resolution = 5120x4224            # must agree with InternalResolution</pre>
+    <p>The two files feed the same setting and must agree — <code>config.ini</code>'s
+      <code>resolution</code> maps to a Dolphin EFB scale, where any exact <code>640·N × 528·N</code> string
+      resolves to scale N.</p>
+    <h3>The Deck wants different settings, and the desktop result does not transfer</h3>
+    <p>Internal resolution is free on the RTX 3050 — 8×, 3× and 1× tied exactly. That held only because the
+      card was never the constraint. On the Deck it plainly is. Fixed 12000 frames of the input script,
+      <em>windowed</em> so the GPU is in the loop, three reps with the order reversed, identical frame hashes
+      throughout:</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Scale</th><th>Pixels</th><th>Mean wall</th><th>Spread</th><th>Emulated fps</th><th>vs 1×</th></tr></thead>
+        <tbody>
+          <tr><td>1×</td><td class="num">0.3 M</td><td class="num">150.3 s</td><td class="num">0.53%</td><td class="num">79.86</td><td class="num">—</td></tr>
+          <tr><td>4×</td><td class="num">5.4 M</td><td class="num">152.0 s</td><td class="num">0.46%</td><td class="num win">78.93</td><td class="num">+1.18%</td></tr>
+          <tr><td>7×</td><td class="num">16.6 M</td><td class="num">164.4 s</td><td class="num">2.13%</td><td class="num no">72.98</td><td class="num no">+9.43%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><b>7× costs the Deck 9.4%</b>, far outside the spreads. <b>4× costs 1.18%</b> for eighteen times the
+      pixels of native — and the Deck's panel is 1280×800, so even 2× already supersamples it. 4× is the
+      sensible setting there; 7× is not. The Deck has no headroom to give, running 56.9 fps in real play.</p>
+    <p>Note the metric changes with the question. This used <b>wall time over a fixed frame count</b>, not
+      cycles: the run is unthrottled at ~80 emulated fps, so wall time measures throughput directly, and CPU
+      work does not vary with resolution. It must also be <b>windowed</b> — a headless run creates no
+      pipelines and draws nothing, so it cannot measure a GPU change at all.</p>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Dolphin rewrites <code>GFX.ini</code> on exit</h4>
+        <span class="cost">one clobbered experiment</span>
+      </div>
+      <p>Edit graphics settings only while the game is closed. Editing them during a run works until the
+        process exits and overwrites the file with its in-memory copy.</p>
+    </div>
+  </section>
+
+  <!-- ================= DECK ================= -->
+  <section id="deck">
+    <div class="sec-head">
+      <h2>The Steam Deck</h2>
+      <span class="sec-tag">every issue, and the fix</span>
+    </div>
+    <p>The port took four hardware iterations to boot, and every blocker was environment rather than a
+      defect in the port — the recompiled module loaded correctly on every failed run. <strong>When a Deck
+      symptom appears, suspect the environment first.</strong></p>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4><code>LD_LIBRARY_PATH</code> shadowing broke Vulkan for the whole process</h4>
+        <span class="cost">four hardware iterations</span>
+      </div>
+      <p>The launcher put its 66 bundled Debian 12 libraries on <code>LD_LIBRARY_PATH</code>, which outranks
+        the system search path <em>as a whole</em>. Ten of those libraries are ones Mesa itself needs — and
+        the Vulkan loader <code>dlopen</code>s Mesa into the process — so no ICD loaded and
+        <code>vkCreateInstance</code> failed.</p>
+      <p>Ordering within the variable is not a fix; a bundled library shadows the host's copy wherever it
+        sits. Both launchers now ask <code>ldconfig</code> what the host has and bundle only the remainder —
+        58 of 66 were already present on an Arch-family host. <strong>Any "ship our own libs" scheme has this
+        failure mode the moment the host dlopens something into the process.</strong></p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>The glibc floor: one <code>fmod</code> call broke every desktop-built module</h4>
+        <span class="cost">a silent, complete failure</span>
+      </div>
+      <p>A binary's glibc <em>floor</em> is the highest versioned symbol it demands. Binaries run forward
+        across glibc versions, never backward. <code>cpu.c</code> calls <code>fmod</code> exactly once — the
+        round-half-to-even tiebreak — and glibc 2.38 added a new symbol version for it:</p>
+      <pre>built on Arch / Fedora 39+ / Ubuntu 24.04   floor 2.38   FAILS on a Deck
+built on Debian 12 / Ubuntu 22.04           floor 2.36   works</pre>
+      <p>SteamOS is ~2.37, so it died at <code>dlopen</code> — <em>after</em> the player had extracted the
+        disc and waited out a full recompile. Fixed with
+        <code>__asm__(".symver fmod,fmod@GLIBC_2.2.5");</code>, safe because fmod is exact: verified
+        <code>.text</code> byte-identical and frame hashes identical over 6000 frames.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>A poisoned Vulkan pipeline cache, and it is self-perpetuating</h4>
+        <span class="cost">looked exactly like a code regression</span>
+      </div>
+      <p>Worked in Desktop Mode, launched once in Game Mode, then Desktop Mode segfaulted too. The backtrace
+        names it in one screen:</p>
+      <pre>#0  libvulkan_radeon.so                          &lt;- Mesa RADV
+#5  Vulkan::VKPipeline::Create
+#6  VKGfx::CreatePipeline(config, const void*, size_t)   &lt;- cache blob
+#7  ShaderCache::QueueUberPipelineCompile</pre>
+      <p>A crash leaves the blob truncated, so every subsequent launch crashes replaying it and re-corrupts
+        it — which is why it never wears off. The two modes have different cache files (the name carries a
+        config/driver hash), so this is not cross-mode contamination.</p>
+      <pre>mv ~/Desktop/steamdeck/userdata/Cache/Shaders/Vulkan-*.cache /tmp/</pre>
+      <p>Nothing in that stack touches recompiled guest code, and a headless run — which never creates
+        pipelines — passes on the same binaries.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>The pad's SDL name depends on how the game was launched</h4>
+        <span class="cost">an unfalsifiable netplay bug</span>
+      </div>
+      <pre>over ssh, no Steam:   SDL/0/Steam Deck Controller
+Steam Game Mode:      SDL/0/Steam Virtual Gamepad</pre>
+      <p>Same physical pad, different name. A profile written in one context resolves to <em>nothing</em> in
+        the other, and Dolphin reports no error — every binding evaluates empty, so the game reads a centred,
+        unpressed controller. That presents as "the pad works in single player and does nothing in netplay",
+        and it is unfalsifiable from the netplay layer, because the pad map and routing genuinely are clean.
+        <strong>Delete the profile and let it be regenerated in the context you will play in.</strong></p>
+      <p>Never hardcode the device name. Vertical axes read <code>Left Y+</code> for <em>up</em> because that
+        backend already inverts them to match XInput — do not "fix" the sign.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Building on the Deck: pacman's <code>--needed</code> silently no-ops</h4>
+        <span class="cost">an hour</span>
+      </div>
+      <p>The Deck starts with no gcc, clang, cmake, ninja or pkg-config, <code>/usr</code> read-only, and
+        <code>/usr/include</code> stripped to 14 entries — while pacman's database still claims glibc owns
+        504 files there. So <code>pacman -S --needed</code> skips exactly the packages you need.</p>
+      <p>The native build is worth it: 1154/1154 targets, all 47 dependencies resolving to
+        <code>/usr/lib</code>, zero bundled libraries — which deletes the 66-library bundle and the
+        <code>LD_LIBRARY_PATH</code> allowlist together.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Stale installs, and which one Steam actually launches</h4>
+        <span class="cost">several failed netplay tests</span>
+      </div>
+      <p><code>~/Desktop/steamdeck/</code> is the only install and the Steam shortcut target. Two stale copies
+        once existed and one silently became the thing Steam launched. Both machines must run the same
+        runtime <em>and</em> the same module — mismatched modules are a desync waiting to happen.</p>
+      <p><code>mv</code> over a running binary is safe: rename swaps the directory entry and the running
+        process keeps its inode. That is how updates land without closing the game.</p>
+    </div>
+  </section>
+
+  <!-- ================= DESKTOP TRAPS ================= -->
+  <section id="desktoptraps">
+    <div class="sec-head">
+      <h2>Desktop environment traps</h2>
+      <span class="sec-tag">KDE / Wayland / shell</span>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>The game opens on the wrong monitor, and xdotool cannot fix it</h4>
+        <span class="cost">standing instruction</span>
+      </div>
+      <p>The game lands on the portrait panel <code>DP-3</code> and sizes itself to fill it. Two separate
+        problems block the obvious fix: the game is an <b>XWayland</b> window, so <code>xdotool</code> can
+        read its geometry but KWin ignores its move requests — one attempt got the window snapped to a
+        half-tile instead of moved. And Konsole is a <b>native Wayland</b> window, so <code>xdotool</code>
+        cannot see it at all, meaning the terminal's monitor is only knowable by asking the compositor.</p>
+      <p>Both vanish inside KWin's scripting API, which sees every window and can set
+        <code>frameGeometry</code> directly. <code>work/tools/place-game-window.sh</code> does this after
+        every launch. Use <code>print()</code> in the script and read it back from
+        <code>journalctl --user -f</code> — that is the only way to get output out of a KWin script.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4><code>pkill -f</code> matches the shell running it</h4>
+        <span class="cost">killed my own session twice</span>
+      </div>
+      <p>A pattern like <code>pkill -f timeline.py</code> matches the wrapper shell whose command line
+        contains that string, so the command kills itself mid-script and the rest of the compound command
+        never runs. <code>pgrep -f</code> has the same flaw in reverse: it reports the game as running when
+        it is not, because the terminal's own command line mentions the path.</p>
+      <p>Use <code>pgrep -x</code> against the exact process name, or resolve a PID first and signal that.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Several threads share a name — keying by it returns an idle duplicate</h4>
+        <span class="cost">a table of zeroes</span>
+      </div>
+      <p>The runtime has two threads named <code>CPU thread</code> and three named <code>Video thread</code>.
+        A per-thread CPU sampler that keys a dictionary by name keeps whichever <code>readdir</code> returned
+        last — usually one reading 0%. Sum by name, or key by tid.</p>
+      <p>Related, and more useful: <strong>read the thread name to tell which core mode is live</strong>,
+        rather than trusting the config. Dolphin names them <code>CPU thread</code> + <code>Video thread</code>
+        in dual-core, and a single <code>CPU-GPU thread</code> otherwise.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Action Replay codes need <code>EnableCheats</code>, which is not in the config</h4>
+        <span class="cost">one silent no-op launch</span>
+      </div>
+      <p><code>userdata/GameSettings/GRSEAF.ini</code> carries the USA codes — Dolphin ships only the PAL
+        <code>GRSPAF.ini</code>, so the USA disc matched no game ini and the CHEATS tab came up empty. The
+        codes are listed but not enabled, and <code>EnableCheats = True</code> must be set under
+        <code>[Core]</code> in <code>Dolphin.ini</code> or the whole list loads and does nothing.</p>
+      <p>Useful codes: <em>Absolutely Everything Unlocked</em>, <em>Infinite Time</em>, <em>P1/P2 Infinite
+        Health</em>, <em>P1/P2 Play As Inferno</em>. There is <b>no CPU-vs-CPU code</b> in the file.</p>
+    </div>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Escape pauses the core, and looks exactly like a freeze</h4>
+        <span class="cost">one false alarm, still cited</span>
+      </div>
+      <p>Escape opens the in-game overlay and pauses emulation — audio keeps playing and the game stops
+        responding, which reads as a hang. Check the log for <code>[menu] toggle open=1 (core pausing)</code>.
+        <code>Shift+Escape</code> is the immediate quit.</p>
+    </div>
+
+    <h3>Driving the game without hands</h3>
+    <p>Dolphin's Pipe input backend is compiled in, so scripted input needs no code changes — but three
+      things must <em>all</em> be true or every press is silently dropped:</p>
+    <ul class="plain">
+      <li><code>[Input] BackgroundInput = True</code> in <code>Dolphin.ini</code>. It defaults to False, and Dolphin then drops all input whenever the render window lacks focus. A scripted run never has focus.</li>
+      <li>Open the FIFO <b>read-write</b> (<code>exec 9&lt;&gt; fifo</code>). Write-only blocks forever waiting for a reader.</li>
+      <li>Hold a writer open for the whole session. Dolphin opens the pipe once; when the last writer closes it reads EOF and never recovers.</li>
+    </ul>
+    <p>Profiling needs none of this. Determinism is irrelevant to performance counters, so launch with
+      <code>RINGOUT_DETERMINISM_FRAMES=N</code> so the process exits cleanly, play by hand, and the
+      <code>.profraw</code> lands. A hard kill loses it.</p>
+  </section>
+
+  <!-- ================= OPEN ================= -->
+  <section id="open">
+    <div class="sec-head">
+      <h2>Open questions</h2>
+      <span class="sec-tag">in order of value</span>
+    </div>
+
+    <h3>Where the Deck's missing 3 fps actually goes</h3>
+    <p>Answered in part, 13 August. The Deck runs 56.9 fps in real play, and it is <b>CPU-bound</b> — per-core
+      load during a match is one saturated guest thread and seven near-idle cores:</p>
+    <pre>cpu0 12%   cpu1  8%   <b>cpu2 100%</b>   cpu3 4%
+cpu4  6%   cpu5 10%   cpu6  22%   cpu7 4%</pre>
+    <p>It was also running at 1× internal resolution the whole time, so the graphics settings were never the
+      cause. Two power explanations are already closed: package draw is 8 W against a 15 W cap, and raising
+      the cap to 29 W did nothing; governor and EPP moved throughput 1.4%, inside noise.</p>
+    <p>What remains open is the guest thread itself. The recompiled module has no known headroom left —
+      PGO, lazy FPRF and the dispatcher have all shipped, and layout is closed — so the next honest answer is
+      probably that a single emulated PowerPC on a Zen 2 core at ~3.3 GHz effective is simply what it is.
+      <b>Do not reopen this without a new mechanism</b>; the measured avenues are exhausted.</p>
+    <p><strong>Confirmed and sharpened on 14 August.</strong> The 56.9 fps reading was briefly written off as
+      stale and is not: measured on the actual final fight the Deck runs <b>50.5 fps with the CPU thread at
+      97%</b> and the GPU idling at 9.5 W. That also turns this open question into a number — <b>+18%</b> — see
+      the headroom section below.</p>
+
+    <h3>How much headroom is there above 60 fps? <span class="sec-tag">answered 14 August</span></h3>
+    <p><code>EmulationSpeed = 0.</code> under <code>[Core]</code> lifts the limiter. Windowed, 12000 frames of
+      <code>arcade-match.txt</code>, sampled once a second:</p>
+    <table>
+      <thead><tr><th>target</th><th class="num">boot / menus</th><th class="num">char select</th><th class="num">gameplay</th><th class="num">vs 60</th></tr></thead>
+      <tbody>
+        <tr><td>Desktop</td><td class="num">201</td><td class="num">139</td><td class="num">110</td><td class="num">1.83×</td></tr>
+        <tr><td>Steam Deck (3×, MSAA off)</td><td class="num">132</td><td class="num">92</td><td class="num">73</td><td class="num">1.21×</td></tr>
+      </tbody>
+    </table>
+    <p>Both are <b>floors</b>: input scripting is coupled to hash logging — <code>GetConfig()</code> returns
+      early when <code>RINGOUT_DETERMINISM_LOG</code> is unset — so every run pays the per-frame whole-RAM
+      CRC32, which is ~18% of the CPU thread.</p>
+
+    <div class="trap">
+      <div class="trap-head">
+        <h4>Headroom is a property of the content you measured, not of the game</h4>
+        <span class="cost">a 1.21× margin that was really 0.85×</span>
+      </div>
+      <p>The Deck's 73 fps above is the stage 1–2 fight, because that is as far as
+        <code>arcade-match.txt</code> goes — the same limitation that keeps PGO coverage at 18% of blocks. On
+        that basis the Deck looked comfortable and the older "56.9 fps, CPU-bound" reading looked stale. It was
+        not. The <b>actual final fight</b> (stage 8 vs Inferno, played by hand, 423 samples over ~7 minutes,
+        identical settings):</p>
+      <pre>fps mean 50.5   min 48.1   max 55.3   under 60: 423 of 423 seconds (100%)
+CPU thread 97.0%       GPU 46%, 9.5 W</pre>
+      <p>The boss fight is ~30% more expensive than the early stages, and the margin does not survive it. The
+        emulation thread saturates while the GPU idles — so unlike the desktop's MSAA problem, this is entirely
+        the recompiled code. <strong>Never generalise a headroom figure past the content it was taken on.</strong></p>
+    </div>
+
+    <div class="note">
+      <p><strong>This is the first concrete performance target the project has had: +18%.</strong>
+        60 / 50.5 = 1.19×, so roughly a fifth more CPU throughput would hold 60 in the final fight. Worth
+        stating plainly against the remaining ledger: fastmem's <em>entire</em> bounded budget is ~8%, PGO
+        (−11.9%) and lazy FPRF (−2.45%) are already spent, layout is closed three ways, and the LLVM backend
+        lost by 77%. <b>No single remaining lever reaches 18%.</b></p>
+      <p>Reaching the boss without playing the whole game: the Action Replay codes in <code>GRSEAF.ini</code> —
+        <b>P1 Infinite Health</b> and <b>P1 Win 1 Round To Win</b> to get there, <b>Infinite Time</b> to hold
+        the fight open. They produced <b>zero</b> invalid-read alerts, so they do not distort the measurement.
+        Deck telemetry needs its own recorder (<code>work/deck-finalfight/deck-timeline.py</code>): the APU
+        reports through amdgpu sysfs rather than NVIDIA counters, <code>gpu_busy_percent</code> is
+        instantaneous and must be averaged, and <b>xdotool silently finds no windows at all without
+        <code>XAUTHORITY</code></b> — which looks exactly like the game not being up yet.</p>
+    </div>
+    <div class="trap">
+      <div class="trap-head">
+        <h4>The benchmark harness is already throttled</h4>
+        <span class="cost">read before testing</span>
+      </div>
+      <p>Across five arms of the PGO benchmark, every run took <b>201.5 s wall for 24000 frames</b> (~119
+        emulated fps) while cycle counts differed by 2.2% between arms. Wall time pinned that hard against
+        varying work is a speed limit, not a coincidence — and it is the other reason
+        <code>module-bench.sh</code> insists on cycles.</p>
+      <p>So an unthrottled measurement needs the limiter lifted in the <em>harness</em> run, not only in a GUI
+        session. Record the fps distribution rather than a peak: a single peak over a run containing boot and
+        menus says almost nothing.</p>
+    </div>
+
+    <h3>Two guest faults from the Action Replay codes</h3>
+    <pre>[alert] Invalid read from 0x0000005a, PC = 0x80009dc0
+[alert] Invalid read from 0x0000005a, PC = 0x80032ca4</pre>
+    <p>Seen once during boot with the unlock codes enabled, right after the intro FMV starts. The game played
+      normally and no measurement was affected.</p>
+    <div class="trap">
+      <div class="trap-head">
+        <h4>The obvious test cannot answer this — the fault is intermittent</h4>
+        <span class="cost">saves a false all-clear</span>
+      </div>
+      <p>The natural experiment is one launch with <code>EnableCheats = False</code> to see whether the
+        warning disappears. That assumes it fires reliably when codes are on. It does not: two later
+        launches with <code>EnableCheats = True</code> and the same boot path — both reaching the FMV —
+        produced <b>zero alerts</b>.</p>
+      <p>Absence is the normal case, so a clean codes-off run proves nothing. This needs several launches per
+        arm, or a reproduction trigger better than "boot the game". Worth noting that a null-ish read at
+        <code>0x0000005a</code> looks more like a guest pointer used before initialization than a cheat
+        write.</p>
+    </div>
+
+    <h3>What Exhibition mode actually offers</h3>
+    <p>If it runs CPU-vs-CPU fights it is the only known route to an unattended profile-training session —
+      real gameplay, no intro FMV, no controller. Nobody has looked. Weigh it against the finding that
+      broadening the training set was measured and lost.</p>
+
+    <h3>Smaller items</h3>
+    <ul class="plain">
+      <li><b>The dispatcher's cycle cost</b> — shipped on its instruction count; the cycle figure needs an idle machine and ~8 reps per arm.</li>
+      <li><b>82% of the module is cold to the shipped PGO profile.</b> Still true — and hot/cold splitting has now been tested against it and found nothing, so this is a curiosity rather than a lead.</li>
+      <li><b>A VS-screen crash</b> reported once on this desktop, never reproduced across three run modes.</li>
+    </ul>
+  </section>
+
+  <footer>
+    Compiled 13 Aug 2026 from measurements taken 4–13 Aug 2026, revised the same evening with the
+    Deck resolution arms and the machine-function-splitting result.<br>
+    Desktop: Ryzen 5 5600X · RTX 3050 · CachyOS · clang 22.1.8 · 132 generated chunks.<br>
+    Target: Steam Deck · Zen 2 · RDNA2 · SteamOS.<br>
+    Every figure is from a run on this hardware, not an estimate.
+  </footer>
+
+</div>
