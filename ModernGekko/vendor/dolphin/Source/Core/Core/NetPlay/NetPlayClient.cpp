@@ -210,7 +210,8 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
     }
 
     if (!Common::EnsureTraversalClient(traversal_config.traversal_host,
-                                       traversal_config.traversal_port))
+                                       traversal_config.traversal_port,
+                                       traversal_config.traversal_port_alt))
     {
       return;
     }
@@ -261,7 +262,8 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
       if (connect_timer.ElapsedMs() > 5000)
         break;
     }
-    m_dialog->OnConnectionError(_trans("Could not communicate with host."));
+    if (m_connection_state != ConnectionState::Failure)
+      m_dialog->OnConnectionError(_trans("Could not communicate with host."));
   }
 }
 
@@ -1872,9 +1874,11 @@ void NetPlayClient::OnTraversalStateChanged()
     m_connection_state = ConnectionState::WaitingForTraversalClientConnectReady;
     m_traversal_client->ConnectToClient(m_host_spec);
   }
-  else if (m_connection_state != ConnectionState::Failure &&
+  else if (m_connection_state != ConnectionState::Connected &&
+           m_connection_state != ConnectionState::Failure &&
            state == Common::TraversalClient::State::Failure)
   {
+    m_connection_error = ConnectionError::TraversalServiceUnavailable;
     Disconnect();
     m_dialog->OnTraversalError(m_traversal_client->GetFailureReason());
   }
@@ -1899,16 +1903,20 @@ void NetPlayClient::OnConnectFailed(Common::TraversalConnectFailedReason reason)
   switch (reason)
   {
   case Common::TraversalConnectFailedReason::ClientDidntRespond:
-    PanicAlertFmtT("Traversal server timed out connecting to the host");
+    m_connection_error = ConnectionError::TraversalFailed;
+    m_dialog->OnConnectionError(_trans("The room host did not respond to the traversal service."));
     break;
   case Common::TraversalConnectFailedReason::ClientFailure:
-    PanicAlertFmtT("Server rejected traversal attempt");
+    m_connection_error = ConnectionError::TraversalFailed;
+    m_dialog->OnConnectionError(_trans("The room host rejected the traversal attempt."));
     break;
   case Common::TraversalConnectFailedReason::NoSuchClient:
-    PanicAlertFmtT("Invalid host");
+    m_connection_error = ConnectionError::RoomNotFound;
+    m_dialog->OnConnectionError(_trans("That room code does not exist or has expired."));
     break;
   default:
-    PanicAlertFmtT("Unknown error {0:x}", static_cast<int>(reason));
+    m_connection_error = ConnectionError::TraversalFailed;
+    m_dialog->OnConnectionError(_trans("The traversal service could not connect this room."));
     break;
   }
 }

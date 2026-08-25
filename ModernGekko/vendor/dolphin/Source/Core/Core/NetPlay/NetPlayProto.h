@@ -206,6 +206,9 @@ enum class ConnectionError : u8
   NameTooLong = 4,
   CompatibilityMismatch = 5,
   MalformedHandshake = 6,
+  TraversalServiceUnavailable = 7,
+  RoomNotFound = 8,
+  TraversalFailed = 9,
 };
 
 enum class SyncSaveDataID : u8

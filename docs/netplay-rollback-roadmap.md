@@ -77,9 +77,10 @@ stall/resume, isolated frame-60 mismatch/stop, and a 2,958-row fixed-delay
 regression also passed; see the live harness document for exact directories,
 commands, and hashes. Stage 7 is still incomplete because complete tagged
 Windows/AppImage artifacts and physical/cross-machine impairment testing remain
-release gates. Direct UDP is still unauthenticated/unencrypted and is limited
-to trusted LAN or private-VPN peers; the proposed room/traversal/relay system is
-not implemented.
+release gates. The later Online Room beta uses Dolphin's hosted room-code
+rendezvous, but gameplay is still unauthenticated/unencrypted direct UDP for
+trusted friends. Relay, authenticated rooms, encryption, and IP privacy remain
+future work; see `docs/netplay-connectivity.md`.
 
 ## What ships today
 

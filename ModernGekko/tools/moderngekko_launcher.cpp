@@ -743,6 +743,7 @@ int main(int argc, char **argv) {
   bool show_fps_in_title = config.show_fps_in_title;
   std::array<char, 31> netplay_nickname{};
   std::array<char, 256> netplay_address{};
+  std::array<char, 16> netplay_room_code{};
   std::snprintf(netplay_nickname.data(), netplay_nickname.size(), "%s",
                 config.netplay_nickname.c_str());
   std::snprintf(netplay_address.data(), netplay_address.size(), "%s",
@@ -755,6 +756,8 @@ int main(int argc, char **argv) {
   int netplay_mode =
       config.netplay_mode == moderngekko::frontend::NetplayMode::Rollback ? 1
                                                                           : 0;
+  int netplay_direct_mode = netplay_mode;
+  bool netplay_direct_advanced = false;
   int resolution_index = 0;
   for (std::size_t i = 0; i < resolutions.size(); ++i) {
     if (config.resolution == resolutions[i].text)
@@ -1196,13 +1199,13 @@ int main(int argc, char **argv) {
       }
     } else if (page == LauncherPage::Netplay) {
       SectionHeading(fonts.heading, "Netplay",
-                     "Host or join a direct session. Both players need the "
-                     "same RingOut build, network mode, and game files.",
+                     "Create or join an Online Room with a short code. Both "
+                     "players need the same RingOut build and game files.",
                      content_width, scale);
       ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
       ImGui::TextDisabled(
-          "Use a keyboard to edit the nickname and address. L1 and R1 switch "
-          "pages with a controller.");
+          "Beta rooms use Dolphin's hosted rendezvous service, then connect "
+          "players directly. L1 and R1 switch pages with a controller.");
       ImGui::PopTextWrapPos();
       if (!active_module) {
         ImGui::Dummy(ImVec2(0.0f, 4.0f * scale));
@@ -1210,19 +1213,26 @@ int main(int argc, char **argv) {
                    ImVec4(0.85f, 0.64f, 0.27f, 1.0f), scale, true);
       }
       ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-      ImGui::TextUnformatted("Network mode");
-      ImGui::RadioButton("Fixed delay (stable)", &netplay_mode, 0);
-      if (!rollback_production_ready)
-        ImGui::BeginDisabled();
-      ImGui::RadioButton("Experimental rollback", &netplay_mode, 1);
-      if (!rollback_production_ready)
-        ImGui::EndDisabled();
+      ImGui::Checkbox("Advanced: use Direct IP", &netplay_direct_advanced);
+      if (netplay_direct_advanced) {
+        ImGui::TextUnformatted("Network mode");
+        ImGui::RadioButton("Fixed delay", &netplay_direct_mode, 0);
+        if (!rollback_production_ready)
+          ImGui::BeginDisabled();
+        ImGui::RadioButton("Rollback", &netplay_direct_mode, 1);
+        if (!rollback_production_ready)
+          ImGui::EndDisabled();
+        netplay_mode = netplay_direct_mode;
+      } else {
+        netplay_mode = 1;
+        ImGui::TextUnformatted("Mode: Rollback");
+      }
       ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
       if (rollback_production_ready) {
         ImGui::TextDisabled(
             "Rollback predicts late remote input and corrects it by restoring "
-            "and replaying emulator state. If a peer cannot negotiate it, "
-            "switch both players to fixed delay; there is no silent fallback.");
+            "and replaying emulator state. RingOut rejects incompatible peers "
+            "instead of silently falling back.");
       } else {
         ImGui::TextDisabled(
             "Experimental rollback is unavailable in this build until the "
@@ -1235,19 +1245,34 @@ int main(int argc, char **argv) {
       ImGui::SetNextItemWidth(300.0f * scale);
       ImGui::InputText("##nickname", netplay_nickname.data(),
                        netplay_nickname.size());
-      ImGui::TextUnformatted("Host name or IPv4 address");
-      ImGui::SetNextItemWidth(300.0f * scale);
-      ImGui::InputText("##address", netplay_address.data(),
-                       netplay_address.size());
-      ImGui::TextUnformatted("UDP port");
-      ImGui::SetNextItemWidth(145.0f * scale);
-      ImGui::InputInt("##port", &netplay_port);
-      netplay_port = std::clamp(netplay_port, 1, 65535);
+      if (netplay_direct_advanced) {
+        ImGui::TextUnformatted("Host name or IPv4 address");
+        ImGui::SetNextItemWidth(300.0f * scale);
+        ImGui::InputText("##address", netplay_address.data(),
+                         netplay_address.size());
+        ImGui::TextUnformatted("UDP port");
+        ImGui::SetNextItemWidth(145.0f * scale);
+        ImGui::InputInt("##port", &netplay_port);
+        netplay_port = std::clamp(netplay_port, 1, 65535);
+      } else {
+        ImGui::TextUnformatted("Room code (needed only to Join)");
+        ImGui::SetNextItemWidth(220.0f * scale);
+        ImGui::InputText("##room-code", netplay_room_code.data(),
+                         netplay_room_code.size(),
+                         ImGuiInputTextFlags_CharsHexadecimal |
+                             ImGuiInputTextFlags_CharsUppercase);
+      }
       ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
-      ImGui::TextDisabled(
-          "Direct UDP netplay is not authenticated or encrypted. Play with "
-          "trusted friends on a LAN or private VPN. Forward this UDP port only "
-          "if you understand the exposure.");
+      if (netplay_direct_advanced) {
+        ImGui::TextDisabled(
+            "Direct UDP is for a trusted LAN or private VPN and may require "
+            "manual port forwarding.");
+      } else {
+        ImGui::TextDisabled(
+            "Trusted-friends beta: no relay, authentication, encryption, or "
+            "IP hiding. Strict NATs may fail and your opponent learns your "
+            "IP.");
+      }
       ImGui::PopTextWrapPos();
       ImGui::Checkbox(netplay_mode == 1 ? "Use recommended base delay"
                                         : "Use default input delay",
@@ -1274,16 +1299,30 @@ int main(int argc, char **argv) {
                   : moderngekko::frontend::NetplayMode::FixedDelay,
               rollback_production_ready);
       ImGui::BeginDisabled(!active_module || !selected_mode_available);
-      if (PrimaryButton("Host", ImVec2(150.0f * scale, 42.0f * scale)) &&
+      if (PrimaryButton(netplay_direct_advanced ? "Host direct"
+                                                : "Host online room",
+                        ImVec2(190.0f * scale, 42.0f * scale)) &&
           ensure_controller() && save_netplay()) {
         launch_mode = LaunchMode::Host;
         done = true;
       }
       ImGui::SameLine();
-      if (ImGui::Button("Join", ImVec2(150.0f * scale, 42.0f * scale)) &&
-          ensure_controller() && save_netplay()) {
-        launch_mode = LaunchMode::Join;
-        done = true;
+      if (ImGui::Button(netplay_direct_advanced ? "Join direct"
+                                                : "Join online room",
+                        ImVec2(190.0f * scale, 42.0f * scale))) {
+        const auto normalized = moderngekko::frontend::NormalizeNetplayRoomCode(
+            netplay_room_code.data());
+        if (!netplay_direct_advanced && !normalized) {
+          std::lock_guard lock(dialog.mutex);
+          dialog.error =
+              "Room codes contain exactly eight hexadecimal characters.";
+        } else if (ensure_controller() && save_netplay()) {
+          if (normalized)
+            std::snprintf(netplay_room_code.data(), netplay_room_code.size(),
+                          "%s", normalized->c_str());
+          launch_mode = LaunchMode::Join;
+          done = true;
+        }
       }
       ImGui::EndDisabled();
       ImGui::Dummy(ImVec2(0.0f, 12.0f * scale));
@@ -1444,9 +1483,13 @@ int main(int argc, char **argv) {
         argument_storage.emplace_back("--netplay-host");
       else if (launch_mode == LaunchMode::Join) {
         argument_storage.emplace_back("--netplay-join");
-        argument_storage.emplace_back(config.netplay_address);
+        argument_storage.emplace_back(
+            netplay_direct_advanced ? config.netplay_address
+                                    : std::string(netplay_room_code.data()));
       }
       if (launch_mode == LaunchMode::Host || launch_mode == LaunchMode::Join) {
+        if (!netplay_direct_advanced)
+          argument_storage.emplace_back("--netplay-traversal");
         argument_storage.emplace_back("--netplay-port");
         argument_storage.emplace_back(std::to_string(config.netplay_port));
         argument_storage.emplace_back("--nickname");
@@ -1551,6 +1594,24 @@ int main(int argc, char **argv) {
             launch_error =
                 "The connection to the other player was lost and the match "
                 "was stopped.";
+          } else if (exit_code ==
+                     static_cast<int>(moderngekko::frontend::NetplayExitCode::
+                                          TraversalServiceUnavailable)) {
+            launch_error =
+                "Dolphin's hosted room service did not respond. Try again "
+                "later, or use Advanced Direct IP on a trusted LAN/VPN.";
+          } else if (exit_code ==
+                     static_cast<int>(moderngekko::frontend::NetplayExitCode::
+                                          InvalidRoomCode)) {
+            launch_error =
+                "That room code is invalid, expired, or no longer registered.";
+          } else if (exit_code ==
+                     static_cast<int>(moderngekko::frontend::NetplayExitCode::
+                                          TraversalFailed)) {
+            launch_error =
+                "The room was found, but direct peer-to-peer traversal failed. "
+                "A strict NAT or firewall may be blocking it; this beta has no "
+                "relay fallback.";
           } else if (launch_mode == LaunchMode::Join) {
             switch (static_cast<moderngekko::frontend::NetplayExitCode>(
                 exit_code)) {
@@ -1579,14 +1640,20 @@ int main(int argc, char **argv) {
               break;
             default:
               launch_error =
-                  "Could not reach the netplay host. Check the host name, UDP "
-                  "port, and firewall.";
+                  netplay_direct_advanced
+                      ? "Could not reach the netplay host. Check the "
+                        "host name, UDP port, and firewall."
+                      : "Could not connect to that online room. "
+                        "Check the code and ask the host to keep the "
+                        "lobby open.";
               break;
             }
           } else if (launch_mode == LaunchMode::Host) {
-            launch_error =
-                "Could not create the netplay session. Check the UDP port "
-                "and firewall settings.";
+            launch_error = netplay_direct_advanced
+                               ? "Could not create the netplay session. Check "
+                                 "the UDP port and firewall settings."
+                               : "Could not create the online room through "
+                                 "Dolphin's hosted traversal service.";
           } else {
             launch_error = "The game process exited with code " +
                            std::to_string(exit_code) + ".";

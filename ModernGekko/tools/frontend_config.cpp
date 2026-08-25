@@ -42,6 +42,24 @@ bool IsPlayerUsableNetplayMode(NetplayMode mode,
   return mode == NetplayMode::FixedDelay || rollback_production_ready;
 }
 
+std::optional<std::string> NormalizeNetplayRoomCode(std::string_view value) {
+  const auto is_space = [](unsigned char c) { return std::isspace(c); };
+  while (!value.empty() && is_space(static_cast<unsigned char>(value.front())))
+    value.remove_prefix(1);
+  while (!value.empty() && is_space(static_cast<unsigned char>(value.back())))
+    value.remove_suffix(1);
+  if (value.size() != 8)
+    return std::nullopt;
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (const unsigned char c : value) {
+    if (!std::isxdigit(c))
+      return std::nullopt;
+    normalized.push_back(static_cast<char>(std::tolower(c)));
+  }
+  return normalized;
+}
+
 namespace {
 std::string Trim(std::string value) {
   const auto not_space = [](unsigned char c) { return !std::isspace(c); };

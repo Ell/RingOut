@@ -484,24 +484,27 @@ has no central matchmaking, relay, password, or public room browser.
 When testing a Windows package built from this worktree, use the top-level
 `RingOut.exe` launcher:
 
-1. Both players open **Netplay** and select the same mode. Use **Fixed delay
-   (stable)** unless explicitly testing rollback. Experimental rollback requires
-   the exact compatible rollback build on every peer and does not silently
-   downgrade.
-2. Enter nicknames and the same UDP port. The host selects **Host**. The joiner
-   enters the host's trusted LAN/private-VPN address and selects **Join**.
+1. Both players open **Netplay**. The normal beta flow selects rollback and
+   uses **Host online room** / **Join online room**. Advanced Direct IP retains
+   fixed-delay and manual-address diagnostics.
+2. The host copies the eight-character room code from the lobby; the joiner
+   enters that code. No gameplay port forwarding is normally required when
+   Dolphin's peer-to-peer traversal succeeds.
 3. In the lobby, confirm Same game and a controller assignment, then each player
    selects **Ready**. Any mapping, delay/mode, game, roster, or disconnect change
    clears readiness.
 4. The host selects **Start game** only after all mapped players show Ready.
 
-The launcher forwards `--netplay-mode`, address, port, nickname, buffer, and
-controller values (`ModernGekko/tools/moderngekko_launcher.cpp:1197-1272,1425-1447`).
+The launcher forwards explicit traversal/direct selection, `--netplay-mode`,
+room code or address, port, nickname, buffer, and controller values
+(`ModernGekko/tools/moderngekko_launcher.cpp:1197-1324,1474-1515`).
 The connect extension requires an exact mode and compatibility fingerprint
 before player allocation
 (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:463-503`).
-Direct UDP remains unauthenticated and unencrypted; use only trusted friends on
-a LAN or private VPN. There is no relay or NAT traversal.
+Online Room uses Dolphin's hosted rendezvous and then direct UDP. It remains
+unauthenticated and unencrypted, exposes peer IPs, has no relay fallback, and
+can fail on strict NATs. Use only trusted friends. Advanced Direct IP remains
+available for a LAN/private VPN.
 
 Rollback sessions quarantine save writes: synchronized memory-card data can be
 used in-game, but progress is not copied back to the user's save and writable
@@ -560,10 +563,16 @@ The Windows launchers forward non-disc arguments to `moderngekko-run.exe`, so a
 console can bypass the in-game request step after first-run setup:
 
 ```powershell
-# Host
+# Online Room host; copy the code from the lobby.
+.\RingOut.cmd --netplay-host --netplay-traversal --netplay-mode rollback --nickname Host
+
+# Online Room guest
+.\RingOut.cmd --netplay-join 0123abcd --netplay-traversal --netplay-mode rollback --nickname Guest
+
+# Advanced Direct host
 .\RingOut.cmd --netplay-host --netplay-port 2626 --nickname Host
 
-# Join
+# Advanced Direct guest
 .\RingOut.cmd --netplay-join 192.168.1.50 --netplay-port 2626 --nickname Guest
 ```
 

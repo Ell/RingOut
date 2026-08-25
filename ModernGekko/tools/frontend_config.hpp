@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -20,6 +21,9 @@ bool ParseNetplayMode(std::string_view value, NetplayMode *mode);
 // that safety decision in the frontend layer.
 bool IsPlayerUsableNetplayMode(NetplayMode mode,
                                bool rollback_production_ready);
+// Dolphin's beta traversal service issues exactly eight lowercase hex digits.
+// Accept surrounding whitespace and uppercase for paste-friendly launcher UX.
+std::optional<std::string> NormalizeNetplayRoomCode(std::string_view value);
 
 struct ResolutionOption {
   const char *text;

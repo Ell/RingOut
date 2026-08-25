@@ -32,7 +32,8 @@ before treating an experimental prerelease as stable.
 
 **Netplay**: released builds use fixed-delay play over a deterministic dual-core
 setup. The `codex/rollback-netplay` source branch adds an Experimental rollback
-mode and a Ready-gated lobby. Its current Linux/source worktree has passed
+mode, an Online Room beta using Dolphin's hosted traversal service, and a
+Ready-gated lobby. Its current Linux/source worktree has passed
 end-to-end clean, late-input correction, prediction-horizon recovery, live
 desync, and fixed-delay regression routes. It is not a published player-ready
 release yet: complete Windows/AppImage artifacts and physical two-machine,
@@ -129,8 +130,9 @@ it does not replace the host's graphics drivers.
   default because the ordinary emulated Sofdec path measured faster
 - **23 verified cheat codes** shipped in `GameSettings/GRSEAF.ini`
 - **Netplay** — fixed-delay lockstep in current releases; the rollback branch has
-  live bounded prediction, correction, restore/replay, and a Ready-gated lobby,
-  with branch-local Linux/source evidence and the release boundaries below
+  live bounded prediction, correction, restore/replay, a Ready-gated lobby, and
+  beta room-code rendezvous, with branch-local Linux/source evidence and the
+  release boundaries below
 - **Its own icon** — the disc banner and the memory-card icon are extracted from
   your disc and saves on your machine, and a desktop entry is written for you.
   None of that artwork ships; it is the publisher's.
@@ -154,14 +156,11 @@ Free camera (enable in the Video tab): `Shift+WASD` move, `Shift+Q/E` down/up,
 
 ### Netplay and cheats
 
-In a package containing the integrated C++ launcher, open **Netplay** and:
+In a beta package containing the integrated C++ launcher, open **Netplay** and:
 
-1. Have both players choose the same network mode. Use **Fixed delay (stable)**
-   for the release-compatible path. Experimental rollback requires the exact
-   rollback-capable build on every peer; it never silently becomes fixed delay.
-2. Enter a nickname and the same UDP port (2626 by default). The host selects
-   **Host**. The joiner enters the host's LAN/private-VPN address and selects
-   **Join**.
+1. Enter a nickname. The host selects **Host online room**.
+2. Copy the eight-character code shown in the lobby and send it privately to
+   the other player. The joiner enters it and selects **Join online room**.
 3. In the lobby, verify the requested mode, **Same game**, and one controller
    assignment per player. Each player selects **Ready**. Mapping, delay/mode,
    roster, or game changes clear readiness.
@@ -170,10 +169,11 @@ In a package containing the integrated C++ launcher, open **Netplay** and:
 Both players must have the same Ring Out code, compatible disc/DOL, generated
 module, rollback protocol, and CPU-state ABI identity. A mismatch is refused
 before lobby admission.
-The transport is direct UDP without authentication or encryption: use it only
-with trusted friends on a LAN or private VPN. There is no public matchmaking,
-relay, room password, or NAT traversal. Do not expose the port to untrusted
-peers.
+Online Room uses Dolphin's hosted service only to exchange public UDP endpoints;
+gameplay remains direct P2P. It has no relay, authentication, encryption, room
+password, or IP hiding, so use it only with a trusted friend. Strict NATs may
+fail. **Advanced: use Direct IP** preserves the LAN/private-VPN fallback and its
+fixed-delay option.
 
 The in-game System-tab Host/Join path remains available and restarts the runtime
 into the same pre-boot lobby, which is expected. Older released packages may
@@ -204,9 +204,11 @@ fixed-delay whole-run oracle with 2,958 byte-identical rows
 (`/tmp/ringout-fixed-delay-final-3a7e`). These are
 strong branch-local Linux/source results, not distributable artifacts. Do not
 call the feature shipped until complete tagged packages and physical/cross-
-machine tests pass. Connectivity is still direct trusted LAN/private-VPN UDP;
-room codes, traversal, and relay are proposed in
-[the connectivity plan](docs/netplay-connectivity.md), not implemented.
+machine tests pass. Hosted room-code rendezvous is implemented and its complete
+control-plane exchange passes against `stun.dolphin-emu.org`; the same-machine
+test did not receive the endpoint-directed punch, so a real two-network match
+remains a beta release gate. Relay, authentication, encryption, and IP privacy
+remain proposed in [the connectivity plan](docs/netplay-connectivity.md).
 
 During a match the overlay stays live without pausing either peer. Core-state
 controls (speed, pause, save/load/reset), controller rebinding, and cheats are

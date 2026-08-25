@@ -375,7 +375,7 @@ void TraversalClient::HandleTraversalTest()
           break;
         }
         else if (rv < int(sizeof(packet)) || raddr.host != m_ServerAddress.host ||
-                 raddr.host != m_portAlt || packet.requestId != m_TestRequestId)
+                 raddr.port != m_portAlt || packet.requestId != m_TestRequestId)
         {
           // irrelevant packet, ignore
           continue;

@@ -66,6 +66,13 @@ int main() {
                                               &parsed_mode)) {
     return 20;
   }
+  const auto normalized_room =
+      moderngekko::frontend::NormalizeNetplayRoomCode("  A1b2C3d4\n");
+  if (!normalized_room || *normalized_room != "a1b2c3d4" ||
+      moderngekko::frontend::NormalizeNetplayRoomCode("a1b2c3d") ||
+      moderngekko::frontend::NormalizeNetplayRoomCode("a1b2c3dz")) {
+    return 21;
+  }
 
   auto invalid_netplay = netplay_config;
   invalid_netplay.netplay_address = "not a host";

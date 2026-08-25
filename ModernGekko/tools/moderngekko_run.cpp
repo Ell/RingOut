@@ -36,7 +36,9 @@ void Usage() {
                "       [--wayland] [-X11] [--headless] [--allow-interpreter]\n"
                "       [--widescreen]   (16:9; also Alt+W in-game)\n"
                "       [--netplay-host | --netplay-join <host>] "
-               "[--netplay-port <port>]\n"
+               "[--netplay-port <port>] [--netplay-traversal]\n"
+               "       [--traversal-server <host>] [--traversal-port <port>] "
+               "[--traversal-alt-port <port>]\n"
                "       [--nickname <name>] [--buffer <auto|1-20>] "
                "[--netplay-mode <fixed-delay|rollback>] "
                "[--controller <device>]...\n"
@@ -110,6 +112,10 @@ int RunMain(int argc, char **argv) {
   std::optional<moderngekko::frontend::NetplayRole> netplay_role;
   std::string netplay_address;
   std::optional<std::uint16_t> netplay_port;
+  bool netplay_traversal = false;
+  std::string traversal_server;
+  std::optional<std::uint16_t> traversal_port;
+  std::optional<std::uint16_t> traversal_alt_port;
   std::string netplay_nickname;
   std::string netplay_buffer;
   std::optional<moderngekko::frontend::NetplayMode> netplay_mode;
@@ -173,6 +179,25 @@ int RunMain(int argc, char **argv) {
         return 2;
       }
       netplay_port = static_cast<std::uint16_t>(port);
+    } else if (arg == "--netplay-traversal") {
+      netplay_traversal = true;
+    } else if (arg == "--traversal-server") {
+      traversal_server = value("--traversal-server");
+    } else if (arg == "--traversal-port" || arg == "--traversal-alt-port") {
+      const std::string port_value = value(arg.c_str());
+      unsigned int port = 0;
+      const auto parsed = std::from_chars(
+          port_value.data(), port_value.data() + port_value.size(), port);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != port_value.data() + port_value.size() || port == 0 ||
+          port > 65535) {
+        std::cerr << arg << " must be between 1 and 65535\n";
+        return 2;
+      }
+      if (arg == "--traversal-port")
+        traversal_port = static_cast<std::uint16_t>(port);
+      else
+        traversal_alt_port = static_cast<std::uint16_t>(port);
     } else if (arg == "--nickname")
       netplay_nickname = value("--nickname");
     else if (arg == "--buffer")
@@ -328,6 +353,9 @@ int RunMain(int argc, char **argv) {
   if (netplay_role) {
     moderngekko::frontend::NetplayOptions options;
     options.role = *netplay_role;
+    options.connection =
+        netplay_traversal ? moderngekko::frontend::NetplayConnection::OnlineRoom
+                          : moderngekko::frontend::NetplayConnection::Direct;
     options.address = netplay_address.empty() ? frontend_config.netplay_address
                                               : netplay_address;
     options.port = netplay_port.value_or(frontend_config.netplay_port);
@@ -337,6 +365,12 @@ int RunMain(int argc, char **argv) {
     options.buffer = netplay_buffer.empty() ? frontend_config.netplay_buffer
                                             : netplay_buffer;
     options.mode = netplay_mode.value_or(frontend_config.netplay_mode);
+    if (!traversal_server.empty())
+      options.traversal_server = traversal_server;
+    if (traversal_port)
+      options.traversal_port = *traversal_port;
+    if (traversal_alt_port)
+      options.traversal_alt_port = *traversal_alt_port;
     if (netplay_players)
       options.players = *netplay_players;
     if (netplay_timeout)

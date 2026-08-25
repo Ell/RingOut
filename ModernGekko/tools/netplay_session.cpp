@@ -10,13 +10,14 @@
 #include "netplay_session.hpp"
 #include "netplay_compatibility.hpp"
 
+#include "Common/TraversalClient.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/HW/GCPad.h"
 #include "Core/HW/SI/SI_Device.h"
-#include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/LiveRollbackOutputGate.h"
+#include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/NetPlayServer.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
@@ -113,6 +114,21 @@ public:
   bool ConnectionLost() const { return m_connection_lost.load(); }
   bool Desynced() const { return m_desynced.load(); }
   u32 DesyncFrame() const { return m_desync_frame.load(); }
+  bool TraversalFailed() const { return m_traversal_failed.load(); }
+  void MarkPeerRouteEstablished() {
+    m_traversal_required = false;
+    m_traversal_failed = false;
+  }
+
+  Common::TraversalClient::State TraversalState() const {
+    std::lock_guard lock(m_mutex);
+    return m_traversal_state;
+  }
+
+  std::string RoomCode() const {
+    std::lock_guard lock(m_mutex);
+    return m_room_code;
+  }
 
   // --- NetPlayUI -----------------------------------------------------------
   // Dolphin hands us the boot data instead of booting itself; the lobby picks
@@ -197,11 +213,53 @@ public:
     Log("connection error: " + message);
   }
 
-  void OnTraversalError(Common::TraversalClient::FailureReason) override {
-    OnConnectionError("direct connection failed");
+  void
+  OnTraversalError(Common::TraversalClient::FailureReason reason) override {
+    if (!m_traversal_required) {
+      Log("Dolphin room service became unavailable after the peer route was "
+          "established; keeping the direct session alive");
+      return;
+    }
+    m_traversal_failed = true;
+    const char *message = "Dolphin's room service failed";
+    switch (reason) {
+    case Common::TraversalClient::FailureReason::BadHost:
+      message = "could not resolve Dolphin's room service";
+      break;
+    case Common::TraversalClient::FailureReason::VersionTooOld:
+      message = "Dolphin's room service rejected this protocol version";
+      break;
+    case Common::TraversalClient::FailureReason::ServerForgotAboutUs:
+      message = "Dolphin's room service registration expired";
+      break;
+    case Common::TraversalClient::FailureReason::SocketSendError:
+      message = "could not send to Dolphin's room service";
+      break;
+    case Common::TraversalClient::FailureReason::ResendTimeout:
+      message = "Dolphin's room service did not respond";
+      break;
+    }
+    OnConnectionError(message);
   }
 
-  void OnTraversalStateChanged(Common::TraversalClient::State) override {}
+  void OnTraversalStateChanged(Common::TraversalClient::State state) override {
+    std::string assigned_code;
+    {
+      std::lock_guard lock(m_mutex);
+      m_traversal_state = state;
+      if (m_hosting && state == Common::TraversalClient::State::Connected &&
+          Common::g_TraversalClient) {
+        const Common::TraversalHostId id =
+            Common::g_TraversalClient->GetHostID();
+        if (id[0] != '\0') {
+          m_room_code.assign(id.data(), id.size());
+          assigned_code = m_room_code;
+        }
+      }
+    }
+    if (!assigned_code.empty())
+      Log("online room code " + assigned_code);
+  }
 
   void OnGameStartAborted() override {
     {
@@ -255,7 +313,12 @@ private:
   std::atomic<bool> m_start_requested{false};
   std::atomic<bool> m_connection_lost{false};
   std::atomic<bool> m_desynced{false};
+  std::atomic<bool> m_traversal_failed{false};
+  std::atomic<bool> m_traversal_required{true};
   std::atomic<u32> m_desync_frame{0};
+  Common::TraversalClient::State m_traversal_state =
+      Common::TraversalClient::State::Connecting;
+  std::string m_room_code;
   std::unique_ptr<BootSessionData> m_boot_data;
   std::string m_error;
 };
@@ -525,10 +588,10 @@ bool WaitFor(SessionUI &ui, NetPlay::NetPlayClient &client,
              std::chrono::seconds timeout, Predicate predicate) {
   const auto deadline = Clock::now() + timeout;
   while (Clock::now() < deadline) {
-    if (ui.ConnectionLost() || !client.IsConnected())
-      return false;
     if (predicate())
       return true;
+    if (ui.ConnectionLost() || ui.TraversalFailed() || !client.IsConnected())
+      return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   return false;
@@ -638,7 +701,7 @@ LobbyWindowResult RunLobbyWindow(RuntimeConfig &runtime_config,
 
   // Only a host is findable; a joiner has nothing to announce.
   DiscoveryBeacon beacon;
-  if (server != nullptr)
+  if (server != nullptr && options.connection == NetplayConnection::Direct)
     beacon.Start(options.port, options.nickname);
 
   size_t last_player_count = 0;
@@ -656,13 +719,16 @@ LobbyWindowResult RunLobbyWindow(RuntimeConfig &runtime_config,
     if (!window.Frame())
       return LobbyWindowResult::UserClosed;
     beacon.Tick(); // rate-limits itself to once a second
-    if (ui.ConnectionLost() || !client.IsConnected()) {
+
+    const std::vector<NetPlay::Player> players = client.GetPlayers();
+    if (server && options.connection == NetplayConnection::OnlineRoom &&
+        players.size() >= std::max<size_t>(options.players, 2))
+      ui.MarkPeerRouteEstablished();
+    if (ui.ConnectionLost() || ui.TraversalFailed() || !client.IsConnected()) {
       window.Close();
       Log("connection lost while in the lobby");
       return LobbyWindowResult::Fatal;
     }
-
-    const std::vector<NetPlay::Player> players = client.GetPlayers();
 
     // Reassign pads when somebody joins or leaves.
     if (server && players.size() != last_player_count) {
@@ -702,15 +768,38 @@ LobbyWindowResult RunLobbyWindow(RuntimeConfig &runtime_config,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
 
-    if (server)
+    if (options.connection == NetplayConnection::OnlineRoom) {
+      if (server) {
+        const std::string room_code = ui.RoomCode();
+        if (room_code.empty()) {
+          ImGui::TextUnformatted("Creating online room ...");
+        } else {
+          ImGui::Text("Room code: %s", room_code.c_str());
+          ImGui::SameLine();
+          if (ImGui::Button("Copy code"))
+            ImGui::SetClipboardText(room_code.c_str());
+        }
+      } else {
+        ImGui::Text("Online room: %s", options.address.c_str());
+      }
+    } else if (server) {
       ImGui::Text("Hosting on port %u", unsigned{server->GetPort()});
-    else
+    } else {
       ImGui::Text("Connected to %s:%u", options.address.c_str(),
                   unsigned{options.port});
+    }
     ImGui::Separator();
-    ImGui::TextDisabled(
-        "Direct UDP is unauthenticated and unencrypted. Use a trusted LAN or "
-        "private VPN; forward the port only if you understand the exposure.");
+    if (options.connection == NetplayConnection::OnlineRoom) {
+      ImGui::TextDisabled(
+          "Beta: Dolphin provides rendezvous only. Gameplay is direct P2P, "
+          "unencrypted, and exposes both players' IP addresses. Strict NATs "
+          "may fail; play only with someone you trust.");
+    } else {
+      ImGui::TextDisabled(
+          "Direct UDP is unauthenticated and unencrypted. Use a trusted LAN "
+          "or private VPN; forward the port only if you understand the "
+          "exposure.");
+    }
     ImGui::Text("Mode: %s",
                 options.mode == NetplayMode::Rollback
                     ? "Experimental rollback"
@@ -908,6 +997,20 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   (void)frontend_config;
   if (options.controllers.empty())
     return static_cast<int>(NetplayExitCode::InvalidConfiguration);
+  if (options.connection == NetplayConnection::OnlineRoom) {
+    if (options.traversal_server.empty() || options.traversal_port == 0) {
+      Log("invalid traversal service configuration");
+      return static_cast<int>(NetplayExitCode::InvalidConfiguration);
+    }
+    if (options.role == NetplayRole::Join) {
+      const auto room_code = NormalizeNetplayRoomCode(options.address);
+      if (!room_code) {
+        Log("room code must be exactly eight hexadecimal characters");
+        return static_cast<int>(NetplayExitCode::InvalidRoomCode);
+      }
+      options.address = *room_code;
+    }
+  }
 
   const bool rollback_test_opt_in = RollbackTestOptIn(runtime_config);
   const bool rollback_player_opt_in = options.mode == NetplayMode::Rollback;
@@ -1059,22 +1162,39 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
 
   SessionUI ui(game);
   const NetPlay::NetTraversalConfig direct{};
+  const NetPlay::NetTraversalConfig traversal{true, options.traversal_server,
+                                              options.traversal_port,
+                                              options.traversal_alt_port};
   std::unique_ptr<NetPlay::NetPlayServer> server;
   std::unique_ptr<NetPlay::NetPlayClient> client;
   // Hosting can fail on a busy port, which is recoverable: offer to join the
   // host that already owns it, or retry. Headless keeps the old behaviour --
   // a script has nobody to ask and wants the exit code.
   while (options.role == NetplayRole::Host) {
-    Log("hosting on port " + std::to_string(options.port));
+    Log(options.connection == NetplayConnection::OnlineRoom
+            ? "registering online room with " + options.traversal_server
+            : "hosting on port " + std::to_string(options.port));
     ui.SetHosting(true);
+    // Online players never configure or forward a local port. Let the OS pick
+    // a free socket so a stale Direct-IP preference cannot block room creation.
+    const u16 listen_port =
+        options.connection == NetplayConnection::OnlineRoom ? 0 : options.port;
     server = std::make_unique<NetPlay::NetPlayServer>(
-        options.port, false, &ui, direct, compatibility_fingerprint);
+        listen_port, false, &ui,
+        options.connection == NetplayConnection::OnlineRoom ? traversal
+                                                            : direct,
+        compatibility_fingerprint);
     if (server->is_connected)
       break;
 
     Log("could not open port " + std::to_string(options.port) +
         " (already in use?)");
     server.reset();
+    if (options.connection == NetplayConnection::OnlineRoom) {
+      detail::SetExternalUICommon(false);
+      UICommon::Shutdown();
+      return static_cast<int>(NetplayExitCode::TraversalServiceUnavailable);
+    }
     if (runtime_config.headless) {
       detail::SetExternalUICommon(false);
       UICommon::Shutdown();
@@ -1159,10 +1279,14 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
         rollback_enabled, compatibility_fingerprint,
         rollback_gamecube_title_verified);
   } else {
-    Log("connecting to " + options.address + ":" +
-        std::to_string(options.port));
+    Log(options.connection == NetplayConnection::OnlineRoom
+            ? "joining online room " + options.address
+            : "connecting to " + options.address + ":" +
+                  std::to_string(options.port));
     client = std::make_unique<NetPlay::NetPlayClient>(
-        options.address, options.port, &ui, options.nickname, direct,
+        options.address, options.port, &ui, options.nickname,
+        options.connection == NetplayConnection::OnlineRoom ? traversal
+                                                            : direct,
         rollback_enabled, compatibility_fingerprint,
         rollback_gamecube_title_verified);
   }
@@ -1187,6 +1311,12 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
       return static_cast<int>(NetplayExitCode::GameRunning);
     case NetPlay::ConnectionError::NameTooLong:
       return static_cast<int>(NetplayExitCode::NicknameRejected);
+    case NetPlay::ConnectionError::TraversalServiceUnavailable:
+      return static_cast<int>(NetplayExitCode::TraversalServiceUnavailable);
+    case NetPlay::ConnectionError::RoomNotFound:
+      return static_cast<int>(NetplayExitCode::InvalidRoomCode);
+    case NetPlay::ConnectionError::TraversalFailed:
+      return static_cast<int>(NetplayExitCode::TraversalFailed);
     default:
       return static_cast<int>(NetplayExitCode::HostUnavailable);
     }
@@ -1231,6 +1361,9 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
         return 0;
       if (lobby == LobbyWindowResult::RollbackStartRejected)
         return static_cast<int>(NetplayExitCode::RollbackStartRejected);
+      if (options.connection == NetplayConnection::OnlineRoom &&
+          ui.TraversalFailed())
+        return static_cast<int>(NetplayExitCode::TraversalServiceUnavailable);
       return static_cast<int>(NetplayExitCode::Failed);
     }
     // RunLobbyWindow only returns true once StartGame has armed netplay and
@@ -1282,15 +1415,23 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   if (server) {
     const size_t expected = std::max<size_t>(options.players, 1);
     Log("waiting for " + std::to_string(expected) + " player(s)");
-    if (!WaitFor(ui, *client, lobby_timeout,
-                 [&] { return client->GetPlayers().size() == expected; })) {
+    const bool roster_connected = WaitFor(ui, *client, lobby_timeout, [&] {
+      return client->GetPlayers().size() == expected;
+    });
+    if (!roster_connected) {
       Log("timed out waiting for players");
       result = static_cast<int>(NetplayExitCode::Failed);
-    } else if (!WaitFor(ui, *client, std::chrono::seconds(30),
-                        [&] { return client->DoAllPlayersHaveGame(); })) {
+    } else {
+      if (options.connection == NetplayConnection::OnlineRoom)
+        ui.MarkPeerRouteEstablished();
+    }
+    if (result == 0 && !WaitFor(ui, *client, std::chrono::seconds(30), [&] {
+          return client->DoAllPlayersHaveGame();
+        })) {
       Log("not every player has this game; refusing to start");
       result = static_cast<int>(NetplayExitCode::CompatibilityMismatch);
-    } else {
+    }
+    if (result == 0) {
       AssignPads(*server, client->GetPlayers());
       // The mapping is broadcast asynchronously; starting in the same breath
       // can race it, and a player whose pad has not landed yet is dropped from
@@ -1431,6 +1572,10 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   } else if (ui.ConnectionLost()) {
     Log("session ended because the peer connection was lost");
     result = static_cast<int>(NetplayExitCode::SessionConnectionLost);
+  } else if (result != 0 &&
+             options.connection == NetplayConnection::OnlineRoom &&
+             ui.TraversalFailed()) {
+    result = static_cast<int>(NetplayExitCode::TraversalServiceUnavailable);
   } else if (result == 0) {
     Log("session ended cleanly, no desync reported");
   }

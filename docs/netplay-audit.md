@@ -55,10 +55,12 @@ Complete Windows/AppImage packages still have workflow and smoke-gate
 integration only; no tag artifact or physical/cross-machine run has validated
 this branch.
 
-The transport remains unauthenticated, unencrypted direct UDP. This
-implementation is for mutually trusted peers on a LAN or private VPN, not
-public Internet rooms; the room-code/traversal/relay architecture is proposed,
-not implemented. See
+The later branch snapshot adds an Online Room beta through Dolphin's hosted
+eight-character-code rendezvous, while retaining Direct IP under Advanced. The
+transport remains unauthenticated, unencrypted direct UDP for mutually trusted
+friends; there is no relay or IP privacy. The hosted rendezvous exchange passes,
+but a complete independently routed two-machine gameplay run remains a release
+gate. Authenticated ICE/TURN rooms remain proposed. See
 [the implementation handoff](rollback-netplay-implementation.md) and
 [live harness](rollback-live-test-harness.md) for current evidence.
 

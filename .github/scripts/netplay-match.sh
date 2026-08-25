@@ -178,16 +178,65 @@ if [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||
   # isolated test subsequently applies the explicit numeric test override.
   match_buffer="${RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES:-2}"
 fi
-launch host  --netplay-host --netplay-port "$PORT" --netplay-players 2 \
-             --nickname Host --buffer "$match_buffer" --netplay-timeout 120
-sleep 4
-launch guest --netplay-join 127.0.0.1 --netplay-port "$PORT" \
-             --nickname Guest --netplay-timeout 120
+traversal_args=()
+if [ "${RINGOUT_NETPLAY_TRAVERSAL:-0}" = "1" ]; then
+  traversal_args=(--netplay-traversal)
+  [ -n "${RINGOUT_TRAVERSAL_SERVER:-}" ] &&
+    traversal_args+=(--traversal-server "$RINGOUT_TRAVERSAL_SERVER")
+  [ -n "${RINGOUT_TRAVERSAL_PORT:-}" ] &&
+    traversal_args+=(--traversal-port "$RINGOUT_TRAVERSAL_PORT")
+  [ -n "${RINGOUT_TRAVERSAL_ALT_PORT:-}" ] &&
+    traversal_args+=(--traversal-alt-port "$RINGOUT_TRAVERSAL_ALT_PORT")
+fi
+
+launch host --netplay-host --netplay-port "$PORT" --netplay-players 2 \
+            --nickname Host --buffer "$match_buffer" --netplay-timeout 120 \
+            "${traversal_args[@]}"
+
+if [ "${RINGOUT_NETPLAY_TRAVERSAL:-0}" = "1" ]; then
+  room_code=""
+  host_ready=0
+  waited_code=0
+  while [ "$waited_code" -lt 30 ]; do
+    room_code=$(sed -n 's/.*netplay: online room code \([0-9a-f]\{8\}\).*/\1/p' \
+      "$W/host/log.txt" 2>/dev/null | tail -1)
+    if [ -n "$room_code" ] &&
+       grep -Fqa "netplay: connected as 'Host'" "$W/host/log.txt"; then
+      host_ready=1
+      break
+    fi
+    if ! [ -s "$W/host/pid" ] ||
+       ! kill -0 "$(<"$W/host/pid")" 2>/dev/null; then
+      echo "host exited before Dolphin assigned a room code"
+      exit 1
+    fi
+    sleep 1
+    waited_code=$((waited_code + 1))
+  done
+  if [ -z "$room_code" ] || [ "$host_ready" -ne 1 ]; then
+    echo "host did not finish creating the Dolphin online room"
+    grep -ha 'netplay:' "$W/host/log.txt" | tail -12
+    exit 1
+  fi
+  echo "Dolphin hosted room assigned after ${waited_code}s"
+  launch guest --netplay-join "$room_code" --netplay-port "$PORT" \
+               --nickname Guest --netplay-timeout 120 \
+               "${traversal_args[@]}"
+else
+  sleep 4
+  launch guest --netplay-join 127.0.0.1 --netplay-port "$PORT" \
+               --nickname Guest --netplay-timeout 120
+fi
 
 waited=0
 while [ $waited -lt 120 ]; do
   grep -qa "netplay armed" "$W/host/log.txt" 2>/dev/null && \
   grep -qa "netplay armed" "$W/guest/log.txt" 2>/dev/null && break
+  ensure_peers_alive || {
+    echo "a netplay peer exited before the session armed"
+    grep -ha 'netplay:' "$W"/*/log.txt | tail -16
+    exit 1
+  }
   sleep 2; waited=$((waited + 2))
 done
 if ! grep -qa "netplay armed" "$W/host/log.txt" 2>/dev/null || \
@@ -195,6 +244,29 @@ if ! grep -qa "netplay armed" "$W/host/log.txt" 2>/dev/null || \
   echo "peers never armed"; grep -ha "netplay:" "$W"/*/log.txt | tail -8; exit 1
 fi
 echo "both peers armed after ${waited}s"
+
+if [ "${RINGOUT_NETPLAY_TRAVERSAL:-0}" = "1" ]; then
+  unique_room_codes=$(sed -n \
+    's/.*netplay: online room code \([0-9a-f]\{8\}\).*/\1/p' \
+    "$W/host/log.txt" | sort -u)
+  [ "$(printf '%s\n' "$unique_room_codes" | sed '/^$/d' | wc -l)" -eq 1 ] || {
+    echo "host did not retain exactly one traversal room code"
+    exit 1
+  }
+  grep -Fqa "netplay: registering online room with" "$W/host/log.txt" || {
+    echo "host did not use the traversal path"
+    exit 1
+  }
+  grep -Fqa "netplay: joining online room $room_code" "$W/guest/log.txt" || {
+    echo "guest did not join the host's traversal code"
+    exit 1
+  }
+  if grep -Fqa "netplay: connecting to" "$W/guest/log.txt"; then
+    echo "guest unexpectedly used the Direct IP path"
+    exit 1
+  fi
+  echo "hosted traversal provenance verified"
+fi
 
 # `netplay armed` means the synchronized StartGame handshake completed. Live
 # rollback is not actually exercising snapshots, prediction, or resimulation

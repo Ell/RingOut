@@ -51,6 +51,40 @@ helper resolves the exact packaged module-source and game-settings paths.
 Tagged artifact and physical
 platform validation are still required before calling a release shipped.
 
+### Online Room beta update (2026-08-25)
+
+The current `codex/rollback-netplay` branch adds an Online Room beta on top of
+that verified lobby and rollback path. Its preceding committed checkpoint is
+`05798a513f34a02ea5983daa65521cd36532cc0f`; the Online Room snapshot described
+here was integrated on 2026-08-25. The integrated desktop launcher now
+defaults to a short-code room using Dolphin's hosted rendezvous service, while
+**Advanced: use Direct IP** retains the LAN/private-VPN path. Online Room fixes
+the player selection to rollback; Advanced Direct IP offers both fixed delay and
+rollback (`ModernGekko/tools/moderngekko_launcher.cpp:1199-1273`).
+
+The runtime defaults to `stun.dolphin-emu.org`, main UDP port 6262, and alternate
+UDP port 6226. Hosts receive an eight-lowercase-hex-digit room code; joiners may
+paste upper- or lowercase hex with surrounding whitespace, which is normalized
+before dialing (`ModernGekko/tools/netplay_session.hpp:16-64` and
+`ModernGekko/tools/frontend_config.cpp:45-61`). The host's traversal server and
+its direct loopback client deliberately share the established RingOut lobby and
+handshake after rendezvous; a remote joiner passes the room code through the
+traversal client (`ModernGekko/tools/netplay_session.cpp:1149-1168,1255-1273`).
+
+This is not a RingOut matchmaking, relay, authentication, encryption, or IP-
+privacy service. Dolphin only introduces the direct peers. Strict NATs and
+stateful firewalls may fail, the opponent ultimately learns the peer IP, and
+gameplay remains plaintext. The launcher and lobby say this explicitly and map
+service unavailable, missing/expired code, and peer traversal failure to typed
+messages (`ModernGekko/tools/netplay_session.cpp:212-251,757-796,1276-1304` and
+`ModernGekko/tools/moderngekko_launcher.cpp:1596-1613`). Use it only with a
+trusted friend.
+
+The desktop launcher and direct CLI are implemented. The in-game System-menu
+request/restart flow still records an address and port but no connection-method
+field, so it remains the Direct IP/LAN-scan flow rather than silently opting a
+running game into the hosted beta.
+
 The current source predicate returns true because all eleven audited capability
 bits are set (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:158-178`),
 so the branch launcher exposes Experimental rollback. The memory-card snapshot,
@@ -71,12 +105,15 @@ published `ell.6` packages:
 2. Both select the exact same mode. **Fixed delay (stable)** is the compatibility
    path. **Experimental rollback** requires every peer to request and support
    rollback; a mismatch is rejected rather than silently downgraded
-   (`ModernGekko/tools/moderngekko_launcher.cpp:1197-1215,1433-1447` and
+   (`ModernGekko/tools/moderngekko_launcher.cpp:1199-1239,1474-1501` and
    `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:473-499`).
-3. Set nicknames and the same UDP port. The host selects **Host**; the other
-   player enters the host's LAN/private-VPN address and selects **Join**. Direct
-   UDP is unauthenticated and unencrypted, so do not use an untrusted host or
-   expose the session publicly (`ModernGekko/tools/moderngekko_launcher.cpp:1222-1234`).
+3. For the ordinary beta flow, leave **Advanced: use Direct IP** off. The host
+   selects **Host online room**, copies the eight-character code from the lobby,
+   and sends it privately to the guest. The guest pastes it and selects **Join
+   online room**. For a trusted LAN/private VPN or service outage, both players
+   may instead select Advanced Direct IP and use the same hostname/IP and UDP
+   port (`ModernGekko/tools/moderngekko_launcher.cpp:1243-1324` and
+   `ModernGekko/tools/netplay_session.cpp:757-788`).
 4. In the lobby, verify **Same game**, one controller assignment per player, and
    the displayed requested mode. Each player selects **Ready**. A mapping,
    delay/mode, game, join, or disconnect change clears Ready
@@ -86,9 +123,12 @@ published `ell.6` packages:
    server checks readiness again at request and launch
    (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:1501-1513,1720-1741`).
 
-If rollback compatibility or capability fails, leave the lobby, select **Fixed
-delay** on both launchers, and reconnect. “Fallback” means that deliberate new
-session; an already requested rollback session is never relabelled fixed delay.
+If Online Room reports a missing/expired code, have the host keep the lobby open
+and copy its current code. If peer traversal fails, use Advanced Direct IP over
+a trusted LAN/private VPN; this beta has no relay. If rollback compatibility or
+capability fails, Advanced Direct IP can be used to create a deliberate new
+fixed-delay session. “Fallback” always means a new session; an already requested
+rollback session is never relabelled fixed delay.
 
 Rollback currently quarantines persistence: synchronized memory-card contents
 remain guest-visible for play, but `savedata_write` and writable SD are forced
@@ -159,10 +199,16 @@ desktop launcher                         running offline game
                 +------------+-------------+
                 |                          |
               Host                       Join
-        bind UDP session port      resolve host/IP and connect
-        create local client        direct ENet client
+       Online: register and       Online: submit room code
+        display room code          through Dolphin service
+       Direct: bind UDP port      Direct: resolve host/IP
+        create local client           and connect
                 |                          |
                 +------------+-------------+
+                             v
+              direct peer-to-peer ENet transport
+                (Dolphin service is not a relay)
+                             |
                              v
                     SDL3 + ImGui lobby
            roster / ping / game status / pad map
@@ -186,6 +232,14 @@ constraint is documented in `ModernGekko/tools/moderngekko_run.cpp:397-400` and
 
 ### Desktop launcher
 
+The following audit-commit description is historical. On the current branch,
+the launcher now presents Online Room by default, asks only a joiner for an
+eight-character code, provides Host/Join Online Room buttons, and exposes the
+address/port fields only after selecting Advanced Direct IP
+(`ModernGekko/tools/moderngekko_launcher.cpp:1199-1324`). It passes
+`--netplay-traversal` for Online Room and preserves the existing direct arguments
+otherwise (`ModernGekko/tools/moderngekko_launcher.cpp:1474-1505`).
+
 The desktop launcher initializes SDL video and gamepad support, but enables only
 ImGui keyboard navigation (`ModernGekko/tools/moderngekko_launcher.cpp:340-377`).
 Its main screen exposes:
@@ -208,6 +262,10 @@ The desktop launcher has no LAN Scan button. A desktop joiner must type or reuse
 an address even though the in-game menu has discovery.
 
 ### In-game System menu
+
+This entry point remains Direct IP/LAN scan in the current branch. It does not
+persist a traversal choice or room code. Online Room is available through the
+integrated desktop launcher or explicit runner CLI.
 
 The in-game menu's System tab contains, in order, Netplay mode, Scan, address,
 port, and Start rows
@@ -262,7 +320,32 @@ The lifecycle is careful and is one of the strongest parts of the implementation
 Its main UX limitation is that cancellation does not reconstruct offline play;
 once the old runtime has been torn down, leaving the lobby ends the application.
 
-## Direct host/join topology
+## Connection topologies
+
+### Online Room beta
+
+`NetplayOptions` distinguishes `OnlineRoom` from `Direct` and contains the
+Dolphin host/main/alternate defaults
+(`ModernGekko/tools/netplay_session.hpp:16-64`). The host gives its
+traversal-enabled `NetPlayServer` an OS-assigned ephemeral UDP port, while its
+own loopback `NetPlayClient` remains direct. This prevents a hidden, stale
+Direct-IP port setting from blocking Online Room. The guest gives the normalized
+room code and traversal configuration to `NetPlayClient`
+(`ModernGekko/tools/netplay_session.cpp:981-999,1149-1168,1255-1273`).
+
+The host lobby transitions from `Creating online room ...` to the assigned code
+and a copy button. A joining lobby identifies the submitted code. LAN discovery
+beacons are disabled for an Online Room host because the two discovery systems
+have different scopes (`ModernGekko/tools/netplay_session.cpp:691-694,757-788`).
+
+Dolphin's service records the observed UDP endpoint, returns a random eight-hex
+code, forwards a connect request, and tells each peer where to punch. It does not
+carry the ENet lobby or gameplay stream. Consequently Online Room changes how
+the initial route is discovered, not RingOut's roster, mode/fingerprint
+admission, Ready gate, pad mapping, synchronized start, rollback scheduler, or
+desync stop behavior.
+
+### Advanced Direct IP
 
 `RunNetplayLobby` initializes ENet at the lobby boundary for both roles. This is
 necessary on Windows because a direct join otherwise reaches `enet_host_create`
@@ -273,7 +356,8 @@ stock clocks and 100% speed, deterministic dual-core GPU processing by default,
 and background input
 (`ModernGekko/tools/netplay_session.cpp:778-853`).
 
-The topology is intentionally direct:
+At historical audit commit `ff0ad952`, this was the only topology. It remains
+available unchanged as Advanced Direct IP:
 
 - `NetTraversalConfig direct{}` leaves `use_traversal` false
   (`ModernGekko/tools/netplay_session.cpp:872-875` and
@@ -289,15 +373,14 @@ The topology is intentionally direct:
 - The host creates a normal client connected to `127.0.0.1`, so host and guests
   share the same client path (`ModernGekko/tools/netplay_session.cpp:924-932`).
 
-Consequences:
+Consequences of Advanced Direct IP:
 
 - Same-LAN play normally needs no router setup.
 - Internet hosting requires forwarding the selected UDP port or using a routed
   VPN such as Tailscale.
-- There is no Ring Out relay, NAT punch-through, room code, public room list, or
-  password in this path.
+- There is no room code, relay, public room list, or password in this path.
 - Address validation accepts IPv4-like text and hostnames, but not IPv6 literals
-  because `:` is rejected (`ModernGekko/tools/frontend_config.cpp:33-39`).
+  because `:` is rejected (`ModernGekko/tools/frontend_config.cpp:80-85`).
 
 The direct client waits up to five seconds for the ENet connection and then up
 to another five seconds for the protocol response
@@ -567,6 +650,51 @@ the 600-second menu-oriented setting in `moderngekko_run.cpp:452-460` has no
 effect on an actual windowed lobby; ENet peer liveness and user cancellation are
 the only bounds after connection.
 
+### Online Room CLI and harness
+
+The current runner exposes `--netplay-traversal` plus optional
+`--traversal-server`, `--traversal-port`, and `--traversal-alt-port` overrides
+(`ModernGekko/tools/moderngekko_run.cpp:31-47,157-213,354-379`). A manual
+rollback pair can be started as follows from a package root:
+
+```bash
+# Host; copy the code shown in the lobby or logged as "online room code ...".
+./bin/moderngekko-run --game ./game --module ./bin/gGRSEAF_recomp.so \
+  --user-dir /absolute/path/to/host-user --controller "Standard Controller" \
+  --netplay-host --netplay-traversal --netplay-mode rollback \
+  --nickname Host --buffer auto
+
+# Guest; replace 0123abcd with the host's code.
+./bin/moderngekko-run --game ./game --module ./bin/gGRSEAF_recomp.so \
+  --user-dir /absolute/path/to/guest-user --controller "Standard Controller" \
+  --netplay-join 0123abcd --netplay-traversal --netplay-mode rollback \
+  --nickname Guest --buffer auto
+```
+
+The existing two-input real-game harness now has an opt-in traversal route:
+
+```bash
+PKG=/absolute/path/to/RingOut-package \
+RINGOUT_NETPLAY_TRAVERSAL=1 \
+RINGOUT_ROLLBACK_PRODUCTION=1 \
+bash .github/scripts/netplay-match.sh /tmp/ringout-online-room 60 2640
+```
+
+It starts the host, waits up to 30 seconds for the exact logged code, passes that
+code to the guest, and still requires `netplay armed` from both peers before the
+scripted match (`.github/scripts/netplay-match.sh:181-234`).
+`RINGOUT_TRAVERSAL_SERVER`, `RINGOUT_TRAVERSAL_PORT`, and
+`RINGOUT_TRAVERSAL_ALT_PORT` select a compatible controlled service. This is an
+external-network integration test, not a hermetic per-change CI test.
+
+On 2026-08-25, a separate minimal live check resolved
+`stun.dolphin-emu.org`, received a valid version-0 hello and eight-hex code over
+UDP 6262, acknowledged it, and received a valid registered-ping acknowledgement
+from UDP 6226. It did not send `ConnectPlease`, connect two NAT peers, or boot
+RingOut, so it proves current hosted-service wire compatibility rather than an
+end-to-end player session. See [the connectivity document's exact
+evidence](netplay-connectivity.md#live-hosted-service-compatibility-check).
+
 ## Disconnect, cancel, and error behavior
 
 ### Before or inside the lobby
@@ -621,10 +749,15 @@ configured remote address owns the local socket.
 
 ## Security and trust boundaries
 
-This lobby is appropriate for trusted peers, not an adversarial public service.
-At source level:
+Both connection methods are appropriate for trusted peers, not an adversarial
+public service. Online Room avoids asking players to share an IP manually, but
+the Dolphin service and eventual direct opponent still learn the public
+endpoint. Its 32-bit room code is not authentication, and there is no relay or
+encrypted gameplay envelope. At source level:
 
 - The direct path configures no Ring Out password or authentication handshake.
+- Online Room uses Dolphin's unauthenticated version-0 rendezvous protocol and
+  then the same direct ENet transport; it does not use Dolphin's public index.
 - LAN beacons are unauthenticated and can be spoofed by any local sender.
 - The compatibility gate proves a build revision and selected DOL, not a peer's
   identity.
@@ -638,6 +771,10 @@ No claim of confidentiality, authentication, or hostile-network hardening is
 made.
 
 ## Defect register
+
+This table remains the historical defect register for `ff0ad952`. Later branch
+sections above record which items have been completed or partially superseded;
+do not reinterpret the original rows as current source claims.
 
 | Priority | Defect | User impact | Evidence |
 | --- | --- | --- | --- |
@@ -704,10 +841,12 @@ made.
 
 ### P2: connectivity and discovery
 
-11. **Offer a real internet connection option.** In increasing scope: opt-in
-    UPnP with visible status, traversal/NAT punch-through, then a relay fallback.
-    A versioned invite code should contain connection method, endpoint/room ID,
-    and compatibility summary.
+11. **Partially completed on the rollback branch: offer an Internet convenience
+    path.** Online Room beta now supplies Dolphin traversal/NAT punch-through
+    and a short host code. It still needs representative NAT validation and a
+    relay fallback; the eventual production invite must be versioned and bind
+    connection method, room identity, and compatibility rather than reusing the
+    unauthenticated 32-bit Dolphin code.
 12. **Share and version discovery.** Move magic, schema, and parser into a common
     library used by both tools and VideoCommon. Deduplicate by `(address, port)`,
     include release/fingerprint/capacity/start state, and ignore incompatible
@@ -755,6 +894,25 @@ and reports desyncs (`.github/scripts/netplay-local.sh:89-193`).
 and into a VS match, requiring useful input from both controller owners before
 comparing RAM hashes (`.github/scripts/netplay-match.sh:1-20` and `:89-175`).
 
+The current branch extends that script with
+`RINGOUT_NETPLAY_TRAVERSAL=1`: it waits for the host's code, starts the guest
+through the same traversal CLI, and retains the existing armed/match/oracle
+requirements (`.github/scripts/netplay-match.sh:181-234`). The route is
+implemented. A final rebuilt live run received Dolphin code `c97d0e76` after
+one second, then the same-host guest reported `Could not communicate with host`;
+evidence is retained at
+`/tmp/ringout-live-rollback.traversal-hosted-final-20260825`. This demonstrates
+absent same-host reachability without identifying one specific NAT or firewall
+cause. The separate
+`.github/scripts/test-dolphin-traversal-live.py` smoke completed the hosted
+`ConnectPlease`/`PleaseSendPacket`/`ConnectReady` exchange, but also observed no
+same-host punch. Neither result is a successful cross-network RingOut match.
+
+The ISO-backed Direct regression after these changes did reach a two-controller
+VS Battle, activated production rollback on both peers, and passed the confirmed
+logical-state oracle. Evidence is retained at
+`/tmp/ringout-live-rollback.direct-regression-20260825`.
+
 Those scripts are valuable manual integration evidence, but neither is invoked
 by the release workflows at the audited commit. The CTest protocol test is
 automated on Linux/Deck builds; it deliberately does not boot a core or assert
@@ -777,25 +935,38 @@ received in-game pad data (`ModernGekko/tests/netplay_protocol_test.cpp:260-264`
 - Gamepad-only navigation from launcher through lobby cancellation and boot.
 - Native Windows two-machine test with real controllers, firewall prompts,
   focus changes, suspend/resume, and host/client disconnects.
+- Online Room across two permissive consumer NATs, port-restricted NAT, strict
+  stateful NAT, double NAT/CGNAT, and blocked UDP, with typed expected outcomes.
+- Invalid, expired, and unknown room codes; hosted-service outage before join;
+  service loss after a direct peer route is established.
+- Packet capture proving the rendezvous server is not on the gameplay path and
+  that the UI never claims relay or peer-IP privacy.
 
 ## Claim boundaries
 
-This is a source-led audit of commit
+The body remains a source-led historical audit of commit
 `ff0ad952980f5083afd21c3d3758208a7a093d72`, plus one successful run of the
-existing localhost protocol test.
+existing localhost protocol test. The explicitly labelled branch-update
+sections describe committed checkpoint
+`05798a513f34a02ea5983daa65521cd36532cc0f` plus the Online Room snapshot
+integrated on 2026-08-25.
 
-It does **not** claim:
+The historical `ff0ad952` audit does **not** claim:
 
-- that rollback exists; the audited mode is fixed delay;
+- that rollback exists at that audit commit; the later branch sections supersede
+  that historical mode verdict;
 - physical Windows controller, firewall, GPU/audio, or two-machine validation;
-- successful NAT traversal, because the Ring Out path does not enable one;
+- a complete two-peer hosted gameplay or representative NAT-matrix pass; the
+  main/alternate-port handshake and full hosted rendezvous exchange passed, but
+  same-host UDP hairpinning did not;
 - adversarial-network security or encryption;
 - automated coverage of the SDL/ImGui lobby, LAN discovery, request/restart UX,
   save/code transfer UI, or native Windows lifecycle;
 - that historical 6,470-frame/manual-match results were reproduced during this
   audit.
 
-The architecture is capable of a good two-player experience when both peers use
-the same release and DOL and can directly reach UDP 2626. The next release should
-first close the fingerprint, roster-lifetime, and failure-result defects before
-adding broader matchmaking features.
+The current branch can attempt direct peer introduction through an eight-digit
+Dolphin code and preserves Advanced Direct IP when peers can directly reach UDP
+2626. It still requires packaged, physical, cross-network, and representative
+NAT validation, and it is not a substitute for the authenticated ICE/TURN
+production architecture in [netplay-connectivity.md](netplay-connectivity.md).
