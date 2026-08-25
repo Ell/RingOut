@@ -101,7 +101,7 @@ jobs:
             -DMODERNGEKKO_ENABLE_DOLPHIN_TESTS=OFF
 
       - name: Build Windows runtime and recompiler
-        run: cmake --build "$BUILD_DIR" --target moderngekko-run dolrecomp --parallel 2
+        run: cmake --build "$BUILD_DIR" --target moderngekko-run dolrecomp --parallel "$(nproc)"
 
       - name: Cache pinned Windows-native tool archives
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
