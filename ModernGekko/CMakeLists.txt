@@ -461,6 +461,8 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/GXRuntime/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/backends")
+    target_compile_definitions(moderngekko-run PRIVATE
+        MODERNGEKKO_REQUIRED_DISC_ID="GRSEAF")
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         target_compile_definitions(moderngekko-run PRIVATE _ARCH_64=1)
     else()
@@ -504,6 +506,10 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         "${CMAKE_CURRENT_SOURCE_DIR}/tools"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/backends")
+    target_compile_definitions(moderngekko-launcher PRIVATE
+        MODERNGEKKO_FRONTEND_NAME="RingOut"
+        MODERNGEKKO_USER_DIRECTORY_NAME="ringout"
+        MODERNGEKKO_REQUIRED_DISC_ID="GRSEAF")
     # The launcher only calls the game-inspection surface directly, but the
     # Dolphin static libraries still require the Host_* callbacks implemented
     # in the runtime object. Keep that object from being discarded by the
@@ -524,7 +530,16 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         target_link_libraries(moderngekko-launcher PRIVATE
             ModernGekko::Runtime discio imgui ${_moderngekko_sdl_target})
     endif()
-    set_target_properties(moderngekko-launcher PROPERTIES OUTPUT_NAME "ModernGekko")
+    set_target_properties(moderngekko-launcher PROPERTIES OUTPUT_NAME "RingOut")
+    add_custom_command(TARGET moderngekko-launcher POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:moderngekko-launcher>/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/misc/fonts/DroidSans.ttf"
+                "$<TARGET_FILE_DIR:moderngekko-launcher>/fonts/DroidSans.ttf"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/misc/fonts/Roboto-Medium.ttf"
+                "$<TARGET_FILE_DIR:moderngekko-launcher>/fonts/Roboto-Medium.ttf")
     if(MODERNGEKKO_FRONTEND_SDK)
         set_property(TARGET moderngekko-launcher PROPERTY BUILD_RPATH
             "${_moderngekko_sdk_lib}")
@@ -538,8 +553,10 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     add_executable(moderngekko-port tools/moderngekko_port.cpp)
     target_link_libraries(moderngekko-port PRIVATE ModernGekko::Runtime)
     target_compile_definitions(moderngekko-port PRIVATE
-        MODERNGEKKO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        MODERNGEKKO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        MODERNGEKKO_REQUIRED_DISC_ID="GRSEAF")
     add_dependencies(moderngekko-port dolrecomp moderngekko-run)
+    add_dependencies(moderngekko-launcher moderngekko-port)
     add_custom_command(TARGET moderngekko-port POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:dolrecomp>"

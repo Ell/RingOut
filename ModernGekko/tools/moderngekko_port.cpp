@@ -5,9 +5,9 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -22,30 +22,34 @@
 
 namespace fs = std::filesystem;
 
-namespace
-{
-constexpr std::string_view RECOMPCORE_REVISION = "6ed835397d984f2ac8cccb89589ef592add68d71";
+namespace {
+constexpr std::string_view RECOMPCORE_REVISION =
+    "6ed835397d984f2ac8cccb89589ef592add68d71";
 constexpr std::string_view DOLRECOMP_REVISION =
     "a2b02e5a515fc8971cc551ad51c9e26a9815daad-dispatch-port";
 
-struct BuildOptions
-{
+struct BuildOptions {
   std::string toolchain = "auto";
   fs::path output;
   std::vector<std::string> runner_arguments;
+  bool setup_progress = false;
+  bool force_rebuild = false;
 };
 
-fs::path DefaultOutput()
-{
-  if (const char* xdg = std::getenv("XDG_CACHE_HOME"))
+void EmitSetupPhase(const BuildOptions &options, std::string_view id) {
+  if (options.setup_progress)
+    std::cout << "[ringout-setup] phase=" << id << '\n';
+}
+
+fs::path DefaultOutput() {
+  if (const char *xdg = std::getenv("XDG_CACHE_HOME"))
     return fs::path(xdg) / "moderngekko" / "modules";
-  if (const char* home = std::getenv("HOME"))
+  if (const char *home = std::getenv("HOME"))
     return fs::path(home) / ".cache" / "moderngekko" / "modules";
   return "moderngekko-modules";
 }
 
-std::string Suffix()
-{
+std::string Suffix() {
 #if defined(_WIN32)
   return ".dll";
 #elif defined(__APPLE__)
@@ -55,8 +59,7 @@ std::string Suffix()
 #endif
 }
 
-std::string Quote(const fs::path& value)
-{
+std::string Quote(const fs::path &value) {
 #if defined(_WIN32)
   std::string text = value.string();
   return '"' + text + '"';
@@ -69,53 +72,49 @@ std::string Quote(const fs::path& value)
 #endif
 }
 
-std::uint64_t Fnv1a(std::string_view value)
-{
+std::uint64_t Fnv1a(std::string_view value) {
   std::uint64_t hash = 0xcbf29ce484222325ULL;
   for (unsigned char c : value)
     hash = (hash ^ c) * 0x100000001b3ULL;
   return hash;
 }
 
-std::string Trim(std::string value)
-{
-  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
+std::string Trim(std::string value) {
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.front())))
     value.erase(value.begin());
-  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.back())))
     value.pop_back();
   return value;
 }
 
-std::uint32_t ReadBE32(const std::uint8_t* data)
-{
+std::uint32_t ReadBE32(const std::uint8_t *data) {
   return (std::uint32_t{data[0]} << 24) | (std::uint32_t{data[1]} << 16) |
          (std::uint32_t{data[2]} << 8) | data[3];
 }
 
-void WriteBE32(std::uint8_t* data, std::uint32_t value)
-{
+void WriteBE32(std::uint8_t *data, std::uint32_t value) {
   data[0] = static_cast<std::uint8_t>(value >> 24);
   data[1] = static_cast<std::uint8_t>(value >> 16);
   data[2] = static_cast<std::uint8_t>(value >> 8);
   data[3] = static_cast<std::uint8_t>(value);
 }
 
-bool ParseHex32(std::string_view value, std::uint32_t* parsed)
-{
+bool ParseHex32(std::string_view value, std::uint32_t *parsed) {
   if (value.starts_with("0x") || value.starts_with("0X"))
     value.remove_prefix(2);
-  const auto result = std::from_chars(value.data(), value.data() + value.size(), *parsed, 16);
+  const auto result =
+      std::from_chars(value.data(), value.data() + value.size(), *parsed, 16);
   return result.ec == std::errc{} && result.ptr == value.data() + value.size();
 }
 
-struct DolPatch
-{
+struct DolPatch {
   std::uint32_t address;
   std::uint32_t value;
 };
 
-struct DolPatchSet
-{
+struct DolPatchSet {
   std::vector<DolPatch> entries;
   std::string fingerprint = "none";
   std::string error;
@@ -123,8 +122,7 @@ struct DolPatchSet
   explicit operator bool() const { return error.empty(); }
 };
 
-DolPatchSet LoadDefaultDolPatches(const fs::path& path)
-{
+DolPatchSet LoadDefaultDolPatches(const fs::path &path) {
   std::ifstream input(path);
   if (!input)
     return {};
@@ -136,8 +134,7 @@ DolPatchSet LoadDefaultDolPatches(const fs::path& path)
 
   std::unordered_set<std::string> enabled;
   std::string section;
-  for (const std::string& current : lines)
-  {
+  for (const std::string &current : lines) {
     if (current.starts_with('[') && current.ends_with(']'))
       section = current.substr(1, current.size() - 2);
     else if (section == "OnFrame_Enabled" && current.starts_with('$'))
@@ -148,38 +145,36 @@ DolPatchSet LoadDefaultDolPatches(const fs::path& path)
 
   DolPatchSet patches;
   std::string patch_name;
-  for (const std::string& current : lines)
-  {
-    if (current.starts_with('[') && current.ends_with(']'))
-    {
+  for (const std::string &current : lines) {
+    if (current.starts_with('[') && current.ends_with(']')) {
       section = current.substr(1, current.size() - 2);
       patch_name.clear();
       continue;
     }
     if (section != "OnFrame")
       continue;
-    if (current.starts_with('$'))
-    {
+    if (current.starts_with('$')) {
       patch_name = current.substr(1);
       continue;
     }
-    if (current.empty() || current.starts_with('#') || current.starts_with(';') ||
-        !enabled.contains(patch_name))
+    if (current.empty() || current.starts_with('#') ||
+        current.starts_with(';') || !enabled.contains(patch_name))
       continue;
 
     const std::size_t first = current.find(':');
-    const std::size_t second = current.find(':', first == std::string::npos ? first : first + 1);
+    const std::size_t second =
+        current.find(':', first == std::string::npos ? first : first + 1);
     if (first == std::string::npos || second == std::string::npos ||
         current.find(':', second + 1) != std::string::npos ||
-        current.substr(first + 1, second - first - 1) != "dword")
-    {
+        current.substr(first + 1, second - first - 1) != "dword") {
       patches.error = "unsupported enabled DOL patch line in " + path.string();
       return patches;
     }
     DolPatch patch{};
-    if (!ParseHex32(std::string_view(current).substr(0, first), &patch.address) ||
-        !ParseHex32(std::string_view(current).substr(second + 1), &patch.value))
-    {
+    if (!ParseHex32(std::string_view(current).substr(0, first),
+                    &patch.address) ||
+        !ParseHex32(std::string_view(current).substr(second + 1),
+                    &patch.value)) {
       patches.error = "malformed enabled DOL patch line in " + path.string();
       return patches;
     }
@@ -188,53 +183,49 @@ DolPatchSet LoadDefaultDolPatches(const fs::path& path)
 
   std::ostringstream identity;
   identity << std::hex << std::setfill('0');
-  for (const DolPatch& patch : patches.entries)
+  for (const DolPatch &patch : patches.entries)
     identity << std::setw(8) << patch.address << std::setw(8) << patch.value;
   std::ostringstream fingerprint;
-  fingerprint << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity.str());
+  fingerprint << std::hex << std::setfill('0') << std::setw(16)
+              << Fnv1a(identity.str());
   patches.fingerprint = fingerprint.str();
   return patches;
 }
 
-bool PatchDol(const fs::path& input_path, const fs::path& output_path,
-              const DolPatchSet& patches, std::string* error)
-{
+bool PatchDol(const fs::path &input_path, const fs::path &output_path,
+              const DolPatchSet &patches, std::string *error) {
   std::ifstream input(input_path, std::ios::binary | std::ios::ate);
-  if (!input)
-  {
+  if (!input) {
     *error = "can't open " + input_path.string();
     return false;
   }
   const std::streamoff input_size = input.tellg();
-  if (input_size < 0x100)
-  {
+  if (input_size < 0x100) {
     *error = "malformed DOL " + input_path.string();
     return false;
   }
   std::vector<std::uint8_t> bytes(static_cast<std::size_t>(input_size));
   input.seekg(0);
-  if (!input.read(reinterpret_cast<char*>(bytes.data()), input_size))
-  {
+  if (!input.read(reinterpret_cast<char *>(bytes.data()), input_size)) {
     *error = "can't read " + input_path.string();
     return false;
   }
 
-  for (const DolPatch& patch : patches.entries)
-  {
+  for (const DolPatch &patch : patches.entries) {
     bool applied = false;
-    for (std::size_t section_index = 0; section_index < 18; ++section_index)
-    {
+    for (std::size_t section_index = 0; section_index < 18; ++section_index) {
       const std::uint32_t offset = ReadBE32(bytes.data() + section_index * 4);
-      const std::uint32_t address = ReadBE32(bytes.data() + 0x48 + section_index * 4);
-      const std::uint32_t size = ReadBE32(bytes.data() + 0x90 + section_index * 4);
+      const std::uint32_t address =
+          ReadBE32(bytes.data() + 0x48 + section_index * 4);
+      const std::uint32_t size =
+          ReadBE32(bytes.data() + 0x90 + section_index * 4);
       if (patch.address < address ||
           static_cast<std::uint64_t>(patch.address) + 4 >
               static_cast<std::uint64_t>(address) + size)
         continue;
       const std::uint64_t patch_offset =
           static_cast<std::uint64_t>(offset) + patch.address - address;
-      if (patch_offset + 4 > bytes.size())
-      {
+      if (patch_offset + 4 > bytes.size()) {
         *error = "DOL patch points outside the file";
         return false;
       }
@@ -242,8 +233,7 @@ bool PatchDol(const fs::path& input_path, const fs::path& output_path,
       applied = true;
       break;
     }
-    if (!applied)
-    {
+    if (!applied) {
       std::ostringstream message;
       message << "DOL patch address 0x" << std::hex << patch.address
               << " is outside every section";
@@ -253,20 +243,19 @@ bool PatchDol(const fs::path& input_path, const fs::path& output_path,
   }
 
   std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
-  if (!output || !output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size()))
-  {
+  if (!output || !output.write(reinterpret_cast<const char *>(bytes.data()),
+                               bytes.size())) {
     *error = "can't write " + output_path.string();
     return false;
   }
   return true;
 }
 
-std::string ReadCommand(const std::string& command)
-{
+std::string ReadCommand(const std::string &command) {
 #if defined(_WIN32)
-  FILE* pipe = _popen(command.c_str(), "r");
+  FILE *pipe = _popen(command.c_str(), "r");
 #else
-  FILE* pipe = popen(command.c_str(), "r");
+  FILE *pipe = popen(command.c_str(), "r");
 #endif
   if (!pipe)
     return {};
@@ -282,14 +271,12 @@ std::string ReadCommand(const std::string& command)
   return output;
 }
 
-bool RunCommand(const std::string& command)
-{
+bool RunCommand(const std::string &command) {
   std::cout << "+ " << command << '\n';
   return std::system(command.c_str()) == 0;
 }
 
-fs::path SiblingExecutable(const char* argv0, std::string name)
-{
+fs::path SiblingExecutable(const char *argv0, std::string name) {
   std::error_code ec;
   fs::path self = fs::weakly_canonical(argv0, ec);
 #if defined(_WIN32)
@@ -299,22 +286,20 @@ fs::path SiblingExecutable(const char* argv0, std::string name)
   return fs::is_regular_file(sibling) ? sibling : fs::path(std::move(name));
 }
 
-std::string PlatformName(moderngekko::GamePlatform platform)
-{
-  return platform == moderngekko::GamePlatform::Wii ? "Wii (Broadway)" : "GameCube (Gekko)";
+std::string PlatformName(moderngekko::GamePlatform platform) {
+  return platform == moderngekko::GamePlatform::Wii ? "Wii (Broadway)"
+                                                    : "GameCube (Gekko)";
 }
 
-std::string ActiveModule(const fs::path& output, std::string_view id)
-{
+std::string ActiveModule(const fs::path &output, std::string_view id) {
   std::ifstream file(output / id / "active-module.txt");
   std::string value;
   std::getline(file, value);
   return value;
 }
 
-std::string CachedModuleStatus(const fs::path& output,
-                               const moderngekko::GameMetadata& game)
-{
+std::string CachedModuleStatus(const fs::path &output,
+                               const moderngekko::GameMetadata &game) {
   const std::string active = ActiveModule(output, game.disc_id);
   if (active.empty())
     return "none";
@@ -325,11 +310,9 @@ std::string CachedModuleStatus(const fs::path& output,
 
   std::ifstream manifest(module.parent_path() / "manifest.txt");
   std::string line;
-  while (std::getline(manifest, line))
-  {
+  while (std::getline(manifest, line)) {
     constexpr std::string_view prefix = "dol_sha256=";
-    if (line.starts_with(prefix))
-    {
+    if (line.starts_with(prefix)) {
       const bool current = line.substr(prefix.size()) == game.dol_sha256;
       return std::string(current ? "current: " : "stale: ") + module.string();
     }
@@ -337,15 +320,13 @@ std::string CachedModuleStatus(const fs::path& output,
   return "unverified: " + module.string();
 }
 
-int Inspect(const fs::path& root, const fs::path& output)
-{
+int Inspect(const fs::path &root, const fs::path &output) {
   const auto result = moderngekko::InspectGame(root);
-  if (!result)
-  {
+  if (!result) {
     std::cerr << "invalid extracted game: " << result.error << '\n';
     return 1;
   }
-  const auto& game = *result.metadata;
+  const auto &game = *result.metadata;
   std::cout << "Game name: " << game.game_name << '\n'
             << "Disc ID:   " << game.disc_id << '\n'
             << "Platform:  " << PlatformName(game.platform) << '\n'
@@ -356,23 +337,37 @@ int Inspect(const fs::path& root, const fs::path& output)
   return 0;
 }
 
-std::optional<fs::path> Build(const char* argv0, const fs::path& root,
-                              BuildOptions options)
-{
+std::optional<fs::path> Build(const char *argv0, const fs::path &root,
+                              BuildOptions options) {
+  EmitSetupPhase(options, "inspect");
   const auto inspected = moderngekko::InspectGame(root);
-  if (!inspected)
-  {
+  if (!inspected) {
     std::cerr << "invalid extracted game: " << inspected.error << '\n';
     return std::nullopt;
   }
-  const auto& game = *inspected.metadata;
+  const auto &game = *inspected.metadata;
+#ifdef MODERNGEKKO_REQUIRED_DISC_ID
+  if (game.disc_id != MODERNGEKKO_REQUIRED_DISC_ID) {
+    std::cerr << "this port requires disc ID " MODERNGEKKO_REQUIRED_DISC_ID
+              << ", got " << game.disc_id << '\n';
+    return std::nullopt;
+  }
+#endif
   if (options.output.empty())
     options.output = DefaultOutput();
   const fs::path source_root = fs::path(MODERNGEKKO_SOURCE_DIR);
+  const fs::path module_source =
+      source_root.parent_path() / "dist/RingOut-1.0-dist/module-src";
+  const fs::path module_dependencies = module_source / "deps";
+  if (!fs::is_regular_file(module_source / "CMakeLists.txt")) {
+    std::cerr << "RingOut release module sources are unavailable at "
+              << module_source << '\n';
+    return std::nullopt;
+  }
   const DolPatchSet patches = LoadDefaultDolPatches(
-      source_root / "vendor/dolphin/Data/Sys/GameSettings" / (game.disc_id + ".ini"));
-  if (!patches)
-  {
+      source_root / "vendor/dolphin/Data/Sys/GameSettings" /
+      (game.disc_id + ".ini"));
+  if (!patches) {
     std::cerr << patches.error << '\n';
     return std::nullopt;
   }
@@ -388,24 +383,21 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     compiler = "clang";
   else if (options.toolchain == "gcc")
     compiler = "gcc";
-  else if (options.toolchain == "msvc")
-  {
+  else if (options.toolchain == "msvc") {
 #if defined(_WIN32)
     compiler = "cl";
 #else
     std::cerr << "MSVC modules can only be built on Windows\n";
     return std::nullopt;
 #endif
-  }
-  else
-  {
+  } else {
     std::cerr << "unknown toolchain: " << options.toolchain << '\n';
     return std::nullopt;
   }
 
-  const std::string compiler_identity = ReadCommand(compiler + " --version 2>&1");
-  if (compiler_identity.empty())
-  {
+  const std::string compiler_identity =
+      ReadCommand(compiler + " --version 2>&1");
+  if (compiler_identity.empty()) {
     std::cerr << "compiler is unavailable: " << compiler << '\n';
     return std::nullopt;
   }
@@ -417,155 +409,249 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
   constexpr std::string_view architecture = "unsupported";
 #endif
   std::string flags;
-  if (compiler == "clang")
-  {
-    flags = "compile:-O2 -flto=thin -fvisibility=hidden -ffp-contract=off -fno-fast-math "
+  if (compiler == "clang") {
+    flags = "compile:-O2 -flto=thin -fvisibility=hidden -ffp-contract=off "
+            "-fno-fast-math "
             "link:-flto=thin";
 #if defined(__linux__)
     flags += " -fuse-ld=lld";
 #endif
-  }
-  else if (compiler == "gcc")
-  {
-    flags = "compile:-O2 -fvisibility=hidden -ffp-contract=off -fno-fast-math link:no-lto";
-  }
-  else
-  {
+  } else if (compiler == "gcc") {
+    flags = "compile:-O2 -fvisibility=hidden -ffp-contract=off -fno-fast-math "
+            "link:no-lto";
+  } else {
     flags = "compile:/O2 /fp:strict";
   }
-  const std::string identity = std::string(RECOMPCORE_REVISION) + "|dolrecomp=" +
-      std::string(DOLRECOMP_REVISION) + "|module-abi=" +
-      std::to_string(MODERNGEKKO_MODULE_ABI_VERSION) + "|cpu-abi=" +
-      std::to_string(MODERNGEKKO_CPU_ABI_VERSION) + "|" + compiler_identity + "|" +
-      std::string(architecture) + "|" + flags + "|patches=" + patches.fingerprint;
+  const std::string identity =
+      std::string(RECOMPCORE_REVISION) +
+      "|dolrecomp=" + std::string(DOLRECOMP_REVISION) +
+      "|module-abi=" + std::to_string(MODERNGEKKO_MODULE_ABI_VERSION) +
+      "|cpu-abi=" + std::to_string(MODERNGEKKO_CPU_ABI_VERSION) + "|" +
+      compiler_identity + "|" + std::string(architecture) + "|" + flags +
+      "|ringout-release-module-src|patches=" + patches.fingerprint;
   std::ostringstream key_tail;
   key_tail << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity);
   const std::string cache_key = game.dol_sha256 + "-" + key_tail.str();
   const fs::path artifact = options.output / game.disc_id / cache_key;
-  const fs::path module = artifact / ("g" + game.disc_id + "_recomp" + Suffix());
+  const fs::path module =
+      artifact / ("g" + game.disc_id + "_recomp" + Suffix());
   const fs::path module_build = artifact / "module-build";
-  const fs::path built = module_build / ("g" + game.disc_id + "_recomp" + Suffix());
-  if (fs::is_regular_file(module))
-  {
+  const fs::path built =
+      module_build / ("g" + game.disc_id + "_recomp" + Suffix());
+  const fs::path generated_parent = artifact / "dolrecomp-output";
+  const fs::path manifest_path = artifact / "manifest.txt";
+  const auto manifest_matches = [&] {
+    std::ifstream manifest(manifest_path);
+    bool matching_disc = false;
+    bool matching_dol = false;
+    std::string line;
+    while (std::getline(manifest, line)) {
+      matching_disc |= line == "disc_id=" + game.disc_id;
+      matching_dol |= line == "dol_sha256=" + game.dol_sha256;
+    }
+    return matching_disc && matching_dol;
+  };
+  const auto publish_active_pointer = [&] {
     fs::create_directories(options.output / game.disc_id);
-    std::ofstream active(options.output / game.disc_id / "active-module.txt");
-    active << module.string() << '\n';
+    const fs::path active_path =
+        options.output / game.disc_id / "active-module.txt";
+    const fs::path temporary = active_path.string() + ".publishing";
+    {
+      std::ofstream active(temporary, std::ios::trunc);
+      if (!active)
+        return false;
+      active << module.string() << '\n';
+    }
+    std::error_code ec;
+    fs::remove(active_path, ec);
+    ec.clear();
+    fs::rename(temporary, active_path, ec);
+    return !ec;
+  };
+  if (!options.force_rebuild && fs::is_regular_file(module) &&
+      manifest_matches()) {
+    if (!publish_active_pointer()) {
+      std::cerr << "could not publish the active module pointer\n";
+      return std::nullopt;
+    }
     std::cout << "cache hit: " << module << '\n';
+    EmitSetupPhase(options, "publish");
     return module;
   }
 
   const auto publish_module = [&]() -> std::optional<fs::path> {
     fs::create_directories(artifact);
-    fs::copy_file(built, module, fs::copy_options::overwrite_existing);
-    std::ofstream manifest(artifact / "manifest.txt");
-    manifest << "disc_id=" << game.disc_id << '\n' << "dol_sha256=" << game.dol_sha256 << '\n'
-             << "recompcore_revision=" << RECOMPCORE_REVISION << '\n'
-             << "dolrecomp_revision=" << DOLRECOMP_REVISION << '\n'
-             << "module_abi=" << MODERNGEKKO_MODULE_ABI_VERSION << '\n'
-             << "cpu_abi=" << MODERNGEKKO_CPU_ABI_VERSION << '\n'
-             << "compiler=" << compiler_identity << '\n'
-             << "architecture=" << architecture << '\n'
-             << "flags=" << flags << '\n'
-             << "patches=" << patches.fingerprint << '\n';
-    fs::create_directories(options.output / game.disc_id);
-    std::ofstream active(options.output / game.disc_id / "active-module.txt");
-    active << module.string() << '\n';
+    const fs::path temporary_module = module.string() + ".publishing";
+    const fs::path temporary_manifest = manifest_path.string() + ".publishing";
+    std::error_code ec;
+    fs::copy_file(built, temporary_module, fs::copy_options::overwrite_existing,
+                  ec);
+    if (ec) {
+      std::cerr << "could not stage the native module: " << ec.message()
+                << '\n';
+      return std::nullopt;
+    }
+    {
+      std::ofstream manifest(temporary_manifest, std::ios::trunc);
+      if (!manifest) {
+        std::cerr << "could not stage the module manifest\n";
+        return std::nullopt;
+      }
+      manifest << "disc_id=" << game.disc_id << '\n'
+               << "dol_sha256=" << game.dol_sha256 << '\n'
+               << "recompcore_revision=" << RECOMPCORE_REVISION << '\n'
+               << "dolrecomp_revision=" << DOLRECOMP_REVISION << '\n'
+               << "module_abi=" << MODERNGEKKO_MODULE_ABI_VERSION << '\n'
+               << "cpu_abi=" << MODERNGEKKO_CPU_ABI_VERSION << '\n'
+               << "compiler=" << compiler_identity << '\n'
+               << "architecture=" << architecture << '\n'
+               << "flags=" << flags << '\n'
+               << "patches=" << patches.fingerprint << '\n';
+    }
+    fs::remove(module, ec);
+    ec.clear();
+    fs::rename(temporary_module, module, ec);
+    if (ec) {
+      std::cerr << "could not publish the native module: " << ec.message()
+                << '\n';
+      return std::nullopt;
+    }
+    fs::remove(manifest_path, ec);
+    ec.clear();
+    fs::rename(temporary_manifest, manifest_path, ec);
+    if (ec || !publish_active_pointer()) {
+      std::cerr << "could not publish the module manifest or active pointer\n";
+      return std::nullopt;
+    }
     std::cout << "built module: " << module << '\n';
     return module;
   };
-  if (fs::is_regular_file(built))
+  if (options.force_rebuild) {
+    std::error_code ec;
+    fs::remove_all(generated_parent, ec);
+    if (ec) {
+      std::cerr << "could not clear generated game code: " << ec.message()
+                << '\n';
+      return std::nullopt;
+    }
+    fs::remove_all(module_build, ec);
+    if (ec) {
+      std::cerr << "could not clear the previous module build: " << ec.message()
+                << '\n';
+      return std::nullopt;
+    }
+    std::cout << "rebuilding game files from the selected disc image\n";
+  } else if (fs::is_regular_file(built)) {
+    EmitSetupPhase(options, "publish");
     return publish_module();
+  }
 
   fs::create_directories(artifact);
   fs::path recomp_dol = game.main_dol;
-  if (!patches.entries.empty())
-  {
+  if (!patches.entries.empty()) {
     recomp_dol = artifact / "patched-main.dol";
     std::string patch_error;
-    if (!PatchDol(game.main_dol, recomp_dol, patches, &patch_error))
-    {
+    if (!PatchDol(game.main_dol, recomp_dol, patches, &patch_error)) {
       std::cerr << patch_error << '\n';
       return std::nullopt;
     }
-    std::cout << "applied " << patches.entries.size() << " default DOL patches\n";
+    std::cout << "applied " << patches.entries.size()
+              << " default DOL patches\n";
   }
-  const fs::path generated_parent = artifact / "dolrecomp-output";
   const fs::path dolrecomp = SiblingExecutable(argv0, "dolrecomp");
-  std::string generate = Quote(dolrecomp) + " -j" +
-                         std::to_string(std::max(1u, std::thread::hardware_concurrency())) + " ";
+  EmitSetupPhase(options, "translate");
+  std::string generate =
+      Quote(dolrecomp) + " -j" +
+      std::to_string(std::max(1u, std::thread::hardware_concurrency())) + " ";
   if (game.platform == moderngekko::GamePlatform::GameCube)
-    generate += "--cpu gekko --gamecube " + Quote(recomp_dol) + " " + Quote(generated_parent);
+    generate += "--cpu gekko --gamecube " + Quote(recomp_dol) +
+                " --idle-pc 0x80185DEC " + Quote(generated_parent);
   else
-    generate += "--cpu broadway " + Quote(recomp_dol) + " " + game.disc_id + " " +
-                Quote(generated_parent);
+    generate += "--cpu broadway " + Quote(recomp_dol) + " " + game.disc_id +
+                " " + Quote(generated_parent);
   if (!RunCommand(generate))
     return std::nullopt;
 
-  fs::path generated = game.platform == moderngekko::GamePlatform::Wii ?
-      generated_parent / (game.disc_id + "_generated") : generated_parent / "generated";
-  std::string generated_stem =
-      game.platform == moderngekko::GamePlatform::Wii ? game.disc_id : "generated";
+  fs::path generated = game.platform == moderngekko::GamePlatform::Wii
+                           ? generated_parent / (game.disc_id + "_generated")
+                           : generated_parent / "generated";
+  std::string generated_stem = game.platform == moderngekko::GamePlatform::Wii
+                                   ? game.disc_id
+                                   : "generated";
   // DolRecomp's optional title database affects output naming only. An
-  // explicit --cpu broadway keeps Wii semantics even when that database is absent.
+  // explicit --cpu broadway keeps Wii semantics even when that database is
+  // absent.
   if (!fs::is_regular_file(generated / (generated_stem + ".h")) &&
-      fs::is_regular_file(generated_parent / "generated" / "generated.h"))
-  {
+      fs::is_regular_file(generated_parent / "generated" / "generated.h")) {
     generated = generated_parent / "generated";
     generated_stem = "generated";
   }
   const fs::path emitted_header = generated / (generated_stem + ".h");
-  if (!fs::is_regular_file(emitted_header))
-  {
+  if (!fs::is_regular_file(emitted_header)) {
     std::cerr << "DolRecomp did not produce " << emitted_header << '\n';
     return std::nullopt;
   }
   if (emitted_header.filename() != "generated.h")
-    fs::copy_file(emitted_header, generated / "generated.h", fs::copy_options::overwrite_existing);
-  fs::copy_file(recomp_dol, generated / "main.dol", fs::copy_options::overwrite_existing);
+    fs::copy_file(emitted_header, generated / "generated.h",
+                  fs::copy_options::overwrite_existing);
+  fs::copy_file(recomp_dol, generated / "main.dol",
+                fs::copy_options::overwrite_existing);
   const fs::path emitted_smc = generated / (generated_stem + "_smc.txt");
   const fs::path normalized_smc = generated / "generated_smc.txt";
-  if (fs::is_regular_file(emitted_smc))
-  {
+  if (fs::is_regular_file(emitted_smc)) {
     if (emitted_smc != normalized_smc)
-      fs::copy_file(emitted_smc, normalized_smc, fs::copy_options::overwrite_existing);
-  }
-  else
+      fs::copy_file(emitted_smc, normalized_smc,
+                    fs::copy_options::overwrite_existing);
+  } else
     std::ofstream{normalized_smc};
 
-  const unsigned compile_jobs = std::max(1u, std::thread::hardware_concurrency());
-  std::string configure = "cmake -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 cmake -S " +
-      Quote(source_root / "vendor/dolphin/module-template") +
-      " -B " + Quote(module_build) + " -G Ninja -DCMAKE_BUILD_TYPE=Release" +
+  const unsigned compile_jobs =
+      std::max(1u, std::thread::hardware_concurrency());
+  std::string configure =
+      "cmake -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 cmake -S " +
+      Quote(module_source) + " -B " + Quote(module_build) +
+      " -G Ninja -DCMAKE_BUILD_TYPE=Release" +
       " -DCMAKE_C_COMPILER=" + compiler + " -DGAME_ID=" + game.disc_id +
       " -DGENERATED_DIR=" + Quote(generated) +
-      " -DGXRUNTIME_DIR=" + Quote(source_root / "vendor/dolphin/GXRuntime") +
-      " -DCHASSIS_ABI_DIR=" +
-      Quote(source_root / "vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp");
-  if (!RunCommand(configure) ||
-      !RunCommand("cmake --build " + Quote(module_build) + " -j" +
+      " -DDOLRECOMP_SRC=" + Quote(module_dependencies / "dolrecomp-src") +
+      " -DGXRUNTIME_INC=" + Quote(module_dependencies / "gxruntime-include") +
+      " -DCHASSIS_ABI_DIR=" + Quote(module_dependencies / "chassis-abi") +
+      " -DMODULE_TEMPLATE=" + Quote(module_dependencies / "module-template");
+  if (compiler != "cl")
+    configure += " -DCMAKE_C_FLAGS=-march=native";
+  if (fs::is_regular_file(module_source / "module.profdata") &&
+      compiler_identity.find("clang") != std::string::npos)
+    configure +=
+        " -DMODULE_PGO_PROFILE=" + Quote(module_source / "module.profdata");
+  EmitSetupPhase(options, "configure");
+  if (!RunCommand(configure))
+    return std::nullopt;
+  EmitSetupPhase(options, "compile");
+  if (!RunCommand("cmake --build " + Quote(module_build) + " -j" +
                   std::to_string(compile_jobs)))
     return std::nullopt;
 
-  if (!fs::is_regular_file(built))
-  {
+  if (!fs::is_regular_file(built)) {
     std::cerr << "module build completed but did not produce " << built << '\n';
     return std::nullopt;
   }
+  EmitSetupPhase(options, "publish");
   return publish_module();
 }
 
-void Usage()
-{
+void Usage() {
   std::cerr << "usage: moderngekko-port inspect <game-root>\n"
-               "       moderngekko-port build <game-root> [--toolchain auto|clang|gcc|msvc] [--output path]\n"
-               "       moderngekko-port run <game-root> [build options] [-- runner options]\n";
+               "       moderngekko-port build <game-root> [--toolchain "
+               "auto|clang|gcc|msvc] [--output path] [--force-rebuild]\n"
+               "       moderngekko-port run <game-root> [build options] [-- "
+               "runner options]\n";
 }
-}  // namespace
+} // namespace
 
-int main(int argc, char** argv)
-{
-  if (argc < 3)
-  {
+int main(int argc, char **argv) {
+  std::cout.setf(std::ios::unitbuf);
+  std::cerr.setf(std::ios::unitbuf);
+  if (argc < 3) {
     Usage();
     return 2;
   }
@@ -573,8 +659,7 @@ int main(int argc, char** argv)
   const fs::path root = argv[2];
   BuildOptions options;
   bool runner_args = false;
-  for (int i = 3; i < argc; ++i)
-  {
+  for (int i = 3; i < argc; ++i) {
     const std::string arg = argv[i];
     if (runner_args)
       options.runner_arguments.push_back(arg);
@@ -584,10 +669,13 @@ int main(int argc, char** argv)
       options.toolchain = argv[++i];
     else if (arg == "--output" && i + 1 < argc)
       options.output = argv[++i];
+    else if (arg == "--setup-progress")
+      options.setup_progress = true;
+    else if (arg == "--force-rebuild")
+      options.force_rebuild = true;
     else if (command == "run")
       options.runner_arguments.push_back(arg);
-    else
-    {
+    else {
       std::cerr << "unknown or incomplete option: " << arg << '\n';
       return 2;
     }
@@ -596,8 +684,7 @@ int main(int argc, char** argv)
     options.output = DefaultOutput();
   if (command == "inspect")
     return Inspect(root, options.output);
-  if (command != "build" && command != "run")
-  {
+  if (command != "build" && command != "run") {
     Usage();
     return 2;
   }
@@ -606,9 +693,9 @@ int main(int argc, char** argv)
     return 1;
   if (command == "build")
     return 0;
-  std::string run = Quote(SiblingExecutable(argv[0], "moderngekko-run")) + " --game " +
-                    Quote(root) + " --module " + Quote(*module);
-  for (const std::string& arg : options.runner_arguments)
+  std::string run = Quote(SiblingExecutable(argv[0], "moderngekko-run")) +
+                    " --game " + Quote(root) + " --module " + Quote(*module);
+  for (const std::string &arg : options.runner_arguments)
     run += " " + Quote(arg);
   return std::system(run.c_str()) == 0 ? 0 : 1;
 }
