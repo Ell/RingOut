@@ -56,6 +56,12 @@ std::string DescriptorFingerprint(const ModernGekkoModuleDesc &descriptor) {
   return Common::SHA1::DigestToString(context->Finish());
 }
 
+#if defined(_WIN32)
+std::vector<std::unique_ptr<ModuleLibrary>> &PinnedModuleLibraries() {
+  static auto *libraries = new std::vector<std::unique_ptr<ModuleLibrary>>();
+  return *libraries;
+}
+#endif
 } // namespace
 
 std::string CompatibilityFingerprint(const RuntimeConfig &config,
@@ -74,6 +80,10 @@ std::string CompatibilityFingerprint(const RuntimeConfig &config,
     }
     if (loaded.status == ModuleLoadStatus::Ok) {
       module = DescriptorFingerprint(*library->GetDescriptor());
+#if defined(_WIN32)
+      if (config.module.kind == ModuleSource::Kind::DynamicPath)
+        PinnedModuleLibraries().push_back(std::move(library));
+#endif
     } else {
       module = "rejected";
     }

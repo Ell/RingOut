@@ -3,14 +3,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 
 typedef struct {
     const ChunkJob* jobs;
     u32 job_count;
     u32 next_job;
     int failed;
+#ifdef _WIN32
+    CRITICAL_SECTION lock;
+#else
     pthread_mutex_t lock;
+#endif
 } WorkerQueue;
 
 int emit_chunk_file(const ChunkJob* job) {
@@ -37,19 +46,36 @@ int queue_init(WorkerQueue* queue, const ChunkJob* jobs, u32 job_count) {
     queue->job_count = job_count;
     queue->next_job = 0;
     queue->failed = 0;
+#ifdef _WIN32
+    InitializeCriticalSection(&queue->lock);
+    return 1;
+#else
     return pthread_mutex_init(&queue->lock, NULL) == 0;
+#endif
 }
 
 void queue_destroy(WorkerQueue* queue) {
+#ifdef _WIN32
+    DeleteCriticalSection(&queue->lock);
+#else
     pthread_mutex_destroy(&queue->lock);
+#endif
 }
 
 void queue_lock(WorkerQueue* queue) {
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+#else
     pthread_mutex_lock(&queue->lock);
+#endif
 }
 
 void queue_unlock(WorkerQueue* queue) {
+#ifdef _WIN32
+    LeaveCriticalSection(&queue->lock);
+#else
     pthread_mutex_unlock(&queue->lock);
+#endif
 }
 
 int queue_take_job(WorkerQueue* queue, const ChunkJob** job) {
@@ -71,7 +97,11 @@ void queue_mark_failed(WorkerQueue* queue) {
     queue_unlock(queue);
 }
 
+#ifdef _WIN32
+DWORD WINAPI chunk_worker_main(LPVOID arg) {
+#else
 void* chunk_worker_main(void* arg) {
+#endif
     WorkerQueue* queue = (WorkerQueue*)arg;
     const ChunkJob* job = NULL;
 
@@ -82,7 +112,11 @@ void* chunk_worker_main(void* arg) {
         }
     }
 
+#ifdef _WIN32
+    return 0;
+#else
     return NULL;
+#endif
 }
 
 int run_chunk_jobs(const ChunkJob* jobs, u32 job_count, u32 requested_jobs) {
@@ -93,6 +127,10 @@ int run_chunk_jobs(const ChunkJob* jobs, u32 job_count, u32 requested_jobs) {
         requested_jobs = 1;
     if (requested_jobs > job_count)
         requested_jobs = job_count;
+#ifdef _WIN32
+    if (requested_jobs > 64)
+        requested_jobs = 64;
+#endif
 
     if (requested_jobs == 1) {
         for (u32 i = 0; i < job_count; i++) {
@@ -108,6 +146,31 @@ int run_chunk_jobs(const ChunkJob* jobs, u32 job_count, u32 requested_jobs) {
         return 0;
     }
 
+#ifdef _WIN32
+    HANDLE* handles = (HANDLE*)calloc(requested_jobs, sizeof(HANDLE));
+    if (!handles) {
+        queue_destroy(&queue);
+        fprintf(stderr, "error: out of memory\n");
+        return 0;
+    }
+
+    u32 created = 0;
+    for (; created < requested_jobs; created++) {
+        handles[created] = CreateThread(NULL, 0, chunk_worker_main, &queue, 0, NULL);
+        if (!handles[created]) {
+            queue_mark_failed(&queue);
+            fprintf(stderr, "error: can't start worker thread\n");
+            break;
+        }
+    }
+
+    if (created > 0)
+        WaitForMultipleObjects(created, handles, TRUE, INFINITE);
+
+    for (u32 i = 0; i < created; i++)
+        CloseHandle(handles[i]);
+    free(handles);
+#else
     pthread_t* threads = (pthread_t*)calloc(requested_jobs, sizeof(pthread_t));
     if (!threads) {
         queue_destroy(&queue);
@@ -127,6 +190,7 @@ int run_chunk_jobs(const ChunkJob* jobs, u32 job_count, u32 requested_jobs) {
     for (u32 i = 0; i < created; i++)
         pthread_join(threads[i], NULL);
     free(threads);
+#endif
 
     int ok = !queue.failed;
     queue_destroy(&queue);
@@ -140,6 +204,10 @@ u32 effective_chunk_jobs(u32 job_count, u32 requested_jobs) {
         requested_jobs = 1;
     if (requested_jobs > job_count)
         requested_jobs = job_count;
+#ifdef _WIN32
+    if (requested_jobs > 64)
+        requested_jobs = 64;
+#endif
     return requested_jobs;
 }
 

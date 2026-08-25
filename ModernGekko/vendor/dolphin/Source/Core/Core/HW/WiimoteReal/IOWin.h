@@ -3,7 +3,7 @@
 
 #pragma once
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__MINGW32__)
 #include <windows.h>
 
 #include <atomic>

@@ -9,17 +9,17 @@ add_library(usb STATIC EXCLUDE_FROM_ALL
 dolphin_disable_warnings(usb)
 
 set_target_properties(usb PROPERTIES VERSION 1.0.26)
-if(WIN32)
+if(MSVC)
   target_include_directories(usb BEFORE PUBLIC libusb/libusb PRIVATE libusb/msvc)
 else()
-target_include_directories(usb
-  # turns out other projects also have "config.h", so make sure the
-  # LibUSB one comes first
-  BEFORE
+  target_include_directories(usb
+    # turns out other projects also have "config.h", so make sure the
+    # LibUSB one comes first
+    BEFORE
 
-  PUBLIC libusb/libusb
-  PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
-)
+    PUBLIC libusb/libusb
+    PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
+  )
 endif()
 
 if(WIN32 OR CYGWIN)

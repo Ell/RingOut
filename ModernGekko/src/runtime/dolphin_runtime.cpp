@@ -274,6 +274,9 @@ void InitializeUICommon(const std::filesystem::path &user_directory) {
 std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
   if (config.headless)
     return Platform::CreateHeadlessPlatform();
+#ifdef _WIN32
+  return Platform::CreateWin32Platform();
+#endif
 #ifdef MODERNGEKKO_HAVE_COCOA
   return Platform::CreateMacOSPlatform();
 #endif
@@ -345,6 +348,17 @@ void ApplyCoreSettings(const GameMetadata &metadata) {
 void ApplyGraphicsSettings(const GraphicsSettings &graphics, bool headless) {
   if (!graphics.backend.empty())
     Config::SetBase(Config::MAIN_GFX_BACKEND, graphics.backend);
+#ifdef _WIN32
+  // A MinGW cross-build omits Dolphin's Microsoft-SDK-only Direct3D backends.
+  // Native MSVC builds retain Dolphin's D3D default. This is the BASE layer,
+  // so a backend chosen in the settings menu still wins.
+  else if (!headless)
+#ifdef __MINGW32__
+    Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Vulkan"));
+#else
+    Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("D3D"));
+#endif
+#endif
   else if (headless)
     Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Null"));
   if (graphics.internal_resolution_scale)

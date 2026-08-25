@@ -8,7 +8,11 @@
 void print_usage(const char* argv0) {
     (void)argv0;
 
+#ifdef _WIN32
+    const char* prog = "dolrecomp.exe";
+#else
     const char* prog = "dolrecomp";
+#endif
 
     fprintf(stderr, "Usage: %s [options] <input> [wii-title-id] [output.c | output-dir]\n", prog);
     fprintf(stderr, "\n");

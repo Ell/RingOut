@@ -31,8 +31,10 @@
 #define fseeko _fseeki64
 #define ftello _ftelli64
 #define atoll _atoi64
+#ifdef _MSC_VER
 #define stat _stat64
 #define fstat _fstat64
+#endif
 #define fileno _fileno
 
 extern "C" {

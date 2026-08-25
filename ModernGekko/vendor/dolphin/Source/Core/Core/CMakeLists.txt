@@ -844,15 +844,21 @@ if(WIN32)
   target_sources(core PRIVATE
     HW/EXI/BBA/TAP_Win32.cpp
     HW/EXI/BBA/TAP_Win32.h
-    HW/WiimoteReal/IOWin.cpp
-    HW/WiimoteReal/IOWin.h
   )
   target_link_libraries(core PUBLIC
-    videod3d
-    videod3d12
-    setupapi.lib
     iphlpapi.lib
   )
+  if(NOT MINGW)
+    target_sources(core PRIVATE
+      HW/WiimoteReal/IOWin.cpp
+      HW/WiimoteReal/IOWin.h
+    )
+    target_link_libraries(core PUBLIC
+      videod3d
+      videod3d12
+      setupapi.lib
+    )
+  endif()
   target_compile_definitions(core PRIVATE "-D_WINSOCK_DEPRECATED_NO_WARNINGS")
 elseif(APPLE)
   target_sources(core PRIVATE

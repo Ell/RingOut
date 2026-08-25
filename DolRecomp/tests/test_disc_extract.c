@@ -4,8 +4,14 @@
 #include <sys/stat.h>
 #include <errno.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#include <process.h>
+#define PATH_SEP '\\'
+#else
 #include <unistd.h>
 #define PATH_SEP '/'
+#endif
 
 #include "common/types.h"
 
@@ -17,7 +23,11 @@ static void put_be32(u8* p, u32 v) {
 }
 
 static int make_dir_one(const char* path) {
+#ifdef _WIN32
+    return _mkdir(path) == 0 || errno == EEXIST;
+#else
     return mkdir(path, 0777) == 0 || errno == EEXIST;
+#endif
 }
 
 static int join_path(char* out, size_t out_size, const char* a, const char* b) {
@@ -38,9 +48,61 @@ static char* copy_string(const char* text) {
 }
 
 static char* normalize_path_arg(const char* path) {
+#ifdef _WIN32
+    if (path[0] == '/' && path[1] != '\0') {
+        if (((path[1] >= 'a' && path[1] <= 'z') ||
+             (path[1] >= 'A' && path[1] <= 'Z')) &&
+            path[2] == '/') {
+            size_t len = strlen(path);
+            char* out = (char*)malloc(len + 2);
+            if (!out)
+                return NULL;
+            out[0] = path[1];
+            out[1] = ':';
+            for (size_t i = 2; i < len; i++)
+                out[i] = path[i] == '/' ? '\\' : path[i];
+            out[len] = '\0';
+            return out;
+        }
+
+        if (strncmp(path, "/mnt/", 5) == 0 &&
+            ((path[5] >= 'a' && path[5] <= 'z') ||
+             (path[5] >= 'A' && path[5] <= 'Z')) &&
+            path[6] == '/') {
+            size_t len = strlen(path);
+            char* out = (char*)malloc(len);
+            if (!out)
+                return NULL;
+            out[0] = path[5];
+            out[1] = ':';
+            for (size_t i = 6; i < len; i++)
+                out[i - 4] = path[i] == '/' ? '\\' : path[i];
+            out[len - 4] = '\0';
+            return out;
+        }
+
+        if (strncmp(path, "/home/", 6) == 0) {
+            const char* userprofile = getenv("USERPROFILE");
+            const char* rest = strchr(path + 6, '/');
+            if (userprofile && rest) {
+                size_t root_len = strlen(userprofile);
+                size_t rest_len = strlen(rest);
+                char* out = (char*)malloc(root_len + rest_len + 1);
+                if (!out)
+                    return NULL;
+                memcpy(out, userprofile, root_len);
+                for (size_t i = 0; i < rest_len; i++)
+                    out[root_len + i] = rest[i] == '/' ? '\\' : rest[i];
+                out[root_len + rest_len] = '\0';
+                return out;
+            }
+        }
+    }
+#endif
     return copy_string(path);
 }
 
+#ifndef _WIN32
 static char* quote_arg(const char* arg) {
     size_t len = strlen(arg);
     char* out = (char*)malloc(len * 4 + 3);
@@ -60,6 +122,7 @@ static char* quote_arg(const char* arg) {
     out[w] = '\0';
     return out;
 }
+#endif
 
 static int write_sample_gcm(const char* path) {
     u8 image[0x6000];
@@ -106,6 +169,12 @@ static int read_file(const char* path, char* out, size_t out_size) {
 
 static int run_extract_native(const char* extractor, const char* image,
                               const char* out_dir) {
+#ifdef _WIN32
+    const char* args[] = {
+        extractor, "extract", "--native-only", image, out_dir, NULL
+    };
+    return _spawnv(_P_WAIT, extractor, args) == 0;
+#else
     char* qexe = quote_arg(extractor);
     char* qimage = quote_arg(image);
     char* qout = quote_arg(out_dir);
@@ -132,9 +201,16 @@ static int run_extract_native(const char* extractor, const char* image,
     free(qimage);
     free(qout);
     return rc == 0;
+#endif
 }
 
 static int run_info(const char* extractor, const char* image) {
+#ifdef _WIN32
+    const char* args[] = {
+        extractor, "extract", "--info", image, NULL
+    };
+    return _spawnv(_P_WAIT, extractor, args) == 0;
+#else
     char* qexe = quote_arg(extractor);
     char* qimage = quote_arg(image);
     if (!qexe || !qimage) {
@@ -157,6 +233,7 @@ static int run_info(const char* extractor, const char* image) {
     free(qexe);
     free(qimage);
     return rc == 0;
+#endif
 }
 
 int main(int argc, char** argv) {

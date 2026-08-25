@@ -1,0 +1,47 @@
+Ring Out - credits and disclaimer
+=================================
+
+Ring Out was assembled by Jack Poison with substantial AI-assisted coding,
+debugging, and packaging. This Windows revival is maintained in the Ell fork.
+It is an unofficial fan project and is not affiliated with, endorsed by, or
+connected to the companies or upstream projects named below.
+
+No game image, game executable, extracted asset, save file, or precompiled
+per-game module is distributed. Users provide their own GameCube image and
+build the derived module locally.
+
+Major upstream work
+-------------------
+
+  Dolphin Emulator Project
+    GameCube hardware emulation, graphics, audio, input, savestates, and the
+    Vulkan frontend used by the runtime. Primarily GPL-2.0-or-later.
+    https://dolphin-emu.org/
+
+  ExpansionPak RecompCore / ModernGekko
+    StaticRecomp integration and the chassis that hosts recompiled GameCube
+    code in Dolphin. GPL-3.0-or-later.
+    https://github.com/ExpansionPak/RecompCore
+    https://github.com/ExpansionPak/ModernGekko
+
+  ExpansionPak DolRecomp
+    GameCube PowerPC static recompiler included as tools/dolrecomp.exe.
+    GPL-3.0-or-later.
+    https://github.com/ExpansionPak/DolRecomp
+
+  Dear ImGui, SDL, LLVM, CMake, Ninja, Python, and other dependencies
+    Their own copyright and licence notices are retained in LICENSES/ or the
+    bundled toolchain and summarized in THIRD-PARTY-NOTICES.txt.
+
+  Bandai Namco Entertainment
+    The original game and its assets. They are not included or redistributed;
+    all rights in that material remain with their respective owners.
+
+Corresponding source
+--------------------
+
+The exact source revision for the shipped Ring Out, ModernGekko/RecompCore,
+Dolphin, DolRecomp, launcher, setup, and packaging code is linked in SOURCE.txt.
+The release tag and its source archive are offered from the same GitHub release
+as the binaries. Preserve SOURCE.txt, LICENSES/, and these notices if you pass
+the package on. Anything setup derives from a user's disc must not be shared.

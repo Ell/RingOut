@@ -1,0 +1,64 @@
+Ring Out Windows package - third-party notices
+==============================================
+
+This file is a guide, not a replacement for the complete licence texts in
+LICENSES/ and in toolchain/. Per-file SPDX identifiers and upstream notices are
+authoritative. Exact Ring Out source provenance is in SOURCE.txt.
+
+Runtime and recompiler
+----------------------
+
+  Ring Out project code
+    GPL-2.0-or-later; LICENSES/RingOut-GPL-2.0-or-later.txt
+
+  ModernGekko / RecompCore integration
+    GPL-3.0-or-later; LICENSES/ModernGekko-GPL-3.0-or-later.txt
+    Provenance: LICENSES/ModernGekko-PROVENANCE.md
+
+  DolRecomp
+    GPL-3.0-or-later; LICENSES/DolRecomp-GPL-3.0-or-later.txt
+
+  Dolphin-derived runtime and its bundled dependencies
+    Primarily GPL-2.0-or-later with compatible third-party components.
+    Aggregate notice: LICENSES/Dolphin-COPYING.txt
+    Licence texts: LICENSES/Dolphin/
+    Additional per-component notices remain in the corresponding source tree
+    linked at the exact revision in SOURCE.txt.
+
+Bundled first-run toolchain
+---------------------------
+
+The package script accepts only the pinned archives below in the release
+workflow. Their upstream licence files remain inside toolchain/.
+
+  llvm-mingw 20260616, UCRT x86-64
+    Binary: https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-x86_64.zip
+    SHA-256: b9b68a4d276e16fa25802aaba458e4638f64b3884c290aaccdc2d87083b6ca35
+    Source/tag: https://github.com/mstorsjo/llvm-mingw/tree/20260616
+    LLVM is Apache-2.0 WITH LLVM-exception; bundled mingw-w64 components carry
+    their own permissive notices. If the PE import scan stages
+    libwinpthread-1.dll beside a project executable, its notice is retained at
+    toolchain/x86_64-w64-mingw32/share/mingw32/COPYING.winpthreads.txt.
+
+  CMake 4.4.2, Windows x86-64
+    Binary: https://github.com/Kitware/CMake/releases/download/v4.4.2/cmake-4.4.2-windows-x86_64.zip
+    SHA-256: e8139d85b3813bc38833142ae1940472e9a587e9b5d2718ac1804c60f4e57a64
+    Source/tag: https://gitlab.kitware.com/cmake/cmake/-/tree/v4.4.2
+    BSD-3-Clause.
+
+  Ninja 1.13.2, Windows
+    Binary: https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip
+    SHA-256: 07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65
+    Source/tag: https://github.com/ninja-build/ninja/tree/v1.13.2
+    Apache-2.0; LICENSES/Ninja-Apache-2.0.txt (the upstream binary ZIP itself
+    contains only ninja.exe, so the package adds the standard licence text).
+
+  CPython 3.11.9 embeddable package, Windows x86-64
+    Binary: https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip
+    SHA-256: 009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b
+    Source/tag: https://github.com/python/cpython/tree/v3.11.9
+    Python Software Foundation License Version 2 and included third-party
+    notices.
+
+FFmpeg is not bundled. It is an optional external executable used only when a
+developer explicitly enables STATICRECOMP_FMV_TAKEOVER; see README.txt.

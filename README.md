@@ -21,6 +21,12 @@ the CPU emulation and the runtime on separate cores.
 **Steam Deck**: supported, with its own prebuilt package — no toolchain, no
 compile step. Runs in both Desktop and Game Mode at 45–49 fps in a match.
 
+**Windows x86-64**: revived as an experimental portable package. The runtime
+and recompiler are cross-compiled with MinGW on Linux; first-run compilation
+uses the Windows-native LLVM, CMake, Ninja and Python tools bundled in the ZIP.
+The executables are Wine loader-tested, but gameplay still needs validation on
+real Windows hardware.
+
 **Netplay**: working. Rollback over a deterministic dual-core setup, with a lobby
 showing live ping and per-player game status; two peers stayed byte-identical
 over 6,470 frames.
@@ -29,12 +35,13 @@ over 6,470 frames.
 
 ## Getting it
 
-Two packages, from the [Releases](../../releases) page:
+Packages are available from the [Releases](../../releases) page:
 
 | | for | needs a toolchain? |
 | --- | --- | --- |
 | `RingOut-1.2.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
 | `RingOut-1.2.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
+| `RingOut-1.2.1-ell.1-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
 
 The Deck package ships no module: build one on a desktop with the package below,
 then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a
@@ -54,6 +61,12 @@ straight away. You can also pass the image directly:
 ./RingOut /path/to/disc.iso     # or: ./setup.sh /path/to/disc.iso
 ```
 
+On Windows, extract the entire ZIP to a writable folder and double-click
+`RingOut.exe`. Select a plain GameCube `.iso` or `.wbfs` image when prompted.
+Do not run it from inside the ZIP or install it under `Program Files`: first-run
+setup creates `game/`, `work/`, and the private recompiled module beside the
+launcher.
+
 ### Requirements
 
 - A GameCube disc image you already own
@@ -62,6 +75,12 @@ straight away. You can also pass the image directly:
   - Debian/Ubuntu: `sudo apt install cmake ninja-build clang python3`
 - A working Vulkan driver
 - ~1.5 GB free for the extracted disc and build output
+
+The experimental Windows package requires 64-bit Windows 10 or 11, PowerShell
+5.1 or newer, a Vulkan-capable driver, and about 1.5 GB of writable space after
+extraction. Its compiler toolchain is included; antivirus software can
+occasionally quarantine `clang.exe` or `lld.exe` and may need an exception for
+the extracted package folder.
 
 The release binary is built on **glibc 2.44**. For older hosts the launcher falls
 back to a bundled glibc in `libc-fallback/` — see [Known issues](#known-issues)
@@ -80,7 +99,8 @@ before relying on that.
 - **Full controller remapping**
 - **Save states** — `Shift+F1`–`F8` to save, `F1`–`F8` to load
 - **Free camera** — fly the camera anywhere in a match
-- **FMV playback** via FFmpeg, replacing the software Sofdec decoder
+- **Optional experimental FMV takeover** via external FFmpeg; it is off by
+  default because the ordinary emulated Sofdec path measured faster
 - **23 verified cheat codes** shipped in `GameSettings/GRSEAF.ini`
 - **Netplay** — rollback, lobby with live ping and per-player game status
 - **Its own icon** — the disc banner and the memory-card icon are extracted from
@@ -158,10 +178,11 @@ back end is saturated at IPC 1.92. The workload is not inefficient, just large:
   a Debian 12 container, which clears SteamOS and essentially every current
   distro. A build made natively on SteamOS instead has a 2.38 floor and will not
   run on older SteamOS releases — so the container build stays the shipped one.
-- **Windows is retired.** There is no Windows CI job and no Windows package. The
-  workflow, packaging script, installer and launcher scaffolding are kept, unbuilt
-  and unmaintained, under `attic/windows/`. Linux and the Steam Deck are the
-  supported targets.
+- **Windows support is experimental.** Its MinGW cross-build uses Vulkan or
+  OpenGL, Cubeb/OpenAL audio, and SDL input. Microsoft-SDK-only Direct3D,
+  WASAPI, native Windows controller backends, and the native Bluetooth Wii
+  Remote transport are omitted. The release is cross-built and Wine-smoked,
+  not yet gameplay-verified on real Windows hardware.
 - The `-march=native` build is machine-specific by design; setup compiles on your
   own machine, so this only matters if you copy a built folder to another CPU.
 
@@ -188,6 +209,33 @@ ninja -C ModernGekko/build
 Then build the recompiled module for your disc with `dist/RingOut-1.0-dist/setup.sh`,
 which drives `dolrecomp` and compiles the generated C.
 
+To cross-compile the Windows runtime and recompiler from Linux, install a
+64-bit MinGW-w64 POSIX-thread toolchain, CMake and Ninja, then run:
+
+On Ubuntu 24.04, use the explicit POSIX packages
+`gcc-mingw-w64-x86-64-posix` and `g++-mingw-w64-x86-64-posix`. Ubuntu also
+installs Win32-thread variants under the generic compiler names, so add
+`-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix` and
+`-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix` to the configure command
+there, as the release workflow does. Arch's MinGW package exposes the POSIX
+compiler under the unsuffixed names used by the toolchain file.
+
+```sh
+cmake -S ModernGekko -B build-windows-cross -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-x86_64.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUSE_SYSTEM_LIBS=OFF -DBUILD_TESTING=OFF \
+  -DENABLE_QT=OFF -DENABLE_TESTS=OFF \
+  -DENABLE_ANALYTICS=OFF -DENABLE_AUTOUPDATE=OFF
+cmake --build build-windows-cross --target moderngekko-run dolrecomp --parallel
+```
+
+This cross-build deliberately excludes Windows backends that require the
+Microsoft C++/WinRT SDK. The tag workflow in
+`.github/workflows/windows-cross.yml` downloads checksum-pinned Windows-native
+first-run tools, invokes `.github/scripts/package-windows-cross.sh`, validates
+the PE import closure and privacy allowlist, and creates a draft prerelease.
+
 Releases are assembled by script, never by zipping a working directory — those
 hold the extracted disc, saves and build output. Each stage is built from an
 allowlist and then checked: no disc-derived files, no personal data, and for the
@@ -197,6 +245,7 @@ the sources shipped beside it.
 ```sh
 .github/scripts/package-deck.sh     # Steam Deck zip
 .github/scripts/package-dist.sh     # desktop Linux zip
+.github/scripts/package-windows-cross.sh --help
 .github/scripts/regen-source.sh     # refresh the GPL source shipment
 ```
 
@@ -209,6 +258,7 @@ the sources shipped beside it.
 | `DolRecomp/` | the static recompiler fork (PowerPC → C) |
 | `dist/RingOut-1.0-dist/` | the desktop redistributable: launcher, `setup.sh`, module build recipe |
 | `dist/RingOut-1.0-deck/` | the Steam Deck package scaffolding |
+| `dist/windows/` | version-neutral Windows launcher and first-run setup scaffolding |
 | `dist/shared/gc-art.py` | extracts the game's banner and icon on the player's machine |
 | `.github/scripts/` | packaging, the privacy scan, the GPL source shipment, benchmarks |
 | `work/mg_userdir/GameSettings/GRSEAF.ini` | the verified cheat codes |
@@ -231,7 +281,8 @@ people's work:
 - **[ExpansionPak — DolRecomp](https://github.com/ExpansionPak/DolRecomp)** — the
   static recompiler. GPL-3.0-or-later.
 - **Dear ImGui** (Omar Cornut and contributors) — the settings overlay UI. MIT.
-- **FFmpeg** — used as a separate program to decode the game's Sofdec video.
+- **FFmpeg** — optional external program for the developer-only FMV takeover;
+  it is not bundled or used by ordinary playback.
 - **Bandai Namco Entertainment** — the original game, its code and all its assets.
   Not included, not redistributed, and not ours. All rights remain theirs.
 - Action Replay cheat codes are published community data (Codejunkies, via Almar's
@@ -248,13 +299,15 @@ decisions made by a human.
 
 ## Licence
 
-**GPL-2.0-or-later.** See [`LICENSE`](LICENSE).
+Project code covered by the root licence is **GPL-2.0-or-later**. See
+[`LICENSE`](LICENSE).
 
-The runtime derives from Dolphin (GPL-2.0-or-later) and ModernGekko, whose sources
-are tagged `GPL-2.0-or-later`; DolRecomp is GPL-3.0-or-later and is used as a
-separate build-time tool. Because the GPL obliges anyone receiving a binary to be
-able to get the matching source, the full Dolphin and recompiler trees are vendored
-in this repository rather than referenced.
+The runtime derives from Dolphin (GPL-2.0-or-later) and ModernGekko
+(GPL-3.0-or-later); DolRecomp is GPL-3.0-or-later. The portable Windows package
+ships these compatible works together and is distributed under GPLv3-compatible
+terms. Because the GPL obliges anyone receiving a binary to be able to get the
+matching source, the full Dolphin and recompiler trees are vendored in this
+repository rather than referenced.
 
 `ModernGekko/LICENSE` and `ModernGekko/vendor/dolphin/COPYING` are upstream's own
 terms and are left untouched.

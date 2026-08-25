@@ -7,7 +7,11 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "common/types.h"
 
@@ -22,7 +26,13 @@
 #define MAX_PATH_BUF 4096
 #define COPY_CHUNK   0x10000u
 
+#ifdef _WIN32
+#define WIT_EXE_NAME "wit.exe"
+#define DOLRECOMP_PROGRAM "dolrecomp.exe"
+#else
 #define WIT_EXE_NAME "wit"
+#define DOLRECOMP_PROGRAM "dolrecomp"
+#endif
 
 typedef enum {
     EXTRACT_OK,
@@ -53,8 +63,8 @@ typedef struct {
 } FstEntry;
 
 static void print_usage(void) {
-    printf("usage: dolrecomp extract [options] <image.iso|image.wbfs> <output-dir>\n");
-    printf("       dolrecomp extract --info <image.iso|image.wbfs>\n");
+    printf("usage: " DOLRECOMP_PROGRAM " extract [options] <image.iso|image.wbfs> <output-dir>\n");
+    printf("       " DOLRECOMP_PROGRAM " extract --info <image.iso|image.wbfs>\n");
     printf("\n");
     printf("options:\n");
     printf("  --info             print basic image info\n");
@@ -110,7 +120,11 @@ static int is_supported_image_path(const char* path) {
 }
 
 static int seek_file_base(FILE* file, s64 offset, int origin) {
+#ifdef _WIN32
+    return _fseeki64(file, offset, origin) == 0;
+#else
     return fseeko(file, (off_t)offset, origin) == 0;
+#endif
 }
 
 static int seek_file(FILE* file, u64 offset) {
@@ -118,7 +132,11 @@ static int seek_file(FILE* file, u64 offset) {
 }
 
 static u64 tell_file(FILE* file) {
+#ifdef _WIN32
+    return (u64)_ftelli64(file);
+#else
     return (u64)ftello(file);
+#endif
 }
 
 static int get_file_size(FILE* file, u64* size) {
@@ -161,7 +179,11 @@ static void raw_reader_close(RawReader* reader) {
 }
 
 static int make_dir_one(const char* path) {
+#ifdef _WIN32
+    int rc = _mkdir(path);
+#else
     int rc = mkdir(path, 0777);
+#endif
     return rc == 0 || errno == EEXIST;
 }
 
@@ -187,6 +209,10 @@ static int make_dir_tree(const char* path) {
             char saved = tmp[i];
             if (i == 0)
                 continue;
+#ifdef _WIN32
+            if (i == 2 && tmp[1] == ':')
+                continue;
+#endif
             tmp[i] = '\0';
             if (tmp[0] != '\0' && !make_dir_one(tmp)) {
                 fprintf(stderr, "error: can't create directory '%s'\n", tmp);
@@ -563,6 +589,17 @@ static char* quote_arg(const char* arg) {
     if (!out)
         return NULL;
 
+#ifdef _WIN32
+    size_t w = 0;
+    out[w++] = '"';
+    for (size_t i = 0; i < len; i++) {
+        if (arg[i] == '"')
+            out[w++] = '\\';
+        out[w++] = arg[i];
+    }
+    out[w++] = '"';
+    out[w] = '\0';
+#else
     size_t w = 0;
     out[w++] = '\'';
     for (size_t i = 0; i < len; i++) {
@@ -575,6 +612,7 @@ static char* quote_arg(const char* arg) {
     }
     out[w++] = '\'';
     out[w] = '\0';
+#endif
     return out;
 }
 
@@ -584,7 +622,11 @@ static int command_exists(const char* exe) {
         return 0;
 
     char cmd[MAX_PATH_BUF + 128];
+#ifdef _WIN32
+    snprintf(cmd, sizeof(cmd), "%s --version >NUL 2>NUL", qexe);
+#else
     snprintf(cmd, sizeof(cmd), "%s --version >/dev/null 2>/dev/null", qexe);
+#endif
     free(qexe);
     return system(cmd) == 0;
 }
@@ -603,7 +645,7 @@ static ExtractResult extract_with_wit(const Options* opts) {
 
     if (should_check_command && !command_exists(wit)) {
         fprintf(stderr, "wit bridge: '%s' was not found\n", wit);
-        fprintf(stderr, "run dolrecomp --setup or pass --wit <path>\n");
+        fprintf(stderr, "run " DOLRECOMP_PROGRAM " --setup or pass --wit <path>\n");
         return EXTRACT_UNSUPPORTED;
     }
 
@@ -631,7 +673,11 @@ static ExtractResult extract_with_wit(const Options* opts) {
         return EXTRACT_FAILED;
     }
 
+#ifdef _WIN32
+    snprintf(cmd, cmd_size, "\"%s EXTRACT -o %s %s\"", qwit, qin, qout);
+#else
     snprintf(cmd, cmd_size, "%s EXTRACT -o %s %s", qwit, qin, qout);
+#endif
     printf("using wit bridge\n");
     int rc = system(cmd);
 

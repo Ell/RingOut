@@ -4,7 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <dirent.h>
+#endif
 
 void path_list_free(PathList* list) {
     for (u32 i = 0; i < list->count; i++)
@@ -38,6 +43,49 @@ int path_list_add(PathList* list, const char* path) {
 }
 
 int collect_rel_paths(const char* root, PathList* list) {
+#ifdef _WIN32
+    char pattern[1200];
+    if (!join_path(pattern, sizeof(pattern), root, "*")) {
+        fprintf(stderr, "error: path is too long\n");
+        return 0;
+    }
+
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA(pattern, &data);
+    if (find == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "error: can't read directory '%s'\n", root);
+        return 0;
+    }
+
+    do {
+        if (strcmp(data.cFileName, ".") == 0 ||
+            strcmp(data.cFileName, "..") == 0) {
+            continue;
+        }
+
+        char child[1200];
+        if (!join_path(child, sizeof(child), root, data.cFileName)) {
+            FindClose(find);
+            fprintf(stderr, "error: path is too long\n");
+            return 0;
+        }
+
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            if (!collect_rel_paths(child, list)) {
+                FindClose(find);
+                return 0;
+            }
+        } else if (has_rel_extension(child)) {
+            if (!path_list_add(list, child)) {
+                FindClose(find);
+                return 0;
+            }
+        }
+    } while (FindNextFileA(find, &data));
+
+    FindClose(find);
+    return 1;
+#else
     DIR* dir = opendir(root);
     if (!dir) {
         fprintf(stderr, "error: can't read directory '%s'\n", root);
@@ -73,6 +121,7 @@ int collect_rel_paths(const char* root, PathList* list) {
 
     closedir(dir);
     return 1;
+#endif
 }
 
 int compare_paths_for_sort(const void* a, const void* b) {

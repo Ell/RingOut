@@ -87,7 +87,7 @@ PRIVATE
   spng::spng
 )
 
-if(WIN32)
+if(WIN32 AND NOT MINGW)
   target_sources(inputcommon PRIVATE
     ControllerInterface/DInput/DInput.cpp
     ControllerInterface/DInput/DInput.h

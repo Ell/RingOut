@@ -7,7 +7,11 @@
 #include <string.h>
 #include <math.h>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
 #include <stdatomic.h>
+#endif
 
 // glibc 2.38 added a new symbol version for fmod, and the linker binds whatever
 // the BUILD host has. That silently sets this module's glibc floor to 2.38 on
@@ -1335,7 +1339,15 @@ bool ppc_fma(CPUState* cpu, f64 a, f64 c, f64 b, bool single,
 }
 
 void ppc_memory_fence(void) {
+#if defined(_MSC_VER)
+    _ReadWriteBarrier();
+#if defined(_M_IX86) || defined(_M_X64)
+    _mm_mfence();
+#endif
+    _ReadWriteBarrier();
+#else
     atomic_thread_fence(memory_order_seq_cst);
+#endif
 }
 
 static f64 round_nearest_even(f64 value) {

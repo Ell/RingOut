@@ -46,7 +46,9 @@ fs::path DefaultOutput()
 
 std::string Suffix()
 {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+  return ".dll";
+#elif defined(__APPLE__)
   return ".dylib";
 #else
   return ".so";
@@ -55,11 +57,16 @@ std::string Suffix()
 
 std::string Quote(const fs::path& value)
 {
+#if defined(_WIN32)
+  std::string text = value.string();
+  return '"' + text + '"';
+#else
   std::string text = value.string();
   std::string result = "'";
   for (char c : text)
     result += c == '\'' ? "'\\''" : std::string(1, c);
   return result + "'";
+#endif
 }
 
 std::uint64_t Fnv1a(std::string_view value)
@@ -256,14 +263,22 @@ bool PatchDol(const fs::path& input_path, const fs::path& output_path,
 
 std::string ReadCommand(const std::string& command)
 {
+#if defined(_WIN32)
+  FILE* pipe = _popen(command.c_str(), "r");
+#else
   FILE* pipe = popen(command.c_str(), "r");
+#endif
   if (!pipe)
     return {};
   std::string output;
   char buffer[512];
   while (fgets(buffer, sizeof(buffer), pipe))
     output += buffer;
+#if defined(_WIN32)
+  _pclose(pipe);
+#else
   pclose(pipe);
+#endif
   return output;
 }
 
@@ -277,6 +292,9 @@ fs::path SiblingExecutable(const char* argv0, std::string name)
 {
   std::error_code ec;
   fs::path self = fs::weakly_canonical(argv0, ec);
+#if defined(_WIN32)
+  name += ".exe";
+#endif
   const fs::path sibling = self.parent_path() / name;
   return fs::is_regular_file(sibling) ? sibling : fs::path(std::move(name));
 }
@@ -361,11 +379,24 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
 
   std::string compiler;
   if (options.toolchain == "auto")
+#if defined(_WIN32)
+    compiler = "cl";
+#else
     compiler = ReadCommand("clang --version 2>&1").empty() ? "gcc" : "clang";
+#endif
   else if (options.toolchain == "clang")
     compiler = "clang";
   else if (options.toolchain == "gcc")
     compiler = "gcc";
+  else if (options.toolchain == "msvc")
+  {
+#if defined(_WIN32)
+    compiler = "cl";
+#else
+    std::cerr << "MSVC modules can only be built on Windows\n";
+    return std::nullopt;
+#endif
+  }
   else
   {
     std::cerr << "unknown toolchain: " << options.toolchain << '\n';
@@ -526,7 +557,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
 void Usage()
 {
   std::cerr << "usage: moderngekko-port inspect <game-root>\n"
-               "       moderngekko-port build <game-root> [--toolchain auto|clang|gcc] [--output path]\n"
+               "       moderngekko-port build <game-root> [--toolchain auto|clang|gcc|msvc] [--output path]\n"
                "       moderngekko-port run <game-root> [build options] [-- runner options]\n";
 }
 }  // namespace

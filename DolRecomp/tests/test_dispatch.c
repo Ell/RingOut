@@ -17,10 +17,18 @@ static void check(int condition, const char* name) {
         fail_count++;
 }
 
+// MSVC has no setenv, and _putenv_s is not portable back the other way.
 static int set_lookup_mode(const char* value) {
+#if defined(_WIN32)
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "DOLRECOMP_DISPATCH_LOOKUP=%s",
+             value ? value : "");
+    return _putenv(buffer) == 0;
+#else
     if (!value)
         return unsetenv("DOLRECOMP_DISPATCH_LOOKUP") == 0;
     return setenv("DOLRECOMP_DISPATCH_LOOKUP", value, 1) == 0;
+#endif
 }
 
 // The four ranges below cover the three shapes the lookup has to get right:

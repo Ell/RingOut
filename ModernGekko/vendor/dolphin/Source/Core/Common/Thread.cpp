@@ -6,6 +6,9 @@
 #ifdef _WIN32
 #include <Windows.h>
 #include <processthreadsapi.h>
+#ifdef __MINGW32__
+#include <pthread.h>
+#endif
 #else
 #include <pthread.h>
 #include <unistd.h>
@@ -48,7 +51,11 @@ int CurrentThreadId()
 
 void SetThreadAffinity(std::thread::native_handle_type thread, u32 mask)
 {
+#ifdef __MINGW32__
+  SetThreadAffinityMask(static_cast<HANDLE>(pthread_gethandle(thread)), mask);
+#else
   SetThreadAffinityMask(thread, mask);
+#endif
 }
 
 void SetCurrentThreadAffinity(u32 mask)
@@ -70,6 +77,7 @@ void SwitchCurrentThread()
 // Sets the debugger-visible name of the current thread.
 // Uses trick documented in:
 // https://docs.microsoft.com/en-us/visualstudio/debugger/how-to-set-a-thread-name-in-native-code
+#ifdef _MSC_VER
 static void SetCurrentThreadNameViaException(const char* name)
 {
   static const DWORD MS_VC_EXCEPTION = 0x406D1388;
@@ -97,6 +105,7 @@ static void SetCurrentThreadNameViaException(const char* name)
   {
   }
 }
+#endif
 
 static void SetCurrentThreadNameViaApi(const char* name)
 {
@@ -113,7 +122,9 @@ static void SetCurrentThreadNameViaApi(const char* name)
 
 void SetCurrentThreadName(const char* name)
 {
+#ifdef _MSC_VER
   SetCurrentThreadNameViaException(name);
+#endif
   SetCurrentThreadNameViaApi(name);
 }
 

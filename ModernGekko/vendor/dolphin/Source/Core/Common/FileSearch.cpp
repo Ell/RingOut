@@ -11,7 +11,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
 
-#ifdef _MSC_VER
+#ifdef _WIN32
 #include <Windows.h>
 #elifdef ANDROID
 #include "jni/AndroidCommon/AndroidCommon.h"

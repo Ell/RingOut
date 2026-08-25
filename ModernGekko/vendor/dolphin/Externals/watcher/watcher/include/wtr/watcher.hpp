@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 
 namespace wtr {
@@ -1915,13 +1916,11 @@ inline auto do_event_send(
 
       auto path_type = [&path_name]()
       {
-        try {
-          return std::filesystem::is_directory(path_name)
-                 ? event::path_type::dir
-                 : event::path_type::file;
-        } catch (...) {
+        std::error_code error;
+        const bool is_directory = std::filesystem::is_directory(path_name, error);
+        if (error)
           return event::path_type::other;
-        }
+        return is_directory ? event::path_type::dir : event::path_type::file;
       }();
 
       if (buf->Action == FILE_ACTION_RENAMED_OLD_NAME) {

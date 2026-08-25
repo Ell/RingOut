@@ -4,11 +4,24 @@ project(DolRecomp C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+# Portable warnings for local development and CI.
+if(MSVC)
+    add_compile_options(/W3)
+else()
+    add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+endif()
 
 if(NOT DEFINED ZLIB_ROOT)
     if(DEFINED ENV{DEVKITPRO})
         set(_devkitpro "$ENV{DEVKITPRO}")
+        if(MSYS AND _devkitpro MATCHES "^[A-Za-z]:")
+            execute_process(
+                COMMAND cygpath -u "${_devkitpro}"
+                OUTPUT_VARIABLE _devkitpro
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+        endif()
     elseif(EXISTS "/opt/devkitpro")
         set(_devkitpro "/opt/devkitpro")
     endif()
@@ -22,13 +35,15 @@ if(NOT DEFINED ZLIB_ROOT)
 endif()
 
 find_package(ZLIB QUIET)
-find_package(Threads REQUIRED)
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+endif()
 
 set(DOLRECOMP_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 option(DOLRECOMP_ENABLE_LLVM "Build the x86-64 LLVM object backend" OFF)
 
-# Discover LLVM before creating targets.
+# Discover LLVM before creating targets so its MSVC runtime choice is uniform.
 if(DOLRECOMP_ENABLE_LLVM)
     enable_language(CXX)
     set(CMAKE_CXX_STANDARD 17)
@@ -41,7 +56,9 @@ endif()
 
 add_library(dr_cpu STATIC src/cpu/cpu.c)
 target_include_directories(dr_cpu PUBLIC ${DOLRECOMP_SRC})
-target_link_libraries(dr_cpu PUBLIC m)
+if(NOT WIN32)
+    target_link_libraries(dr_cpu PUBLIC m)
+endif()
 
 add_library(dr_platform STATIC
     src/platform/fs.c
@@ -80,7 +97,9 @@ add_library(dr_backend STATIC
 )
 target_include_directories(dr_backend PUBLIC ${DOLRECOMP_SRC})
 target_link_libraries(dr_backend PUBLIC dr_frontend dr_analysis)
-target_link_libraries(dr_backend PUBLIC Threads::Threads)
+if(NOT WIN32)
+    target_link_libraries(dr_backend PUBLIC Threads::Threads)
+endif()
 
 add_library(dr_ir STATIC
     src/ir/dolir.c
@@ -102,7 +121,20 @@ if(DOLRECOMP_ENABLE_LLVM)
     target_compile_definitions(dr_llvm PUBLIC DOLRECOMP_ENABLE_LLVM=1)
     target_compile_definitions(dr_llvm PRIVATE ${LLVM_DEFINITIONS})
     target_link_libraries(dr_llvm PUBLIC dr_ir)
-    if(TARGET LLVM)
+    if(MINGW)
+        find_library(DOLRECOMP_LLVM_SHARED_IMPORT
+            NAMES LLVM-${LLVM_VERSION_MAJOR} LLVM
+            HINTS ${LLVM_LIBRARY_DIRS}
+            NO_DEFAULT_PATH)
+        if(DOLRECOMP_LLVM_SHARED_IMPORT MATCHES "[.]dll[.]a$")
+            target_link_libraries(dr_llvm PRIVATE
+                "${DOLRECOMP_LLVM_SHARED_IMPORT}")
+        else()
+            llvm_map_components_to_libnames(DOLRECOMP_LLVM_LIBS
+                Core Support Analysis Passes Target MC native nativecodegen)
+            target_link_libraries(dr_llvm PRIVATE ${DOLRECOMP_LLVM_LIBS})
+        endif()
+    elseif(TARGET LLVM)
         target_link_libraries(dr_llvm PRIVATE LLVM)
     else()
         llvm_map_components_to_libnames(DOLRECOMP_LLVM_LIBS

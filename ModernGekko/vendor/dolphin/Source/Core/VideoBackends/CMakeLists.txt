@@ -2,7 +2,7 @@ add_subdirectory(OGL)
 add_subdirectory(Null)
 add_subdirectory(Software)
 
-if(WIN32)
+if(WIN32 AND NOT MINGW)
   add_subdirectory(D3DCommon)
   add_subdirectory(D3D)
   add_subdirectory(D3D12)

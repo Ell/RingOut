@@ -6,6 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
 #define GAMETDB_TITLES_URL "https://www.gametdb.com/titles.txt?LANG=EN"
 
 int parse_gametdb_title_line(const char* line, const char* title_id,
@@ -121,8 +126,13 @@ int download_titles_database(const char* output_path) {
         return 0;
     }
 
+#ifdef _WIN32
+    const char* command =
+        "curl.exe -fsSL --max-time 60 \"" GAMETDB_TITLES_URL "\"";
+#else
     const char* command =
         "curl -fsSL --max-time 60 '" GAMETDB_TITLES_URL "'";
+#endif
 
     FILE* pipe = popen(command, "r");
     if (!pipe) {

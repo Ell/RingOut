@@ -69,6 +69,8 @@
 /build-dist-native/
 /build-dolrecomp-static/
 /build-dolrecomp/
+# Linux-to-Windows CMake trees used by the cross-build workflow and local QA.
+/build-windows-cross*/
 # root-level ccache/CMake cache written by those trees -- 700 MB+ and never
 # wanted. The per-project /*/.cache/ rules above do not reach the repo root.
 /.cache/
@@ -91,6 +93,10 @@ compile_commands.json
 # without this the scripts fail on a fresh clone, because /dist/* would hide it.
 !/dist/shared/
 !/dist/RingOut-1.0-dist/
+# Version-neutral Windows release scaffolding. Built payloads still go to the
+# ignored /dist/out/ directory; only these launcher/setup sources are tracked.
+!/dist/windows/
+!/dist/windows/**
 # redistributable: ship the scaffolding, never the built payload
 /dist/RingOut-1.0-dist/bin/
 /dist/RingOut-1.0-dist/lib/

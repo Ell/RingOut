@@ -20,7 +20,7 @@
 #ifdef __LIBUSB__
 #include <libusb.h>
 #endif
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__MINGW32__)
 #include <cfgmgr32.h>
 #include <devpkey.h>
 #include <initguid.h>
@@ -122,7 +122,7 @@ static std::optional<std::string> GetDeviceNameUsingKnownDevices(u16 vid, u16 pi
   return std::nullopt;
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__MINGW32__)
 static std::optional<std::string> GetDeviceNameUsingCfgMgr32(u16 vid, u16 pid)
 {
   auto class_guid = GUID_DEVINTERFACE_USB_DEVICE;
@@ -241,7 +241,7 @@ std::optional<std::string> GetDeviceNameFromVIDPID(u16 vid, u16 pid)
 #ifdef HAVE_LIBUDEV
       &GetDeviceNameUsingHWDB,
 #endif
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__MINGW32__)
       &GetDeviceNameUsingCfgMgr32,
 #endif
 #if defined(__LIBUSB__) && !defined(_WIN32)

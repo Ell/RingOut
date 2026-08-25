@@ -1,0 +1,214 @@
+name: Windows x86-64 cross-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version used for the validation package
+        required: true
+        type: string
+        default: v1.2.1-ell.1
+  push:
+    tags:
+      - 'v*-ell.*'
+
+# A tag build creates a DRAFT prerelease and uploads directly to GitHub
+# Releases. It deliberately does not use Actions artifacts: the portable ZIP
+# includes a compiler toolchain and is large enough to exhaust the repository's
+# shared artifact quota. A manual dispatch validates the build/package without
+# publishing or retaining it.
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-cross-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+
+    env:
+      BUILD_DIR: build-windows-cross
+      DOWNLOAD_DIR: .cache/windows-toolchain
+      LLVM_MINGW_ARCHIVE: llvm-mingw-20260616-ucrt-x86_64.zip
+      CMAKE_ARCHIVE: cmake-4.4.2-windows-x86_64.zip
+      NINJA_ARCHIVE: ninja-win.zip
+      PYTHON_ARCHIVE: python-3.11.9-embed-amd64.zip
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and validate version
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="$DISPATCH_VERSION"
+          fi
+          [[ "$version" =~ ^v[0-9][0-9A-Za-z._+-]*$ ]] || {
+            echo "invalid release version: $version" >&2
+            exit 1
+          }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Install Linux cross-build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils-mingw-w64-x86-64 \
+            ca-certificates \
+            cmake \
+            curl \
+            g++-mingw-w64-x86-64-posix \
+            gcc-mingw-w64-x86-64-posix \
+            ninja-build \
+            pkg-config \
+            python3 \
+            unzip \
+            zip
+
+      - name: Configure Windows cross-build
+        env:
+          # Keep source-machine paths out of __FILE__ strings in Release PEs.
+          CFLAGS: -ffile-prefix-map=${{ github.workspace }}=.
+          CXXFLAGS: -ffile-prefix-map=${{ github.workspace }}=.
+        run: |
+          set -euo pipefail
+          cmake -S ModernGekko -B "$BUILD_DIR" -GNinja \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/toolchains/mingw-x86_64.cmake" \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SYSTEM_LIBS=OFF \
+            -DENABLE_QT=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_ANALYTICS=OFF \
+            -DENABLE_AUTOUPDATE=OFF \
+            -DBUILD_TESTING=OFF \
+            -DMODERNGEKKO_ENABLE_DOLPHIN_TESTS=OFF
+
+      - name: Build Windows runtime and recompiler
+        run: cmake --build "$BUILD_DIR" --target moderngekko-run dolrecomp --parallel 2
+
+      - name: Cache pinned Windows-native tool archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.DOWNLOAD_DIR }}
+          key: ringout-windows-tools-llvm-mingw-20260616-cmake-4.4.2-ninja-1.13.2-python-3.11.9
+
+      - name: Download and verify pinned first-run tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$DOWNLOAD_DIR"
+          download() {
+            local url=$1 destination=$2
+            if [[ ! -f "$destination" ]]; then
+              curl --fail --location --retry 5 --retry-all-errors \
+                --output "$destination" "$url"
+            fi
+          }
+          download \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/$LLVM_MINGW_ARCHIVE" \
+            "$DOWNLOAD_DIR/$LLVM_MINGW_ARCHIVE"
+          download \
+            "https://github.com/Kitware/CMake/releases/download/v4.4.2/$CMAKE_ARCHIVE" \
+            "$DOWNLOAD_DIR/$CMAKE_ARCHIVE"
+          download \
+            "https://github.com/ninja-build/ninja/releases/download/v1.13.2/$NINJA_ARCHIVE" \
+            "$DOWNLOAD_DIR/$NINJA_ARCHIVE"
+          download \
+            "https://www.python.org/ftp/python/3.11.9/$PYTHON_ARCHIVE" \
+            "$DOWNLOAD_DIR/$PYTHON_ARCHIVE"
+
+          cd "$DOWNLOAD_DIR"
+          sha256sum -c <<EOF
+          b9b68a4d276e16fa25802aaba458e4638f64b3884c290aaccdc2d87083b6ca35  $LLVM_MINGW_ARCHIVE
+          e8139d85b3813bc38833142ae1940472e9a587e9b5d2718ac1804c60f4e57a64  $CMAKE_ARCHIVE
+          07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65  $NINJA_ARCHIVE
+          009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b  $PYTHON_ARCHIVE
+          EOF
+
+      - name: Assemble and validate portable ZIP
+        env:
+          SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          .github/scripts/package-windows-cross.sh \
+            --version '${{ steps.version.outputs.version }}' \
+            --build-dir "$BUILD_DIR" \
+            --out-dir dist/out \
+            --llvm-mingw-archive "$DOWNLOAD_DIR/$LLVM_MINGW_ARCHIVE" \
+            --cmake-archive "$DOWNLOAD_DIR/$CMAKE_ARCHIVE" \
+            --ninja-archive "$DOWNLOAD_DIR/$NINJA_ARCHIVE" \
+            --python-archive "$DOWNLOAD_DIR/$PYTHON_ARCHIVE"
+
+      - name: Summarize validated package
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(dist/out/RingOut-*-windows-x86_64.zip)
+          [[ ${#zips[@]} -eq 1 ]] || {
+            echo "expected exactly one package, found ${#zips[@]}" >&2
+            exit 1
+          }
+          {
+            echo '### Windows cross-build'
+            echo
+            echo "Version: \`${{ steps.version.outputs.version }}\`"
+            echo "Package: \`$(basename "${zips[0]}")\`"
+            echo "SHA-256: \`$(sha256sum "${zips[0]}" | awk '{print $1}')\`"
+            echo
+            echo 'The package script verified PE imports, `bin/Sys`, the source and licence payload, the no-game-data policy, the manifest, and ZIP integrity.'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Create draft prerelease for tag push
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/out/RingOut-*-windows-x86_64.zip)
+          [[ ${#assets[@]} -eq 1 ]] || exit 1
+          assets+=("${assets[0]}.sha256")
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == true ]] || {
+              echo "refusing to replace assets on an already-published release" >&2
+              exit 1
+            }
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --draft \
+              --prerelease \
+              --title "Ring Out $RELEASE_TAG for Windows (experimental)" \
+              --notes "Experimental Windows x86-64 cross-build. No game data is included. Read README.txt, SOURCE.txt, and THIRD-PARTY-NOTICES.txt inside the ZIP before publishing this draft."
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+
+      - name: Upload CMake diagnostics on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-cross-cmake-logs
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            build-windows-cross/CMakeCache.txt
+            build-windows-cross/CMakeFiles/CMakeConfigureLog.yaml

@@ -211,6 +211,7 @@ elseif(WIN32)
   target_link_libraries(common
   PRIVATE
     kernel32.lib
+    qwave.lib
     shlwapi.lib
     winmm.lib
   )
@@ -310,13 +311,25 @@ endif()
 
 if(WIN32)
   target_sources(common PRIVATE
-    CompatPatches.cpp
     GL/GLInterface/WGL.cpp
     GL/GLInterface/WGL.h
-    WindowsDevice.cpp
-    WindowsDevice.h
     WindowsRegistry.cpp
   )
+  if(NOT MINGW)
+    target_sources(common PRIVATE
+      WindowsDevice.cpp
+      WindowsDevice.h
+    )
+    target_link_libraries(common PRIVATE cfgmgr32.lib)
+  endif()
+  if(MSVC)
+    # This patches MSVC's CRT initialization table and uses link.exe-specific
+    # directives.  It is not required for Ring Out and does not compile with
+    # MinGW.
+    target_sources(common PRIVATE
+      CompatPatches.cpp
+    )
+  endif()
 elseif(APPLE)
   target_sources(common PRIVATE
     GL/GLInterface/AGL.h
@@ -338,9 +351,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(common PUBLIC dl rt)
 endif()
 
-if(WIN32)
+if(MSVC)
   target_sources(common PRIVATE HRWrap.h HRWrap.cpp)
-else()
+elseif(NOT WIN32)
   target_link_libraries(common PRIVATE Iconv::Iconv)
 endif()
 
@@ -377,7 +390,11 @@ if(UNIX)
   if(SYSTEMD_FOUND)
     target_link_libraries(traversal_server PRIVATE ${SYSTEMD_LIBRARIES})
   endif()
-elseif(WIN32)
+elseif(MSVC)
+  # Dolphin uses PowerShell here only to query Visual Studio's redistributable
+  # version, and the force-include option below is MSVC/link.exe syntax.  A
+  # MinGW cross-build has neither Visual Studio nor Windows PowerShell, so
+  # treating every WIN32 toolchain as MSVC makes configuration fail on Linux.
   find_package(PowerShell REQUIRED)
   execute_process(
     COMMAND ${POWERSHELL_EXE} -Command "[System.Diagnostics.FileVersionInfo]::GetVersionInfo('$ENV{VCToolsRedistDir}vc_redist.x64.exe').ProductVersion"
