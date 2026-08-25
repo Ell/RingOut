@@ -30,14 +30,13 @@ builds/loads a synthetic recompilation module with its bundled tools. Physical
 Windows setup, menu, gameplay and two-peer netplay QA is still recommended
 before treating an experimental prerelease as stable.
 
-**Netplay**: released builds use fixed-delay play over a deterministic dual-core
-setup. The `codex/rollback-netplay` source branch adds an Experimental rollback
-mode, an Online Room beta using Dolphin's hosted traversal service, and a
-Ready-gated lobby. Its current Linux/source worktree has passed
-end-to-end clean, late-input correction, prediction-horizon recovery, live
-desync, and fixed-delay regression routes. It is not a published player-ready
-release yet: complete Windows/AppImage artifacts and physical two-machine,
-cross-platform, and impaired-network validation remain outstanding.
+**Netplay**: the `v1.2.1-ell.7` beta adds rollback, an Online Room flow using
+Dolphin's hosted traversal service, and a Ready-gated lobby. Its Linux/source
+implementation has passed end-to-end clean, forced late-input correction,
+prediction-horizon recovery, live desync, and fixed-delay regression routes.
+It remains experimental: physical two-machine, cross-platform, strict-NAT, and
+impaired-network validation are still outstanding, and Online Room has no relay,
+authentication, encryption, room password, or IP hiding.
 
 ---
 
@@ -49,8 +48,8 @@ Packages are available from the [Releases](../../releases) page:
 | --- | --- | --- |
 | `RingOut-1.2.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
 | `RingOut-1.2.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
-| `RingOut-1.2.1-ell.6-linux-x86_64.AppImage` | Linux x86-64 (experimental) | yes — compiles on your machine |
-| `RingOut-1.2.1-ell.6-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
+| `RingOut-1.2.1-ell.7-linux-x86_64.AppImage` | Linux x86-64 rollback beta | yes — compiles on your machine |
+| `RingOut-1.2.1-ell.7-windows-x86_64.zip` | Windows 10/11 x86-64 rollback beta | no — toolchain bundled |
 
 The Deck package ships no module: build one on a desktop with the package below,
 then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a
@@ -79,8 +78,8 @@ build work, settings, saves, and the private recompiled module under
 For the AppImage, make the download executable and run it:
 
 ```sh
-chmod +x RingOut-1.2.1-ell.6-linux-x86_64.AppImage
-./RingOut-1.2.1-ell.6-linux-x86_64.AppImage
+chmod +x RingOut-1.2.1-ell.7-linux-x86_64.AppImage
+./RingOut-1.2.1-ell.7-linux-x86_64.AppImage
 ```
 
 Its read-only image keeps generated files, saves and settings under
@@ -88,7 +87,7 @@ Its read-only image keeps generated files, saves and settings under
 another dedicated writable directory. On a system without FUSE, set
 `APPIMAGE_EXTRACT_AND_RUN=1`, or use `--appimage-extract` and run the extracted
 `AppRun`. Keep the adjacent checksummed
-`RingOut-1.2.1-ell.6-appimage-runtime-sources.tar.zst` release asset available
+`RingOut-1.2.1-ell.7-appimage-runtime-sources.tar.zst` release asset available
 with the AppImage; it contains the exact static-prefix source and libfuse
 relink materials named by the image's `SOURCE.txt`.
 
@@ -129,10 +128,9 @@ it does not replace the host's graphics drivers.
 - **Optional experimental FMV takeover** via external FFmpeg; it is off by
   default because the ordinary emulated Sofdec path measured faster
 - **23 verified cheat codes** shipped in `GameSettings/GRSEAF.ini`
-- **Netplay** — fixed-delay lockstep in current releases; the rollback branch has
-  live bounded prediction, correction, restore/replay, a Ready-gated lobby, and
-  beta room-code rendezvous, with branch-local Linux/source evidence and the
-  release boundaries below
+- **Netplay** — the `ell.7` beta has live bounded prediction, correction,
+  restore/replay, a Ready-gated lobby, and beta room-code rendezvous; fixed delay
+  remains available as an Advanced Direct IP fallback
 - **Its own icon** — the disc banner and the memory-card icon are extracted from
   your disc and saves on your machine, and a desktop entry is written for you.
   None of that artwork ships; it is the publisher's.
@@ -181,12 +179,12 @@ launcher preserves the prior session as `RingOut.previous.log` and can copy the
 current log path. Review logs before sharing: they can contain nicknames, room
 codes, IP addresses, controller names, and local file paths.
 
-Netplay starts only from the launcher on this branch. The obsolete in-game
+Netplay starts only from the launcher in the `ell.7` beta. The obsolete in-game
 System-tab Host/Join/Scan rows were removed so they cannot lead players into a
 different Direct-IP-only flow. Older released packages may still show those
 rows and fixed-delay mode.
 
-On the rollback branch, save data may be synchronized into the session, but
+In rollback sessions, save data may be synchronized into the session, but
 rollback forcibly disables copying memory-card changes back to the user's save
 and disables writable SD/serial/GBA routes. Treat rollback-session progress as
 temporary. Fixed-delay remains the supported fallback: leave the lobby, switch
@@ -209,9 +207,8 @@ then matched all eleven confirmed logical-state checkpoints through frame 660
 route also passed (`/tmp/ringout-live-rollback.final-clean.wPXzfTPg`), as did the
 fixed-delay whole-run oracle with 2,958 byte-identical rows
 (`/tmp/ringout-fixed-delay-final-3a7e`). These are
-strong branch-local Linux/source results, not distributable artifacts. Do not
-call the feature shipped until complete tagged packages and physical/cross-
-machine tests pass. Hosted room-code rendezvous is implemented and its complete
+strong Linux/source results underlying the `ell.7` beta, but not physical or
+cross-machine acceptance evidence. Hosted room-code rendezvous is implemented and its complete
 control-plane exchange passes against `stun.dolphin-emu.org`; the same-machine
 test did not receive the endpoint-directed punch, so a real two-network match
 remains a beta release gate. Relay, authentication, encryption, and IP privacy

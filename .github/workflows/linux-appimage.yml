@@ -7,7 +7,7 @@ on:
         description: Release version used for the validation package
         required: true
         type: string
-        default: v1.2.1-ell.6
+        default: v1.2.1-ell.7
   push:
     tags:
       - 'v*-ell.*'

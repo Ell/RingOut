@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="v1.2.1-ell.6"
+VERSION="v1.2.1-ell.7"
 BUILD_DIR="$REPO/build-windows-cross"
 OUT_DIR="$REPO/dist/out"
 RUNTIME=""
@@ -25,7 +25,7 @@ usage() {
   cat <<'EOF'
 Usage: package-windows-cross.sh [options]
 
-  --version TAG                 package/release tag (default v1.2.1-ell.6)
+  --version TAG                 package/release tag (default v1.2.1-ell.7)
   --build-dir DIR               cross-build tree
   --out-dir DIR                 output directory (default dist/out)
   --runtime FILE                explicit moderngekko-run.exe
