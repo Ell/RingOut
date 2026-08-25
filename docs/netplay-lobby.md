@@ -62,6 +62,10 @@ defaults to a short-code room using Dolphin's hosted rendezvous service, while
 the player selection to rollback; Advanced Direct IP offers both fixed delay and
 rollback (`ModernGekko/tools/moderngekko_launcher.cpp:1199-1273`).
 
+Commit `6c89d6d4c801003fbe8cad34b1d8939998921750` is the tested diagnostics and
+launcher-only UX checkpoint described below. It is the source revision used for
+the two controlled-instance runs retained in `/tmp`.
+
 The runtime defaults to `stun.dolphin-emu.org`, main UDP port 6262, and alternate
 UDP port 6226. Hosts receive an eight-lowercase-hex-digit room code; joiners may
 paste upper- or lowercase hex with surrounding whitespace, which is normalized

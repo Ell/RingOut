@@ -69,7 +69,9 @@ player entry point: the obsolete Direct-IP Host/Join/Scan rows are no longer in
 the in-game System tab. A persisted detailed-diagnostics toggle enables
 Dolphin's NETPLAY trace; the launcher captures it in `Logs/RingOut.log`, rotates
 one `RingOut.previous.log`, exposes a Copy log path action, and warns that logs
-can contain endpoint and local-machine information.
+can contain endpoint and local-machine information. This player-UX and
+diagnostics checkpoint is commit
+`6c89d6d4c801003fbe8cad34b1d8939998921750`, recorded 2026-08-25.
 
 ## Documents
 

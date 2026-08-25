@@ -3,10 +3,11 @@
 Status: implemented Online Room beta plus source-led production architecture,
 recorded 2026-08-25.
 
-RingOut baseline: branch `codex/rollback-netplay` at committed checkpoint
-`05798a513f34a02ea5983daa65521cd36532cc0f`, plus the Online Room branch snapshot
-integrated on 2026-08-25. Source paths and line numbers in the current-behavior
-sections refer to that integrated snapshot. Upstream
+RingOut baseline: branch `codex/rollback-netplay`; the Online Room implementation
+landed after checkpoint `05798a513f34a02ea5983daa65521cd36532cc0f`, and the
+launcher-only player flow plus diagnostic logging is committed at
+`6c89d6d4c801003fbe8cad34b1d8939998921750` on 2026-08-25. Source paths and line
+numbers in the current-behavior sections refer to that latest checkpoint. Upstream
 source revisions inspected on 2026-08-25 are listed under
 [Primary sources](#primary-sources).
 
