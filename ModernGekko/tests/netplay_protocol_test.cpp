@@ -236,6 +236,14 @@ int main() {
       !WaitFor([&] { return second->GetPlayers().size() == 2; }))
     return 4;
 
+  // The lobby roster must own its values. The receive thread can erase a
+  // departed player immediately after GetPlayers() returns; keeping pointers
+  // into the client's map used to make that a use-after-free in lobby UIs.
+  const std::vector<NetPlay::Player> initial_players = first->GetPlayers();
+  if (initial_players.size() != 2 || initial_players[0].name != "First" ||
+      initial_players[1].name != "Second")
+    return 23;
+
   // Round-trips a real message: AdjustPadBufferSize broadcasts MessageID::
   // PadBuffer, which each client turns back into OnPadBufferChanged. It fails
   // if the lobby is connected but not actually exchanging packets.
@@ -292,6 +300,10 @@ int main() {
     // sees. The offender's own IsConnected() is a less reliable witness.
     if (!WaitFor([&] { return first->GetPlayers().size() == 1; }))
       return 21;
+    // A previously acquired snapshot remains valid and unchanged after the
+    // network thread removes its corresponding live roster entry.
+    if (initial_players.size() != 2 || initial_players[1].name != "Second")
+      return 24;
     // ...and dropping the impostor must not take the legitimate peer with it.
     if (!first->IsConnected())
       return 22;

@@ -85,7 +85,7 @@ int PadMappingDialog::exec()
   for (const auto& player : m_players)
   {
     players.append(
-        QStringLiteral("%1 (%2)").arg(QString::fromStdString(player->name)).arg(player->pid));
+        QStringLiteral("%1 (%2)").arg(QString::fromStdString(player.name)).arg(player.pid));
   }
 
   for (auto& combo_group : {m_gc_boxes, m_wii_boxes})
@@ -137,8 +137,8 @@ void PadMappingDialog::OnMappingChanged()
     const int gc_id = m_gc_boxes[i]->currentIndex();
     const int wii_id = m_wii_boxes[i]->currentIndex();
 
-    m_pad_mapping[i] = gc_id > 0 ? m_players[gc_id - 1]->pid : 0;
+    m_pad_mapping[i] = gc_id > 0 ? m_players[gc_id - 1].pid : 0;
     m_gba_config[i].enabled = m_gba_boxes[i]->isChecked();
-    m_wii_mapping[i] = wii_id > 0 ? m_players[wii_id - 1]->pid : 0;
+    m_wii_mapping[i] = wii_id > 0 ? m_players[wii_id - 1].pid : 0;
   }
 }

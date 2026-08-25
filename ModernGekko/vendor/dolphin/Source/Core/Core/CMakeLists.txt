@@ -549,6 +549,8 @@ add_library(core
   NetPlay/NetPlayClientSaves.cpp
   NetPlay/NetPlayCommon.cpp
   NetPlay/NetPlayCommon.h
+  NetPlay/RollbackInputTimeline.cpp
+  NetPlay/RollbackInputTimeline.h
   NetPlay/NetPlayServer.cpp
   NetPlay/NetPlayServer.h
   NetPlay/NetPlayServerChunked.cpp

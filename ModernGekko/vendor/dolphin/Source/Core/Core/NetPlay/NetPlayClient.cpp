@@ -1157,13 +1157,14 @@ void NetPlayClient::ThreadFunc()
 }
 
 // called from ---GUI--- thread
-std::vector<const Player*> NetPlayClient::GetPlayers()
+std::vector<Player> NetPlayClient::GetPlayers()
 {
   std::lock_guard lkp(m_crit.players);
-  std::vector<const Player*> players;
+  std::vector<Player> players;
+  players.reserve(m_players.size());
 
   for (const auto& pair : m_players)
-    players.push_back(&pair.second);
+    players.push_back(pair.second);
 
   return players;
 }
@@ -1759,10 +1760,10 @@ PadDetails GetPadDetails(int pad_num)
   if (pad_map[pad_num] <= 0)
     return res;
 
-  for (auto player : netplay_client->GetPlayers())
+  for (const auto& player : netplay_client->GetPlayers())
   {
-    if (player->pid == pad_map[pad_num])
-      res.player_name = player->name;
+    if (player.pid == pad_map[pad_num])
+      res.player_name = player.name;
   }
 
   int local_pad = 0;

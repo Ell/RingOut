@@ -564,6 +564,18 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(moderngekko_rollback_input_timeline_test
+        tests/rollback_input_timeline_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackInputTimeline.cpp)
+    target_include_directories(moderngekko_rollback_input_timeline_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_input_timeline_test PRIVATE cxx_std_20)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_input_timeline_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_input_timeline
+        COMMAND moderngekko_rollback_input_timeline_test)
+
     add_executable(moderngekko_frontend_config_test
         tests/frontend_config_test.cpp
         tools/frontend_config.cpp)

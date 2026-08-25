@@ -24,6 +24,8 @@ W="${1:-/tmp/netplay-match}"
 PLAY="${2:-60}"
 PORT="${3:-2640}"
 PKG="$P/dist/RingOut-1.0-deck"
+MIN_HASH_FRAMES="${MIN_HASH_FRAMES:-300}"
+result=0
 
 pre="$(pgrep -x moderngekko-run 2>/dev/null | wc -l)"
 if [ "$pre" != "0" ]; then
@@ -98,7 +100,8 @@ while [ $waited -lt 120 ]; do
   grep -qa "netplay armed" "$W/guest/log.txt" 2>/dev/null && break
   sleep 2; waited=$((waited + 2))
 done
-if ! grep -qa "netplay armed" "$W/guest/log.txt" 2>/dev/null; then
+if ! grep -qa "netplay armed" "$W/host/log.txt" 2>/dev/null || \
+   ! grep -qa "netplay armed" "$W/guest/log.txt" 2>/dev/null; then
   echo "peers never armed"; grep -ha "netplay:" "$W"/*/log.txt | tail -8; exit 1
 fi
 echo "both peers armed after ${waited}s"
@@ -158,7 +161,10 @@ for n in host guest; do
 done
 sleep 1
 left="$(pgrep -x moderngekko-run 2>/dev/null | wc -l)"
-[ "$left" != "0" ] && echo "WARNING: $left emulator(s) still alive"
+if [ "$left" != "0" ]; then
+  echo "FAIL: $left emulator(s) still alive"
+  result=1
+fi
 
 echo
 grep -ha "netplay: pad map\|netplay armed\|DESYNC" "$W"/*/log.txt
@@ -168,9 +174,27 @@ if [ -s "$W/host/hash.log" ] && [ -s "$W/guest/hash.log" ]; then
   head -n "$n" "$W/host/hash.log"  > "$W/h.trim"
   head -n "$n" "$W/guest/hash.log" > "$W/g.trim"
   echo "guest-RAM hash over $n frames:"
-  if diff -q "$W/h.trim" "$W/g.trim" >/dev/null; then
+  if [ "$n" -lt "$MIN_HASH_FRAMES" ]; then
+    echo "  FAIL: expected at least $MIN_HASH_FRAMES comparable frames"
+    result=1
+  elif diff -q "$W/h.trim" "$W/g.trim" >/dev/null; then
     echo "  IDENTICAL on every frame"
   else
     echo "  FIRST DIVERGENCE:"; diff "$W/h.trim" "$W/g.trim" | head -4
+    result=1
   fi
+else
+  echo "FAIL: one or both hash logs are empty"
+  result=1
 fi
+
+if grep -qa "DESYNC" "$W"/*/log.txt 2>/dev/null; then
+  result=1
+fi
+
+if [ "$result" -eq 0 ]; then
+  echo "RESULT: synchronized match route completed"
+else
+  echo "RESULT: match route failed"
+fi
+exit "$result"

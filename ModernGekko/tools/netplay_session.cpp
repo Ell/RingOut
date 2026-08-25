@@ -269,11 +269,11 @@ void LogPadRouting(NetPlay::NetPlayClient &client) {
 }
 
 void AssignPads(NetPlay::NetPlayServer &server,
-                const std::vector<const NetPlay::Player *> &players) {
+                const std::vector<NetPlay::Player> &players) {
   std::vector<NetPlay::PlayerId> ids;
   ids.reserve(players.size());
-  for (const NetPlay::Player *player : players)
-    ids.push_back(player->pid);
+  for (const NetPlay::Player &player : players)
+    ids.push_back(player.pid);
   std::sort(ids.begin(), ids.end());
 
   NetPlay::PadMappingArray mapping{};
@@ -628,7 +628,7 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
       return false;
     }
 
-    const std::vector<const NetPlay::Player *> players = client.GetPlayers();
+    const std::vector<NetPlay::Player> players = client.GetPlayers();
 
     // Reassign pads when somebody joins or leaves.
     if (server && players.size() != last_player_count) {
@@ -668,18 +668,18 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
       ImGui::TableSetupColumn("Controller");
       ImGui::TableSetupColumn("Game");
       ImGui::TableHeadersRow();
-      for (const NetPlay::Player *player : players) {
+      for (const NetPlay::Player &player : players) {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        const bool is_local = client.IsLocalPlayer(player->pid);
-        ImGui::Text("%s%s%s", player->name.c_str(), is_local ? "  (you)" : "",
-                    player->IsHost() ? "  [host]" : "");
+        const bool is_local = client.IsLocalPlayer(player.pid);
+        ImGui::Text("%s%s%s", player.name.c_str(), is_local ? "  (you)" : "",
+                    player.IsHost() ? "  [host]" : "");
         ImGui::TableNextColumn();
-        ImGui::Text("%u ms", player->ping);
+        ImGui::Text("%u ms", player.ping);
         ImGui::TableNextColumn();
         int pad = 0;
         for (size_t i = 0; i < map.size(); ++i) {
-          if (map[i] == player->pid) {
+          if (map[i] == player.pid) {
             pad = static_cast<int>(i) + 1;
             break;
           }
@@ -690,12 +690,12 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
           ImGui::TextDisabled("none");
         ImGui::TableNextColumn();
         const bool ok =
-            player->game_status == NetPlay::SyncIdentifierComparison::SameGame;
+            player.game_status == NetPlay::SyncIdentifierComparison::SameGame;
         if (ok)
-          ImGui::TextUnformatted(GameStatusText(player->game_status));
+          ImGui::TextUnformatted(GameStatusText(player.game_status));
         else
           ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "%s",
-                             GameStatusText(player->game_status));
+                             GameStatusText(player.game_status));
       }
       ImGui::EndTable();
     }
@@ -720,7 +720,8 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
     ImGui::Separator();
     if (server) {
       const bool everyone_has_game = client.DoAllPlayersHaveGame();
-      const bool enough = players.size() >= 1;
+      const size_t expected_players = std::max<size_t>(options.players, 1);
+      const bool enough = players.size() >= expected_players;
       const bool can_start = everyone_has_game && enough;
       ImGui::BeginDisabled(!can_start);
       if (ImGui::Button("Start game", ImVec2(160, 40)))
@@ -730,6 +731,10 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
                            "Waiting: not everyone has this game.");
+      } else if (!enough) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Waiting for players (%zu/%zu).", players.size(),
+                            expected_players);
       }
     } else {
       ImGui::TextUnformatted("Waiting for the host to start ...");

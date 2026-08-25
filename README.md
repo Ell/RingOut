@@ -124,7 +124,8 @@ it does not replace the host's graphics drivers.
 - **Optional experimental FMV takeover** via external FFmpeg; it is off by
   default because the ordinary emulated Sofdec path measured faster
 - **23 verified cheat codes** shipped in `GameSettings/GRSEAF.ini`
-- **Netplay** — rollback, lobby with live ping and per-player game status
+- **Netplay** — fixed-delay lockstep, with experimental rollback groundwork and a lobby
+  showing live ping and per-player game status
 - **Its own icon** — the disc banner and the memory-card icon are extracted from
   your disc and saves on your machine, and a desktop entry is written for you.
   None of that artwork ships; it is the publisher's.

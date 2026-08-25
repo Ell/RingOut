@@ -25,11 +25,11 @@ static QString GetPlayerNameFromPID(int pid)
   if (!client)
     return player_name;
 
-  for (const auto* player : client->GetPlayers())
+  for (const auto& player : client->GetPlayers())
   {
-    if (player->pid == pid)
+    if (player.pid == pid)
     {
-      player_name = QString::fromStdString(player->name);
+      player_name = QString::fromStdString(player.name);
       break;
     }
   }
@@ -106,13 +106,13 @@ void GameDigestDialog::show(const QString& title)
     close_button->setDefault(false);
   }
 
-  for (const auto* player : client->GetPlayers())
+  for (const auto& player : client->GetPlayers())
   {
-    m_progress_bars[player->pid] = new QProgressBar;
-    m_status_labels[player->pid] = new QLabel;
+    m_progress_bars[player.pid] = new QProgressBar;
+    m_status_labels[player.pid] = new QLabel;
 
-    m_progress_layout->addWidget(m_progress_bars[player->pid]);
-    m_progress_layout->addWidget(m_status_labels[player->pid]);
+    m_progress_layout->addWidget(m_progress_bars[player.pid]);
+    m_progress_layout->addWidget(m_status_labels[player.pid]);
   }
 
   QDialog::show();

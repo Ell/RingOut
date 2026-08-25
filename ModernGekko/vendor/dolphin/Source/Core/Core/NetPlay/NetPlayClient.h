@@ -117,7 +117,10 @@ public:
                 const NetTraversalConfig& traversal_config);
   ~NetPlayClient() override;
 
-  std::vector<const Player*> GetPlayers();
+  // Return an immutable-by-ownership lobby view. The network thread may update
+  // or erase m_players as soon as this method releases the mutex, so exposing
+  // pointers into the map would make every GUI caller race player departure.
+  std::vector<Player> GetPlayers();
   const NetSettings& GetNetSettings() const;
 
   // Called from the GUI thread.

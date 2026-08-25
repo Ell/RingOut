@@ -651,29 +651,29 @@ void NetPlayDialog::UpdateGUI()
 
   for (int i = 0; i < m_player_count; i++)
   {
-    const auto* p = players[i];
+    const auto& p = players[i];
 
-    auto* name_item = new QTableWidgetItem(QString::fromStdString(p->name));
+    auto* name_item = new QTableWidgetItem(QString::fromStdString(p.name));
     name_item->setToolTip(name_item->text());
-    const auto it = player_status.find(p->game_status);
+    const auto it = player_status.find(p.game_status);
     const auto& status_info = it != player_status.end() ?
                                   it->second :
                                   std::make_pair(QStringLiteral("?"), QStringLiteral("?"));
     auto* status_item = new QTableWidgetItem(status_info.first);
     status_item->setToolTip(status_info.second);
-    auto* ping_item = new QTableWidgetItem(QStringLiteral("%1 ms").arg(p->ping));
+    auto* ping_item = new QTableWidgetItem(QStringLiteral("%1 ms").arg(p.ping));
     ping_item->setToolTip(ping_item->text());
     auto* mapping_item =
         new QTableWidgetItem(QString::fromStdString(NetPlay::GetPlayerMappingString(
-            p->pid, client->GetPadMapping(), client->GetGBAConfig(), client->GetWiimoteMapping())));
+            p.pid, client->GetPadMapping(), client->GetGBAConfig(), client->GetWiimoteMapping())));
     mapping_item->setToolTip(mapping_item->text());
-    auto* revision_item = new QTableWidgetItem(QString::fromStdString(p->revision));
+    auto* revision_item = new QTableWidgetItem(QString::fromStdString(p.revision));
     revision_item->setToolTip(revision_item->text());
 
     for (auto* item : {name_item, status_item, ping_item, mapping_item, revision_item})
     {
       item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-      item->setData(Qt::UserRole, static_cast<int>(p->pid));
+      item->setData(Qt::UserRole, static_cast<int>(p.pid));
     }
 
     m_players_list->setItem(i, 0, name_item);
@@ -682,7 +682,7 @@ void NetPlayDialog::UpdateGUI()
     m_players_list->setItem(i, 3, mapping_item);
     m_players_list->setItem(i, 4, revision_item);
 
-    if (p->pid == selection_pid)
+    if (p.pid == selection_pid)
       m_players_list->selectRow(i);
   }
 

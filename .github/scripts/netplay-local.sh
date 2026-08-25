@@ -34,6 +34,8 @@ PLAY="${2:-60}"
 PORT="${3:-2626}"
 PKG="$P/dist/RingOut-1.0-deck"
 TIMEOUT="${TIMEOUT:-90}"
+MIN_HASH_FRAMES="${MIN_HASH_FRAMES:-60}"
+result=0
 
 pre="$(pgrep -x moderngekko-run 2>/dev/null | wc -l)"
 if [ "$pre" != "0" ]; then
@@ -159,7 +161,10 @@ for name in host guest; do
 done
 sleep 1
 left="$(pgrep -x moderngekko-run 2>/dev/null | wc -l)"
-[ "$left" != "0" ] && echo "WARNING: $left emulator(s) still alive"
+if [ "$left" != "0" ]; then
+  echo "FAIL: $left emulator(s) still alive"
+  result=1
+fi
 
 echo
 echo "================ HOST ================"
@@ -167,27 +172,40 @@ grep -a "netplay:\|fmv-hle\|staticrecomp. shutdown" "$W/host/log.txt" 2>/dev/nul
 echo "================ GUEST ==============="
 grep -a "netplay:\|fmv-hle\|staticrecomp. shutdown" "$W/guest/log.txt" 2>/dev/null
 echo "======================================"
-if [ "${HASH:-0}" = "1" ] && [ -s "$W/host/hash.log" ] && [ -s "$W/guest/hash.log" ]; then
-  # Compare only the frames both peers reached; one is always killed a moment
-  # before the other, and a length difference is not a state difference.
-  n=$(( $(wc -l < "$W/host/hash.log") < $(wc -l < "$W/guest/hash.log") \
-        ? $(wc -l < "$W/host/hash.log") : $(wc -l < "$W/guest/hash.log") ))
-  head -n "$n" "$W/host/hash.log"  > "$W/host.trim"
-  head -n "$n" "$W/guest/hash.log" > "$W/guest.trim"
-  echo "guest-RAM hash comparison over $n frames:"
-  if diff -q "$W/host.trim" "$W/guest.trim" >/dev/null; then
-    echo "  IDENTICAL on every frame"
+if [ "${HASH:-0}" = "1" ]; then
+  if [ ! -s "$W/host/hash.log" ] || [ ! -s "$W/guest/hash.log" ]; then
+    echo "FAIL: HASH=1 requested but one or both hash logs are empty"
+    result=1
   else
-    echo "  FIRST DIVERGENCE:"
-    diff "$W/host.trim" "$W/guest.trim" | head -4
+    # Compare only the frames both peers reached; one is always killed a moment
+    # before the other, and a length difference is not a state difference.
+    n=$(( $(wc -l < "$W/host/hash.log") < $(wc -l < "$W/guest/hash.log") \
+          ? $(wc -l < "$W/host/hash.log") : $(wc -l < "$W/guest/hash.log") ))
+    head -n "$n" "$W/host/hash.log"  > "$W/host.trim"
+    head -n "$n" "$W/guest/hash.log" > "$W/guest.trim"
+    echo "guest-RAM hash comparison over $n frames:"
+    if [ "$n" -lt "$MIN_HASH_FRAMES" ]; then
+      echo "  FAIL: expected at least $MIN_HASH_FRAMES comparable frames"
+      result=1
+    elif diff -q "$W/host.trim" "$W/guest.trim" >/dev/null; then
+      echo "  IDENTICAL on every frame"
+    else
+      echo "  FIRST DIVERGENCE:"
+      diff "$W/host.trim" "$W/guest.trim" | head -4
+      result=1
+    fi
   fi
 fi
 
 if grep -qa "DESYNC" "$W/host/log.txt" "$W/guest/log.txt" 2>/dev/null; then
   echo "RESULT: DESYNCED"
+  result=1
 elif grep -qa "netplay armed" "$W/host/log.txt" 2>/dev/null && \
      grep -qa "netplay armed" "$W/guest/log.txt" 2>/dev/null; then
   echo "RESULT: both peers ran netplay-armed with no desync reported"
 else
   echo "RESULT: session did not start"
+  result=1
 fi
+
+exit "$result"
