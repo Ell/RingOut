@@ -37,6 +37,11 @@
 #include <iphlpapi.h>
 #include <ws2tcpip.h>
 
+// mingw-w64 11 predates this SDK helper macro; newer Windows SDKs define it as index 0.
+#ifndef NET_IFINDEX_UNSPECIFIED
+#define NET_IFINDEX_UNSPECIFIED ((NET_IFINDEX)0)
+#endif
+
 #define MALLOC(x) HeapAlloc(GetProcessHeap(), 0, (x))
 #define FREE(x) HeapFree(GetProcessHeap(), 0, (x))
 

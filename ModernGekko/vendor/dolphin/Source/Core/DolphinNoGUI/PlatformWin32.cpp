@@ -3,8 +3,8 @@
 
 #include "DolphinNoGUI/Platform.h"
 
-#include "Core/Config/MainSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/System.h"
 
@@ -185,9 +185,19 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
     if (hwnd)
     {
       // Remove rounded corners from the render window on Windows 11
+#if defined(__MINGW32__)
+      // Ubuntu 24.04 ships mingw-w64 11, whose dwmapi.h predates these Windows 11
+      // declarations. They are enum constants (not macros), so an #ifndef
+      // fallback would also redeclare them with newer MinGW headers. The DWM API
+      // takes DWORD values; 33 and 1 are the stable SDK values for
+      // DWMWA_WINDOW_CORNER_PREFERENCE and DWMWCP_DONOTROUND respectively.
+      constexpr DWORD corner_attribute = 33;
+      constexpr DWORD corner_preference = 1;
+#else
+      constexpr DWORD corner_attribute = DWMWA_WINDOW_CORNER_PREFERENCE;
       constexpr DWM_WINDOW_CORNER_PREFERENCE corner_preference = DWMWCP_DONOTROUND;
-      DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner_preference,
-                            sizeof(corner_preference));
+#endif
+      DwmSetWindowAttribute(hwnd, corner_attribute, &corner_preference, sizeof(corner_preference));
     }
   }
   break;

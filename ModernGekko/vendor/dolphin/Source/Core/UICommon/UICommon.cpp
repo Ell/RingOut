@@ -11,7 +11,9 @@
 #ifdef _WIN32
 #include <shlobj.h>  // for SHGetFolderPath
 
+#if !defined(__MINGW32__)
 #include <wil/resource.h>
+#endif
 #endif
 
 #include <fmt/format.h>
@@ -23,12 +25,15 @@
 #include "Common/Logging/LogManager.h"
 #include "Common/MathUtil.h"
 #include "Common/MsgHandler.h"
+#if defined(_WIN32) && defined(__MINGW32__)
+#include "Common/ScopeGuard.h"
+#endif
 
+#include "Core/Config/ConfigManager.h"
+#include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/WiiSettings.h"
-#include "Core/Config/GraphicsSettings.h"
 #include "Core/ConfigLoaders/BaseConfigLoader.h"
-#include "Core/Config/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/FreeLookManager.h"
 #include "Core/HW/GBAPad.h"
@@ -332,28 +337,55 @@ void SetUserDirectory(std::string custom_path)
   //    -> Use GetExeDirectory()\User
 
   // Get AppData path in case we need it.
-  wil::unique_cotaskmem_string appdata;
+#ifdef __MINGW32__
+  // mingw-w64 11's intrin.h conflicts with GCC 13's C string declarations when
+  // pulled in by WIL. These Win32 resources have simple matching release
+  // functions, so keep WIL on MSVC and use raw handles with scope guards only
+  // for MinGW.
+  PWSTR appdata = nullptr;
+  Common::ScopeGuard appdata_guard{[&appdata] { CoTaskMemFree(appdata); }};
+  const auto appdata_out = &appdata;
+#else
+  wil::unique_cotaskmem_string appdata_owner;
+  const auto appdata_out = appdata_owner.put();
+#endif
   bool appdata_found = SUCCEEDED(
-      SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, nullptr, appdata.put()));
+      SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, nullptr, appdata_out));
+#ifndef __MINGW32__
+  const PWSTR appdata = appdata_owner.get();
+#endif
 
   // Check our registry keys
-  wil::unique_hkey hkey;
+#ifdef __MINGW32__
+  HKEY hkey = nullptr;
+  Common::ScopeGuard hkey_guard{[&hkey] {
+    if (hkey)
+      RegCloseKey(hkey);
+  }};
+  const auto hkey_out = &hkey;
+#else
+  wil::unique_hkey hkey_owner;
+  const auto hkey_out = hkey_owner.put();
+#endif
   DWORD local = 0;
   std::unique_ptr<TCHAR[]> configPath;
   if (RegOpenKeyEx(HKEY_CURRENT_USER, TEXT("Software\\Dolphin Emulator"), 0, KEY_QUERY_VALUE,
-                   hkey.put()) == ERROR_SUCCESS)
+                   hkey_out) == ERROR_SUCCESS)
   {
+#ifndef __MINGW32__
+    const HKEY hkey = hkey_owner.get();
+#endif
     DWORD size = sizeof(local);
-    if (RegQueryValueEx(hkey.get(), TEXT("LocalUserConfig"), nullptr, nullptr,
+    if (RegQueryValueEx(hkey, TEXT("LocalUserConfig"), nullptr, nullptr,
                         reinterpret_cast<LPBYTE>(&local), &size) != ERROR_SUCCESS)
     {
       local = 0;
     }
 
     size = 0;
-    RegQueryValueEx(hkey.get(), TEXT("UserConfigPath"), nullptr, nullptr, nullptr, &size);
+    RegQueryValueEx(hkey, TEXT("UserConfigPath"), nullptr, nullptr, nullptr, &size);
     configPath = std::make_unique<TCHAR[]>(size / sizeof(TCHAR));
-    if (RegQueryValueEx(hkey.get(), TEXT("UserConfigPath"), nullptr, nullptr,
+    if (RegQueryValueEx(hkey, TEXT("UserConfigPath"), nullptr, nullptr,
                         reinterpret_cast<LPBYTE>(configPath.get()), &size) != ERROR_SUCCESS)
     {
       configPath.reset();
@@ -363,14 +395,24 @@ void SetUserDirectory(std::string custom_path)
   local = local != 0 || File::Exists(File::GetExeDirectory() + DIR_SEP "portable.txt");
 
   // Attempt to check if the old User directory exists in Documents.
-  wil::unique_cotaskmem_string documents;
-  bool documents_found = SUCCEEDED(
-      SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, documents.put()));
+#ifdef __MINGW32__
+  PWSTR documents = nullptr;
+  Common::ScopeGuard documents_guard{[&documents] { CoTaskMemFree(documents); }};
+  const auto documents_out = &documents;
+#else
+  wil::unique_cotaskmem_string documents_owner;
+  const auto documents_out = documents_owner.put();
+#endif
+  bool documents_found =
+      SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, documents_out));
+#ifndef __MINGW32__
+  const PWSTR documents = documents_owner.get();
+#endif
 
   std::optional<std::string> old_user_folder;
   if (documents_found)
   {
-    old_user_folder = TStrToUTF8(documents.get()) + DIR_SEP NORMAL_USER_DIR DIR_SEP;
+    old_user_folder = TStrToUTF8(documents) + DIR_SEP NORMAL_USER_DIR DIR_SEP;
   }
 
   if (local)  // Case 1-2
@@ -387,7 +429,7 @@ void SetUserDirectory(std::string custom_path)
   }
   else if (appdata_found)  // Case 5
   {
-    user_path = TStrToUTF8(appdata.get()) + DIR_SEP NORMAL_USER_DIR DIR_SEP;
+    user_path = TStrToUTF8(appdata) + DIR_SEP NORMAL_USER_DIR DIR_SEP;
 
     // Set the UserConfigPath value in the registry for backwards compatibility with older Dolphin
     // builds, which will look for the default User directory in Documents. If we set this key,

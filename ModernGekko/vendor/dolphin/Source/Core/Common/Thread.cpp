@@ -112,8 +112,9 @@ static void SetCurrentThreadNameViaApi(const char* name)
   // If possible, also set via the newer API. On some versions of Server it needs to be manually
   // resolved. This API allows being able to observe the thread name even if a debugger wasn't
   // attached when the name was set (see above link for more info).
-  static auto pSetThreadDescription = (decltype(&SetThreadDescription))GetProcAddress(
-      GetModuleHandleA("kernel32"), "SetThreadDescription");
+  using SetThreadDescriptionFunc = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+  static auto pSetThreadDescription = reinterpret_cast<SetThreadDescriptionFunc>(
+      GetProcAddress(GetModuleHandleA("kernel32"), "SetThreadDescription"));
   if (pSetThreadDescription)
   {
     pSetThreadDescription(GetCurrentThread(), UTF8ToWString(name).c_str());
