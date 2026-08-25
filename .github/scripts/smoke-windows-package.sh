@@ -73,6 +73,8 @@ PACKAGE="$(realpath "${package_roots[0]}")"
 )
 
 DOLRECOMP="$PACKAGE/tools/dolrecomp.exe"
+LAUNCHER="$PACKAGE/RingOut.exe"
+PORT="$PACKAGE/tools/moderngekko-port.exe"
 RUNTIME="$PACKAGE/bin/moderngekko-run.exe"
 CLANG="$PACKAGE/toolchain/bin/clang.exe"
 LLD="$PACKAGE/toolchain/bin/ld.lld.exe"
@@ -80,7 +82,7 @@ CMAKE="$PACKAGE/toolchain/bin/cmake.exe"
 NINJA="$PACKAGE/toolchain/bin/ninja.exe"
 PYTHON="$PACKAGE/toolchain/python/python.exe"
 MODULE_SOURCE="$PACKAGE/module-src"
-for required in "$RUNTIME" "$DOLRECOMP" "$CLANG" "$LLD" "$CMAKE" "$NINJA" "$PYTHON" \
+for required in "$LAUNCHER" "$RUNTIME" "$PORT" "$DOLRECOMP" "$CLANG" "$LLD" "$CMAKE" "$NINJA" "$PYTHON" \
                 "$MODULE_SOURCE/CMakeLists.txt"; do
   [[ -s "$required" ]] || die "packaged input missing: ${required#$PACKAGE/}"
 done
@@ -97,6 +99,16 @@ printf '==> starting packaged Windows tools under Wine\n'
 # exits before any game data or graphics device is needed. MinGW builds use the
 # deliberate no-QWave QoS stub, so qwave.dll is neither imported nor shipped.
 printf '==> loading packaged runtime and checking frontend help\n'
+launcher_help="$WORK/launcher-self-test.txt"
+"${WINE[@]}" "$LAUNCHER" --ringout-self-test 2>&1 | tee "$launcher_help"
+grep -Fq 'RingOut C++ launcher self-test' "$launcher_help" || \
+  die "top-level entry point is not the integrated C++ launcher"
+grep -Fq 'runner=' "$launcher_help" || \
+  die "launcher did not resolve its packaged runner"
+port_selftest="$WORK/port-self-test.txt"
+"${WINE[@]}" "$PORT" --ringout-self-test 2>&1 | tee "$port_selftest"
+grep -Fq 'RingOut setup self-test module_source=' "$port_selftest" || \
+  die "setup helper did not resolve its packaged module/config resources"
 runtime_help="$WORK/runtime-help.txt"
 "${WINE[@]}" "$RUNTIME" --help 2>&1 | tee "$runtime_help"
 grep -Fq 'usage: moderngekko-run' "$runtime_help" || \

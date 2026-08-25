@@ -11,8 +11,8 @@
 #include <string>
 #include <type_traits>
 
-#include "Common/CommonTypes.h"
 #include "Common/Buffer.h"
+#include "Common/CommonTypes.h"
 
 namespace Core
 {
@@ -124,6 +124,44 @@ enum SnapshotSkip : u32
   SKIP_JITCLEAR = 1 << 4,
 };
 u32 SnapshotSkipMask();
+
+// Rollback checkpoints share the ordinary in-memory savestate format but must
+// not copy or restore the host mixer FIFO while a visible audio backend consumes
+// it concurrently. This CPU-thread scope lets device DoState code distinguish
+// that policy without changing user-created savestates.
+namespace detail
+{
+inline thread_local u32 rollback_snapshot_scope_depth = 0;
+}
+
+class ScopedRollbackSnapshot final
+{
+public:
+  ScopedRollbackSnapshot() { ++detail::rollback_snapshot_scope_depth; }
+  ~ScopedRollbackSnapshot() { --detail::rollback_snapshot_scope_depth; }
+
+  ScopedRollbackSnapshot(const ScopedRollbackSnapshot&) = delete;
+  ScopedRollbackSnapshot& operator=(const ScopedRollbackSnapshot&) = delete;
+};
+
+inline bool IsRollbackSnapshotActive()
+{
+  return detail::rollback_snapshot_scope_depth != 0;
+}
+
+inline bool ShouldSerializeHostMixerState()
+{
+  return !IsRollbackSnapshotActive();
+}
+
+// Ordinary savestates intentionally leave a user's live memory card separate
+// unless a movie requires card contents in the state. Rollback is different:
+// speculative guest writes and the card command cursor must rewind with the
+// rest of the machine even when host persistence is disabled.
+inline bool ShouldSerializeMemoryCardState(const bool movie_active)
+{
+  return movie_active || IsRollbackSnapshotActive();
+}
 
 // Uncompressed, synchronous, in-memory state. These are what a rollback
 // netplay implementation needs -- SaveAs/LoadAs compress and go through a worker

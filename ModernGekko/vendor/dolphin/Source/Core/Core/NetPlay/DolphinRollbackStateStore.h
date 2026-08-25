@@ -56,6 +56,7 @@ private:
   Core::System& m_system;
   std::vector<Slot> m_slots;
   const ConfigurationStatus m_configuration_status;
+  std::optional<std::size_t> m_last_reported_snapshot_size;
 };
 
 }  // namespace NetPlay

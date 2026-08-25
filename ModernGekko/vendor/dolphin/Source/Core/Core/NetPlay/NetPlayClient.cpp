@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/NetPlay/NetPlayClient.h"
+#include "Core/NetPlay/NetPlayConnectProtocol.h"
 
 #include <algorithm>
 #include <array>
@@ -50,6 +51,7 @@
 #include "Core/Config/SessionSettings.h"
 #include "Core/Config/WiimoteSettings.h"
 #include "Core/HW/EXI/EXI.h"
+#include "Core/HW/EXI/EXI_Device.h"
 #include "Core/HW/EXI/EXI_DeviceIPL.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
@@ -75,6 +77,7 @@
 #include "Core/SyncIdentifier.h"
 #include "Core/System.h"
 #include "DiscIO/Blob.h"
+#include "DiscIO/Enums.h"
 
 #include "InputCommon/GCAdapter.h"
 #include "UICommon/GameFile.h"
@@ -138,9 +141,13 @@ NetPlayClient::~NetPlayClient()
 // called from ---GUI--- thread
 NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog,
                              std::string name, const NetTraversalConfig& traversal_config,
-                             const bool advertise_rollback_capability)
+                             const bool advertise_rollback_capability,
+                             std::string compatibility_fingerprint,
+                             const bool rollback_gamecube_title_verified)
     : m_dialog(dialog), m_player_name(std::move(name)),
-      m_advertise_rollback_capability(advertise_rollback_capability)
+      m_advertise_rollback_capability(advertise_rollback_capability),
+      m_rollback_gamecube_title_verified(rollback_gamecube_title_verified),
+      m_compatibility_fingerprint(std::move(compatibility_fingerprint))
 {
   if (m_advertise_rollback_capability && !LoadRollbackFaultScript())
   {
@@ -267,6 +274,17 @@ bool NetPlayClient::Connect()
   packet << Common::GetScmRevGitStr();
   packet << Common::GetNetplayDolphinVer();
   packet << m_player_name;
+  if (!m_compatibility_fingerprint.empty() || m_advertise_rollback_capability)
+  {
+    if (!AppendNetPlayConnectExtension(packet, m_advertise_rollback_capability,
+                                       m_advertise_rollback_capability,
+                                       m_compatibility_fingerprint))
+    {
+      m_connection_error = ConnectionError::MalformedHandshake;
+      m_dialog->OnConnectionError(_trans("The local NetPlay compatibility identity is invalid."));
+      return false;
+    }
+  }
   Send(packet);
   enet_host_flush(m_client);
   sf::Packet rpac;
@@ -290,6 +308,15 @@ bool NetPlayClient::Connect()
 
   ConnectionError error;
   rpac >> error;
+  if (!rpac || static_cast<u8>(error) > static_cast<u8>(ConnectionError::MalformedHandshake) ||
+      (error != ConnectionError::NoError && !rpac.endOfPacket()))
+  {
+    m_connection_error = ConnectionError::MalformedHandshake;
+    m_dialog->OnConnectionError(_trans("The server sent a malformed handshake response."));
+    Disconnect();
+    return false;
+  }
+  m_connection_error = error;
 
   // got error message
   if (error != ConnectionError::NoError)
@@ -309,6 +336,13 @@ bool NetPlayClient::Connect()
     case ConnectionError::NameTooLong:
       m_dialog->OnConnectionError(_trans("Nickname is too long."));
       break;
+    case ConnectionError::CompatibilityMismatch:
+      m_dialog->OnConnectionError(
+          _trans("The extracted game or recomp module does not match the host."));
+      break;
+    case ConnectionError::MalformedHandshake:
+      m_dialog->OnConnectionError(_trans("The host rejected a malformed NetPlay handshake."));
+      break;
     default:
       m_dialog->OnConnectionError(_trans("The server sent an unknown error message."));
       break;
@@ -320,6 +354,13 @@ bool NetPlayClient::Connect()
   else
   {
     rpac >> m_pid;
+    if (!rpac || !rpac.endOfPacket())
+    {
+      m_connection_error = ConnectionError::MalformedHandshake;
+      m_dialog->OnConnectionError(_trans("The server sent a malformed handshake response."));
+      Disconnect();
+      return false;
+    }
 
     Player player;
     player.name = m_player_name;
@@ -376,6 +417,14 @@ void NetPlayClient::OnData(sf::Packet& packet, const u8 channel_id)
 
   case MessageID::PlayerLeave:
     OnPlayerLeave(packet);
+    break;
+
+  case MessageID::Ready:
+    OnPlayerReady(packet, true);
+    break;
+
+  case MessageID::NotReady:
+    OnPlayerReady(packet, false);
     break;
 
   case MessageID::ChatMessage:
@@ -558,6 +607,23 @@ void NetPlayClient::OnPlayerLeave(sf::Packet& packet)
   m_dialog->Update();
 }
 
+void NetPlayClient::OnPlayerReady(sf::Packet& packet, const bool ready)
+{
+  PlayerId pid = 0;
+  packet >> pid;
+  if (!packet || !packet.endOfPacket())
+    return;
+
+  {
+    std::lock_guard lkp(m_crit.players);
+    const auto it = m_players.find(pid);
+    if (it == m_players.end())
+      return;
+    it->second.ready = ready;
+  }
+  m_dialog->Update();
+}
+
 void NetPlayClient::OnChatMessage(sf::Packet& packet)
 {
   PlayerId pid;
@@ -667,6 +733,7 @@ void NetPlayClient::OnChunkedDataAbort(sf::Packet& packet)
 
 void NetPlayClient::OnPadMapping(sf::Packet& packet)
 {
+  std::lock_guard game_guard(m_crit.game);
   for (PlayerId& mapping : m_pad_map)
     packet >> mapping;
 
@@ -677,6 +744,7 @@ void NetPlayClient::OnPadMapping(sf::Packet& packet)
 
 void NetPlayClient::OnWiimoteMapping(sf::Packet& packet)
 {
+  std::lock_guard game_guard(m_crit.game);
   for (PlayerId& mapping : m_wiimote_map)
     packet >> mapping;
 
@@ -685,6 +753,7 @@ void NetPlayClient::OnWiimoteMapping(sf::Packet& packet)
 
 void NetPlayClient::OnGBAConfig(sf::Packet& packet)
 {
+  std::lock_guard game_guard(m_crit.game);
   for (size_t i = 0; i < m_gba_config.size(); ++i)
   {
     auto& config = m_gba_config[i];
@@ -713,6 +782,7 @@ void NetPlayClient::OnGBAConfig(sf::Packet& packet)
 
 void NetPlayClient::OnPadData(sf::Packet& packet)
 {
+  std::lock_guard game_guard(m_crit.game);
   while (!packet.endOfPacket())
   {
     PadIndex map;
@@ -736,6 +806,7 @@ void NetPlayClient::OnPadData(sf::Packet& packet)
 
 void NetPlayClient::OnPadHostData(sf::Packet& packet)
 {
+  std::lock_guard game_guard(m_crit.game);
   while (!packet.endOfPacket())
   {
     PadIndex map;
@@ -872,12 +943,17 @@ bool NetPlayClient::OnRollbackSIInput(sf::Packet& packet)
     std::lock_guard guard(m_crit.rollback);
     session = m_rollback_session;
   }
-  if (!session.enabled)
-    return false;
-
   RollbackSIInputDecodeResult decoded = DecodeRollbackSIInputPacket(
-      std::span<const u8>(payload.data(), payload_size), session.generation);
-  if (!decoded || m_rollback_input_queue.Size() >= 64)
+      std::span<const u8>(payload.data(), payload_size), 0);
+  if (!decoded)
+    return false;
+  // The unreliable channel may deliver a valid datagram from the preceding
+  // match after StopGame or after a new generation starts. Generation is the
+  // session discriminator: retire stale input instead of faulting the current
+  // match. Malformed datagrams still fail closed above.
+  if (!session.enabled || decoded.packet.session_generation != session.generation)
+    return true;
+  if (m_rollback_input_queue.Size() >= 64)
     return false;
 
   // Packets can deliberately overlap: each sender may include up to eight
@@ -1055,6 +1131,18 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     {
       m_net_settings.savedata_write = false;
       m_net_settings.savedata_sync_all_wii = false;
+    }
+    if (GetRollbackNetplaySession().enabled)
+    {
+      // Rollback has no confirmed-frame persistence journal yet. Keep the
+      // synchronized save visible to the guest, but never copy writes back to
+      // the user's save or writable SD storage for this session.
+      m_net_settings.savedata_write = false;
+      m_net_settings.allow_sd_writes = false;
+      m_net_settings.exi_device[ExpansionInterface::Slot::SP1] =
+          ExpansionInterface::EXIDeviceType::None;
+      m_net_settings.exi_device[ExpansionInterface::Slot::SP2] =
+          ExpansionInterface::EXIDeviceType::None;
     }
     packet >> m_net_settings.strict_settings_sync;
 
@@ -1322,10 +1410,18 @@ RollbackNetplaySession NetPlayClient::GetRollbackNetplaySession() const
 
 bool NetPlayClient::LoadRollbackFaultScript()
 {
-  const char* const ack = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
+  const char* const test_ack = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
+  const char* const production_ack = std::getenv("RINGOUT_ROLLBACK_FAULT_ACK");
   const char* const path = std::getenv("RINGOUT_ROLLBACK_FAULT_SCRIPT");
-  if (ack == nullptr || std::string_view(ack) != "HEADLESS_ISOLATED" || path == nullptr)
+  if (path == nullptr)
     return true;
+  const bool isolated_test =
+      test_ack != nullptr && std::string_view(test_ack) == "HEADLESS_ISOLATED";
+  const bool production_gate_test = production_ack != nullptr &&
+                                    std::string_view(production_ack) ==
+                                        "PRODUCTION_OUTPUT_GATE";
+  if (!isolated_test && !production_gate_test)
+    return false;
 
   std::ifstream script(path);
   if (!script)
@@ -1426,7 +1522,11 @@ bool NetPlayClient::SendRollbackPacketWithFaults(sf::Packet&& packet)
 bool NetPlayClient::SendRollbackSIInput(const RollbackSIInputPacket& input)
 {
   const RollbackNetplaySession session = GetRollbackNetplaySession();
-  if (!m_is_connected || !session.enabled || input.protocol_version != session.protocol_version ||
+  // Replay consumes already journaled batches. Any outbound RSIB from a
+  // historical frame would duplicate input and can create a correction loop;
+  // fail closed even if a future scheduler regression supplies a packet.
+  if (!IsLiveRollbackReplayDerivedOutboundAllowed() || !m_is_connected || !session.enabled ||
+      input.protocol_version != ROLLBACK_SI_INPUT_VERSION ||
       input.session_generation != session.generation)
   {
     return false;
@@ -1442,6 +1542,28 @@ bool NetPlayClient::SendRollbackSIInput(const RollbackSIInputPacket& input)
   for (std::size_t i = 0; i < encoded.size; ++i)
     packet << payload[i];
   return SendRollbackPacketWithFaults(std::move(packet));
+}
+
+bool NetPlayClient::SendRollbackStateDigest(const RollbackStateDigest& digest)
+{
+  const RollbackNetplaySession session = GetRollbackNetplaySession();
+  if (!IsLiveRollbackReplayDerivedOutboundAllowed() || !m_is_connected || !session.enabled ||
+      digest.session_generation != session.generation)
+    return false;
+
+  std::array<u8, ROLLBACK_STATE_DIGEST_PACKET_SIZE> payload{};
+  const std::optional<std::size_t> encoded = EncodeRollbackStateDigest(digest, payload);
+  if (!encoded || *encoded != payload.size())
+    return false;
+
+  sf::Packet packet;
+  packet << MessageID::RollbackStateDigest << static_cast<u16>(*encoded);
+  for (const u8 byte : payload)
+    packet << byte;
+  // Periodic state evidence is required, not latency-sensitive. Reliable
+  // default-channel ordering makes a missing checkpoint a meaningful fault.
+  SendAsync(std::move(packet), DEFAULT_CHANNEL);
+  return true;
 }
 
 bool NetPlayClient::TryPopRollbackSIInput(RollbackSIInputPacket* const packet)
@@ -1470,10 +1592,21 @@ void NetPlayClient::SendChatMessage(const std::string& msg)
   SendAsync(std::move(packet));
 }
 
+void NetPlayClient::SetReady(const bool ready)
+{
+  if (!m_is_connected || m_is_running.IsSet())
+    return;
+
+  sf::Packet packet;
+  packet << (ready ? MessageID::Ready : MessageID::NotReady);
+  SendAsync(std::move(packet));
+}
+
 // called from ---CPU--- thread
 void NetPlayClient::AddPadStateToPacket(const int in_game_pad, const GCPadStatus& pad,
                                         sf::Packet& packet)
 {
+  std::lock_guard game_guard(m_crit.game);
   packet << static_cast<PadIndex>(in_game_pad);
   packet << pad.button;
   if (!m_gba_config[in_game_pad].enabled)
@@ -1517,8 +1650,6 @@ void NetPlayClient::SendStopGamePacket()
 bool NetPlayClient::StartGame(const std::string& path)
 {
   std::lock_guard lkg(m_crit.game);
-  SendStartGamePacket();
-
   if (m_is_running.IsSet())
   {
     PanicAlertFmtT("Game is already running!");
@@ -1531,7 +1662,62 @@ bool NetPlayClient::StartGame(const std::string& path)
   {
     std::lock_guard lk(crit_netplay_client);
     ResetLiveRollbackImpl();
+
+    const RollbackNetplaySession rollback_session = GetRollbackNetplaySession();
+    if (rollback_session.enabled)
+    {
+      const bool headless_isolated = [] {
+        const char* const acknowledgement = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
+        return acknowledgement != nullptr &&
+               std::string_view(acknowledgement) == "HEADLESS_ISOLATED";
+      }();
+
+      if (headless_isolated)
+      {
+        m_pending_live_rollback_output_gate =
+            LiveRollbackOutputGate::CreateHeadlessIsolatedTestGate();
+      }
+      else
+      {
+        const auto is_safe_memcard_slot = [this](const ExpansionInterface::Slot slot) {
+          return IsLiveRollbackMemoryCardSlotSafe(m_net_settings.exi_device[slot]);
+        };
+        const bool gba_devices_disabled =
+            std::ranges::none_of(m_gba_config, [](const GBAConfig& config) { return config.enabled; });
+        const LiveRollbackProductionSessionPolicy policy{
+            // RingOut boots an extracted main.dol, whose GameFile platform is
+            // ELFOrDOL even though the runtime already inspected and accepted
+            // its source disc identity. Use that explicit trusted preflight
+            // rather than misclassifying every production session here.
+            .is_gamecube_title = m_rollback_gamecube_title_verified,
+            .save_data_writable = m_net_settings.savedata_write,
+            .sd_writes_allowed = m_net_settings.allow_sd_writes,
+            .memory_card_slots_safe =
+                is_safe_memcard_slot(ExpansionInterface::Slot::A) &&
+                is_safe_memcard_slot(ExpansionInterface::Slot::B),
+            .serial_port_1_disabled =
+                m_net_settings.exi_device[ExpansionInterface::Slot::SP1] ==
+                ExpansionInterface::EXIDeviceType::None,
+            .serial_port_2_disabled =
+                m_net_settings.exi_device[ExpansionInterface::Slot::SP2] ==
+                ExpansionInterface::EXIDeviceType::None,
+            .gba_devices_disabled = gba_devices_disabled,
+        };
+        m_pending_live_rollback_output_gate =
+            LiveRollbackOutputGate::CreateProductionGate(policy);
+      }
+
+      if (!m_pending_live_rollback_output_gate ||
+          !m_pending_live_rollback_output_gate->BeginSessionQuarantine())
+      {
+        m_pending_live_rollback_output_gate.reset();
+        std::fprintf(stderr,
+                     "[rollback live] start refused: production capability/session policy unsafe\n");
+        return false;
+      }
+    }
   }
+  SendStartGamePacket();
   m_rollback_protocol_fault.Clear();
   RollbackSIInputPacket stale_rollback_input;
   while (m_rollback_input_queue.Pop(stale_rollback_input))
@@ -1552,7 +1738,7 @@ bool NetPlayClient::StartGame(const std::string& path)
 
   m_first_pad_status_received.fill(false);
 
-  if (m_dialog->IsRecording())
+  if (m_dialog->IsRecording() && !GetRollbackNetplaySession().enabled)
   {
     auto& movie = Core::System::GetInstance().GetMovie();
     if (movie.IsReadOnly())
@@ -1770,8 +1956,10 @@ void NetPlayClient::Stop()
 
 void NetPlayClient::RequestStopGame()
 {
-  // Tell the server to stop if we have a pad mapped in game.
-  if (LocalPlayerHasControllerMapped())
+  // A local production preflight can reject StartGame after the server has
+  // already broadcast it, before m_is_running is set. Notify every peer even
+  // in that narrow lobby state; Stop() intentionally cannot do so.
+  if (m_is_connected)
     SendStopGamePacket();
 }
 
@@ -1810,22 +1998,26 @@ std::string NetPlayClient::GetCurrentGolfer()
 // called from ---GUI--- thread
 bool NetPlayClient::LocalPlayerHasControllerMapped() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return PlayerHasControllerMapped(m_local_player->pid);
 }
 
 bool NetPlayClient::IsFirstInGamePad(int ingame_pad) const
 {
+  std::lock_guard game_guard(m_crit.game);
   return std::none_of(m_pad_map.begin(), m_pad_map.begin() + ingame_pad,
                       [](auto mapping) { return mapping > 0; });
 }
 
 int NetPlayClient::NumLocalPads() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return std::ranges::count(m_pad_map, m_local_player->pid);
 }
 
 int NetPlayClient::NumLocalWiimotes() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return std::ranges::count(m_wiimote_map, m_local_player->pid);
 }
 
@@ -1868,26 +2060,31 @@ static int LocalToInGame(int local_pad, const PadMappingArray& pad_map, PlayerId
 
 int NetPlayClient::InGamePadToLocalPad(int ingame_pad) const
 {
+  std::lock_guard game_guard(m_crit.game);
   return InGameToLocal(ingame_pad, m_pad_map, m_local_player->pid);
 }
 
 int NetPlayClient::LocalPadToInGamePad(int local_pad) const
 {
+  std::lock_guard game_guard(m_crit.game);
   return LocalToInGame(local_pad, m_pad_map, m_local_player->pid);
 }
 
 int NetPlayClient::InGameWiimoteToLocalWiimote(int ingame_wiimote) const
 {
+  std::lock_guard game_guard(m_crit.game);
   return InGameToLocal(ingame_wiimote, m_wiimote_map, m_local_player->pid);
 }
 
 int NetPlayClient::LocalWiimoteToInGameWiimote(int local_wiimote) const
 {
+  std::lock_guard game_guard(m_crit.game);
   return LocalToInGame(local_wiimote, m_wiimote_map, m_local_player->pid);
 }
 
 bool NetPlayClient::PlayerHasControllerMapped(const PlayerId pid) const
 {
+  std::lock_guard game_guard(m_crit.game);
   const auto mapping_matches_player_id = [pid](const PlayerId& mapping) { return mapping == pid; };
 
   return std::ranges::any_of(m_pad_map, mapping_matches_player_id) ||
@@ -1906,6 +2103,7 @@ const PlayerId& NetPlayClient::GetLocalPlayerId() const
 
 void NetPlayClient::SendGameStatus()
 {
+  std::lock_guard game_guard(m_crit.game);
   sf::Packet packet;
   packet << MessageID::GameStatus;
 
@@ -1964,18 +2162,21 @@ bool NetPlayClient::DoAllPlayersHaveGame()
   });
 }
 
-const PadMappingArray& NetPlayClient::GetPadMapping() const
+PadMappingArray NetPlayClient::GetPadMapping() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return m_pad_map;
 }
 
-const GBAConfigArray& NetPlayClient::GetGBAConfig() const
+GBAConfigArray NetPlayClient::GetGBAConfig() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return m_gba_config;
 }
 
-const PadMappingArray& NetPlayClient::GetWiimoteMapping() const
+PadMappingArray NetPlayClient::GetWiimoteMapping() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return m_wiimote_map;
 }
 
@@ -2156,7 +2357,7 @@ unsigned int NetPlay::NetPlay_GetLocalWiimoteForSlot(unsigned int slot)
   if (!netplay_client)
     return slot;
 
-  const auto& mapping = netplay_client->GetWiimoteMapping();
+  const auto mapping = netplay_client->GetWiimoteMapping();
   const auto& local_player_id = netplay_client->GetLocalPlayerId();
 
   std::array<unsigned int, std::tuple_size_v<std::decay_t<decltype(mapping)>>> slot_map;

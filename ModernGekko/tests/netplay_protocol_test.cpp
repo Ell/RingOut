@@ -2,37 +2,32 @@
 //
 // This test used to be written against an unpushed RecompCore fork, so it had
 // never compiled here at all -- and nothing noticed, because CI runs no tests.
-// The symbols it needed and this tree does not have:
+// The symbols it needed and this tree initially did not have:
 //
-//   NetPlay::SetCompatibilityFingerprint, NetPlayClient::GetConnectionError,
-//   ConnectionError::CompatibilityMismatch  -- a build-hash handshake that
-//     rejects a mismatched peer at connect time
 //   NetPlayServer::CanStart, NetPlayServer::SetAdaptiveBuffer
 //   NetPlayClient::SetLocalControllerCount / GetAssignedControllerCount /
 //     GetPlayersSnapshot, and a 6th constructor argument for the local
 //     controller count
 //   MessageID::PadBufferRequest, NetPlay::INPUT_CHANNEL
 //
-// vendor/dolphin carries stock netplay, which has none of that. Those
-// assertions are deleted rather than stubbed out -- a stub that always passes
-// is worse than an absence. They are in git history if the fork ever lands.
-//
-// What survives is what this tree can genuinely assert: the ModernGekko-side
-// compatibility fingerprint, which is pure computation, and a two-peer
-// localhost lobby over the stock protocol. Exit codes are unchanged from the
-// original for the checks that survived, so an old failure number still means
-// the same thing.
+// The unsupported assertions remain deleted rather than stubbed out -- a stub
+// that always passes is worse than an absence.  Compatibility identity is now
+// exercised through the real initial handshake, including malformed and
+// legacy rollback rejection, as well as by its pure computation test.
 
 // Needed again for `sf::Packet << MessageID`: the generic enum operator lives
 // here, and the pad-routing case below is the only thing that serialises a
 // message by hand. It was dropped when this test was ported off the fork's
 // netplay API and no sf:: remained.
 #include "Common/SFMLHelper.h"
+#include "Common/Version.h"
 #include "Core/Boot/Boot.h"
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/NetPlayServer.h"
+#include "Core/NetPlay/RollbackStateDigestProtocol.h"
 #include "UICommon/UICommon.h"
+#include "UICommon/GameFile.h"
 #include "moderngekko/cpu_state.h"
 #include "moderngekko/runtime.hpp"
 #include "netplay_compatibility.hpp"
@@ -40,8 +35,10 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <enet/enet.h>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -125,10 +122,13 @@ public:
   void OnMsgStopGame() override {}
   void OnMsgPowerButton() override {}
   void OnPlayerConnect(const std::string &) override {}
-  void OnPlayerDisconnect(const std::string &) override {}
+  void OnPlayerDisconnect(const std::string &) override { disconnects++; }
   void OnPadBufferChanged(u32 value) override { buffer = value; }
   void OnHostInputAuthorityChanged(bool) override {}
-  void OnDesync(u32, const std::string &) override {}
+  void OnDesync(u32 frame, const std::string &) override {
+    desync_frame = frame;
+    desyncs++;
+  }
   void OnConnectionLost() override {}
   void OnConnectionError(const std::string &message) override {
     error = message;
@@ -144,7 +144,7 @@ public:
                NetPlay::SyncIdentifierComparison *found) override {
     if (found)
       *found = NetPlay::SyncIdentifierComparison::DifferentGame;
-    return {};
+    return std::make_shared<const UICommon::GameFile>();
   }
   std::string FindGBARomPath(const std::array<u8, 20> &, std::string_view,
                              int) override {
@@ -164,6 +164,9 @@ public:
 
   std::string error;
   std::atomic<u32> buffer{0};
+  std::atomic<u32> disconnects{0};
+  std::atomic<u32> desyncs{0};
+  std::atomic<u32> desync_frame{0};
 };
 
 bool WaitFor(const auto &condition) {
@@ -173,6 +176,55 @@ bool WaitFor(const auto &condition) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   return false;
+}
+
+std::optional<NetPlay::ConnectionError>
+ExchangeRawHello(u16 port, const sf::Packet &hello) {
+  ENetHost *host = enet_host_create(nullptr, 1, NetPlay::CHANNEL_COUNT, 0, 0);
+  if (!host)
+    return std::nullopt;
+
+  ENetAddress address{};
+  enet_address_set_host(&address, "127.0.0.1");
+  address.port = port;
+  ENetPeer *peer = enet_host_connect(host, &address, NetPlay::CHANNEL_COUNT, 0);
+  if (!peer) {
+    enet_host_destroy(host);
+    return std::nullopt;
+  }
+
+  ENetEvent event{};
+  if (enet_host_service(host, &event, 5000) <= 0 ||
+      event.type != ENET_EVENT_TYPE_CONNECT) {
+    enet_host_destroy(host);
+    return std::nullopt;
+  }
+
+  ENetPacket *packet = enet_packet_create(hello.getData(), hello.getDataSize(),
+                                          ENET_PACKET_FLAG_RELIABLE);
+  if (!packet || enet_peer_send(peer, NetPlay::DEFAULT_CHANNEL, packet) != 0) {
+    if (packet)
+      enet_packet_destroy(packet);
+    enet_host_destroy(host);
+    return std::nullopt;
+  }
+  enet_host_flush(host);
+
+  std::optional<NetPlay::ConnectionError> result;
+  while (enet_host_service(host, &event, 5000) > 0) {
+    if (event.type != ENET_EVENT_TYPE_RECEIVE)
+      continue;
+    sf::Packet response;
+    response.append(event.packet->data, event.packet->dataLength);
+    enet_packet_destroy(event.packet);
+    NetPlay::ConnectionError error{};
+    response >> error;
+    if (response && response.endOfPacket())
+      result = error;
+    break;
+  }
+  enet_host_destroy(host);
+  return result;
 }
 
 int main() {
@@ -230,9 +282,48 @@ int main() {
 
   // Port 0 asks the OS for a free one, so concurrent test runs cannot collide.
   auto server = std::make_unique<NetPlay::NetPlayServer>(
-      0, false, &host_ui, NetPlay::NetTraversalConfig{});
+      0, false, &host_ui, NetPlay::NetTraversalConfig{}, first_fingerprint);
   if (!server->is_connected)
     return 1;
+  // A RingOut fixed-delay host still requires the exact DOL/module identity.
+  // Extension-less legacy handshakes cannot bypass that contract.
+  {
+    auto legacy = std::make_unique<NetPlay::NetPlayClient>(
+        "127.0.0.1", server->GetPort(), &second_ui, "Legacy",
+        NetPlay::NetTraversalConfig{});
+    if (legacy->IsConnected() ||
+        legacy->GetConnectionError() !=
+            NetPlay::ConnectionError::CompatibilityMismatch)
+      return 36;
+  }
+  // Matching modern fixed-delay peers still connect before rollback is armed.
+  {
+    auto modern_fixed = std::make_unique<NetPlay::NetPlayClient>(
+        "127.0.0.1", server->GetPort(), &second_ui, "ModernFixed",
+        NetPlay::NetTraversalConfig{}, false, first_fingerprint);
+    if (!modern_fixed->IsConnected())
+      return 53;
+    if (server->SetRollbackNetplayConfig({
+            .enabled = true,
+            .protocol_version = NetPlay::ROLLBACK_NETPLAY_VERSION,
+            .base_delay_samples = 2,
+            .rollback_horizon_frames = 8,
+        }))
+      return 40;
+  }
+  // Requested mode is part of the initial hello, not inferred later from
+  // capability. A rollback-requesting guest must not enter a fixed-delay host
+  // and discover the mismatch only after one side has started.
+  {
+    auto wrong_mode = std::make_unique<NetPlay::NetPlayClient>(
+        "127.0.0.1", server->GetPort(), &second_ui, "WrongMode",
+        NetPlay::NetTraversalConfig{}, true, first_fingerprint);
+    if (wrong_mode->IsConnected() ||
+        wrong_mode->GetConnectionError() !=
+            NetPlay::ConnectionError::CompatibilityMismatch)
+      return 50;
+  }
+
   if (NetPlay::ROLLBACK_INPUT_CHANNEL == NetPlay::DEFAULT_CHANNEL ||
       NetPlay::ROLLBACK_INPUT_CHANNEL == NetPlay::CHUNKED_DATA_CHANNEL)
     return 25;
@@ -242,15 +333,69 @@ int main() {
       .base_delay_samples = 2,
       .rollback_horizon_frames = 8,
   };
-  if (!server->SetRollbackNetplayConfig(rollback_config))
-    return 26;
+  // The fixed peer's disconnect is processed asynchronously. Retrying the
+  // guarded mode transition observes the actual server roster instead of
+  // relying on a timing sleep or a UI callback ordering detail.
+  if (!WaitFor([&] { return server->SetRollbackNetplayConfig(rollback_config); }))
+    return 54;
   auto invalid_rollback_config = rollback_config;
   invalid_rollback_config.rollback_horizon_frames = 0;
   if (server->SetRollbackNetplayConfig(invalid_rollback_config))
     return 27;
+  invalid_rollback_config = rollback_config;
+  invalid_rollback_config.base_delay_samples = 0;
+  if (server->SetRollbackNetplayConfig(invalid_rollback_config))
+    return 55;
+
+  // The inverse cross-mode mismatch is rejected at the same pre-PID boundary:
+  // a modern fixed-delay client cannot join a rollback host.
+  {
+    auto wrong_fixed = std::make_unique<NetPlay::NetPlayClient>(
+        "127.0.0.1", server->GetPort(), &second_ui, "WrongFixed",
+        NetPlay::NetTraversalConfig{}, false, first_fingerprint);
+    if (wrong_fixed->IsConnected() ||
+        wrong_fixed->GetConnectionError() !=
+            NetPlay::ConnectionError::CompatibilityMismatch)
+      return 56;
+  }
+
+  // Any trailing extension bytes must form the complete bounded extension.
+  // This raw client proves the production OnConnect parser rejects malformed
+  // wire data before allocating a player ID.
+  sf::Packet malformed_hello;
+  malformed_hello << Common::GetScmRevGitStr() << Common::GetNetplayDolphinVer()
+                  << std::string("Malformed") << u8{0x12};
+  if (ExchangeRawHello(server->GetPort(), malformed_hello) !=
+      NetPlay::ConnectionError::MalformedHandshake)
+    return 37;
+
+  auto mismatched = std::make_unique<NetPlay::NetPlayClient>(
+      "127.0.0.1", server->GetPort(), &second_ui, "Mismatch",
+      NetPlay::NetTraversalConfig{}, true,
+      moderngekko::frontend::CompatibilityFingerprint(changed_config,
+                                                      metadata));
+  if (mismatched->IsConnected() ||
+      mismatched->GetConnectionError() !=
+          NetPlay::ConnectionError::CompatibilityMismatch ||
+      second_ui.error.empty())
+    return 38;
+  mismatched.reset();
+
+  // Once rollback is explicitly requested, an extension-less legacy peer is
+  // rejected at connect time rather than silently downgrading the lobby.
+  second_ui.error.clear();
+  auto legacy_rollback = std::make_unique<NetPlay::NetPlayClient>(
+      "127.0.0.1", server->GetPort(), &second_ui, "LegacyRollback",
+      NetPlay::NetTraversalConfig{});
+  if (legacy_rollback->IsConnected() ||
+      legacy_rollback->GetConnectionError() !=
+          NetPlay::ConnectionError::CompatibilityMismatch)
+    return 39;
+  legacy_rollback.reset();
+
   auto first = std::make_unique<NetPlay::NetPlayClient>(
       "127.0.0.1", server->GetPort(), &first_ui, "First",
-      NetPlay::NetTraversalConfig{}, true);
+      NetPlay::NetTraversalConfig{}, true, first_fingerprint);
   if (!first->IsConnected())
     return 2;
   if (!WaitFor([&] { return server->CanUseRollbackNetplay(); }))
@@ -265,12 +410,27 @@ int main() {
   if (first->SendRollbackSIInput(inactive_input))
     return 30;
 
-  // This peer intentionally behaves like a legacy client: it answers the
-  // optional query with version zero.  One such peer must force the whole
-  // lobby back to fixed delay rather than creating a mixed-mode session.
+  // A structurally valid stale unreliable packet is retired outside an active
+  // generation rather than disconnecting a player before the next match.
+  std::array<u8, NetPlay::ROLLBACK_SI_MAX_PACKET_SIZE> stale_bytes{};
+  const auto stale_encoded =
+      NetPlay::EncodeRollbackSIInputPacket(inactive_input, stale_bytes);
+  if (!stale_encoded)
+    return 51;
+  sf::Packet stale_wire;
+  stale_wire << NetPlay::MessageID::RollbackSIInput <<
+      static_cast<u16>(stale_encoded.size);
+  for (std::size_t i = 0; i < stale_encoded.size; ++i)
+    stale_wire << stale_bytes[i];
+  first->SendAsync(std::move(stale_wire), NetPlay::ROLLBACK_INPUT_CHANNEL);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  if (!first->IsConnected())
+    return 52;
+
+  // A second matching modern peer preserves rollback eligibility.
   auto second = std::make_unique<NetPlay::NetPlayClient>(
       "127.0.0.1", server->GetPort(), &second_ui, "Second",
-      NetPlay::NetTraversalConfig{}, false);
+      NetPlay::NetTraversalConfig{}, true, first_fingerprint);
   if (!second->IsConnected())
     return 3;
   // The client constructor returns once its own connection is up, but the
@@ -279,8 +439,50 @@ int main() {
   if (!WaitFor([&] { return first->GetPlayers().size() == 2; }) ||
       !WaitFor([&] { return second->GetPlayers().size() == 2; }))
     return 4;
-  if (!WaitFor([&] { return !server->CanUseRollbackNetplay(); }))
+  if (!WaitFor([&] { return server->CanUseRollbackNetplay(); }))
     return 31;
+
+  if (!server->SetRequireReady(true))
+    return 41;
+  NetPlay::PadMappingArray ready_mapping{};
+  ready_mapping[0] = first->GetLocalPlayerId();
+  ready_mapping[1] = second->GetLocalPlayerId();
+  server->SetPadMapping(ready_mapping);
+  if (server->AreAllMappedPlayersReady())
+    return 42;
+  first->SetReady(true);
+  if (!WaitFor([&] {
+        const auto players = first->GetPlayers();
+        return players.size() == 2 && players[0].ready && !players[1].ready;
+      }) ||
+      server->AreAllMappedPlayersReady())
+    return 43;
+  second->SetReady(true);
+  if (!WaitFor([&] { return server->AreAllMappedPlayersReady(); }) ||
+      !WaitFor([&] {
+        const auto players = first->GetPlayers();
+        return players.size() == 2 && players[0].ready && players[1].ready;
+      }))
+    return 44;
+  server->ClearReady();
+  if (!WaitFor([&] {
+        const auto players = first->GetPlayers();
+        return players.size() == 2 && !players[0].ready && !players[1].ready;
+      }) ||
+      server->AreAllMappedPlayersReady())
+    return 47;
+  if (server->RequestStartGame())
+    return 48;
+  first->SetReady(true);
+  second->SetReady(true);
+  if (!WaitFor([&] { return server->AreAllMappedPlayersReady(); }))
+    return 49;
+  first->SetReady(false);
+  if (!WaitFor([&] { return !server->AreAllMappedPlayersReady(); }))
+    return 45;
+  first->SetReady(true);
+  if (!WaitFor([&] { return server->AreAllMappedPlayersReady(); }))
+    return 46;
 
   const NetPlay::RollbackNetplaySession valid_session{
       .enabled = true,
@@ -310,6 +512,112 @@ int main() {
   server->AdjustPadBufferSize(2);
   if (!WaitFor([&] { return first_ui.buffer == 2 && second_ui.buffer == 2; }))
     return 18;
+  // Changing synchronized launch settings clears readiness by contract.
+  first->SetReady(true);
+  second->SetReady(true);
+  if (!WaitFor([&] { return server->AreAllMappedPlayersReady(); }))
+    return 69;
+
+  // ---- confirmed rollback state ------------------------------------------
+  // Periodic state evidence is client->server only. Matching reports keep the
+  // generation alive; a mismatch is announced and fails the whole game closed
+  // without pretending that either of two disagreeing peers can be blamed.
+  if (!server->StartGame())
+    return 70;
+  if (!WaitFor([&] {
+        const auto a = first->GetRollbackNetplaySession();
+        const auto b = second->GetRollbackNetplaySession();
+        return a.enabled && b.enabled && a.generation == b.generation;
+      }))
+    return 71;
+  const NetPlay::RollbackNetplaySession first_digest_session =
+      first->GetRollbackNetplaySession();
+  const auto state_digest = [](const u64 generation, const u32 mem1) {
+    return NetPlay::RollbackStateDigest{.session_generation = generation,
+                                        .logical_frame = 60,
+                                        .mem1_crc32 = mem1,
+                                        .locked_l1_crc32 = 0x22222222,
+                                        .emulated_timebase = 0x3333333333333333};
+  };
+  if (!first->SendRollbackStateDigest(state_digest(first_digest_session.generation, 0x11111111)) ||
+      !second->SendRollbackStateDigest(state_digest(first_digest_session.generation, 0x11111111)))
+    return 72;
+  if (!WaitFor([&] {
+        const auto retired = server->GetRollbackDigestRetiredThroughFrame();
+        return retired && *retired >= 60;
+      }) ||
+      !server->GetRollbackNetplaySession().enabled || !first->IsConnected() ||
+      !second->IsConnected())
+    return 73;
+
+  first->RequestStopGame();
+  if (!WaitFor([&] {
+        return !first->GetRollbackNetplaySession().enabled &&
+               !second->GetRollbackNetplaySession().enabled;
+      }))
+    return 74;
+
+  if (!server->StartGame())
+    return 75;
+  if (!WaitFor([&] {
+        const auto a = first->GetRollbackNetplaySession();
+        const auto b = second->GetRollbackNetplaySession();
+        return a.enabled && b.enabled && a.generation == b.generation &&
+               a.generation != first_digest_session.generation;
+      }))
+    return 76;
+  const u64 mismatch_generation = first->GetRollbackNetplaySession().generation;
+
+  // A structurally valid report from the previous generation is retired even
+  // though it arrives on the reliable channel after the next match started.
+  std::array<u8, NetPlay::ROLLBACK_STATE_DIGEST_PACKET_SIZE> old_digest_bytes{};
+  const auto old_digest_size = NetPlay::EncodeRollbackStateDigest(
+      state_digest(first_digest_session.generation, 0x11111111), old_digest_bytes);
+  if (!old_digest_size)
+    return 77;
+  sf::Packet old_digest_packet;
+  old_digest_packet << NetPlay::MessageID::RollbackStateDigest <<
+      static_cast<u16>(*old_digest_size);
+  for (const u8 byte : old_digest_bytes)
+    old_digest_packet << byte;
+  first->SendAsync(std::move(old_digest_packet), NetPlay::DEFAULT_CHANNEL);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  if (!first->IsConnected() || !server->GetRollbackNetplaySession().enabled)
+    return 78;
+
+  if (!first->SendRollbackStateDigest(state_digest(mismatch_generation, 0x11111111)) ||
+      !second->SendRollbackStateDigest(state_digest(mismatch_generation, 0xdeadbeef)))
+    return 79;
+  if (!WaitFor([&] {
+        return first_ui.desyncs == 1 && second_ui.desyncs == 1 &&
+               !first->GetRollbackNetplaySession().enabled &&
+               !second->GetRollbackNetplaySession().enabled;
+      }))
+    return 80;
+  if (first_ui.desync_frame != 60 || second_ui.desync_frame != 60 ||
+      !first->IsConnected() || !second->IsConnected())
+    return 81;
+
+  // The legacy routing check below deliberately sends gameplay data without
+  // booting a core. Recreate a pristine lobby so its current-game discriminator
+  // remains zero on both ends instead of treating the packet as stale data from
+  // the just-finished digest sessions.
+  second.reset();
+  first.reset();
+  server.reset();
+  server = std::make_unique<NetPlay::NetPlayServer>(
+      0, false, &host_ui, NetPlay::NetTraversalConfig{}, first_fingerprint);
+  if (!server->is_connected || !server->SetRollbackNetplayConfig(rollback_config))
+    return 82;
+  first = std::make_unique<NetPlay::NetPlayClient>(
+      "127.0.0.1", server->GetPort(), &first_ui, "First",
+      NetPlay::NetTraversalConfig{}, true, first_fingerprint);
+  second = std::make_unique<NetPlay::NetPlayClient>(
+      "127.0.0.1", server->GetPort(), &second_ui, "Second",
+      NetPlay::NetTraversalConfig{}, true, first_fingerprint);
+  if (!first->IsConnected() || !second->IsConnected() ||
+      !WaitFor([&] { return first->GetPlayers().size() == 2; }))
+    return 83;
 
   // ---- input routing -------------------------------------------------------
   //

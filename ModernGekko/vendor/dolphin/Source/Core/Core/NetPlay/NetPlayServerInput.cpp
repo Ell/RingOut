@@ -15,27 +15,34 @@ namespace NetPlay
 
 PadMappingArray NetPlayServer::GetPadMapping() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return m_pad_map;
 }
 
 GBAConfigArray NetPlayServer::GetGBAConfig() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return m_gba_config;
 }
 
 PadMappingArray NetPlayServer::GetWiimoteMapping() const
 {
+  std::lock_guard game_guard(m_crit.game);
   return m_wiimote_map;
 }
 
 void NetPlayServer::SetPadMapping(const PadMappingArray& mappings)
 {
+  std::lock_guard game_guard(m_crit.game);
+  if (mappings != m_pad_map)
+    ClearReadyLocked();
   m_pad_map = mappings;
   UpdatePadMapping();
 }
 
 void NetPlayServer::SetGBAConfig(const GBAConfigArray& configs, bool update_rom)
 {
+  std::lock_guard game_guard(m_crit.game);
 #ifdef HAS_LIBMGBA
   m_gba_config = configs;
   if (update_rom)
@@ -55,6 +62,7 @@ void NetPlayServer::SetGBAConfig(const GBAConfigArray& configs, bool update_rom)
 
 void NetPlayServer::SetWiimoteMapping(const PadMappingArray& mappings)
 {
+  std::lock_guard game_guard(m_crit.game);
   m_wiimote_map = mappings;
   UpdateWiimoteMapping();
 }
@@ -98,6 +106,8 @@ void NetPlayServer::AdjustPadBufferSize(unsigned int size)
 {
   std::lock_guard lkg(m_crit.game);
 
+  if (size != m_target_buffer_size)
+    ClearReadyLocked();
   m_target_buffer_size = size;
 
   if (!m_host_input_authority)
@@ -114,6 +124,8 @@ void NetPlayServer::SetHostInputAuthority(const bool enable)
 {
   std::lock_guard lkg(m_crit.game);
 
+  if (enable != m_host_input_authority)
+    ClearReadyLocked();
   m_host_input_authority = enable;
 
   sf::Packet spac;

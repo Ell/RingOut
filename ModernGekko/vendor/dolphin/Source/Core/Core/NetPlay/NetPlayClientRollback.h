@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdio>
 #include <memory>
 #include <optional>
 
@@ -30,10 +31,20 @@ struct NetPlayClient::LiveRollbackState
   std::optional<RollbackInputTimeline::ResolvedFrame> current_inputs;
   std::optional<u64> last_sent_future_batch;
   std::optional<u64> last_poll_frame;
+  std::optional<u32> digest_fault_frame;
+  RollbackStateDigestCandidates digest_candidates;
+  std::FILE* confirmed_state_log = nullptr;
   u32 next_poll_ordinal = 0;
   bool horizon_wait_logged = false;
+  bool digest_fault_applied = false;
   bool active = false;
   bool faulted = false;
+
+  ~LiveRollbackState()
+  {
+    if (confirmed_state_log)
+      std::fclose(confirmed_state_log);
+  }
 };
 
 }  // namespace NetPlay

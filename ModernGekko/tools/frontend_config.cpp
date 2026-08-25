@@ -13,6 +13,35 @@
 namespace fs = std::filesystem;
 
 namespace moderngekko::frontend {
+std::string_view NetplayModeConfigValue(NetplayMode mode) {
+  switch (mode) {
+  case NetplayMode::FixedDelay:
+    return "fixed-delay";
+  case NetplayMode::Rollback:
+    return "rollback";
+  }
+  return "fixed-delay";
+}
+
+bool ParseNetplayMode(std::string_view value, NetplayMode *mode) {
+  if (mode == nullptr)
+    return false;
+  if (value == "fixed-delay" || value == "fixeddelay") {
+    *mode = NetplayMode::FixedDelay;
+    return true;
+  }
+  if (value == "rollback") {
+    *mode = NetplayMode::Rollback;
+    return true;
+  }
+  return false;
+}
+
+bool IsPlayerUsableNetplayMode(NetplayMode mode,
+                               bool rollback_production_ready) {
+  return mode == NetplayMode::FixedDelay || rollback_production_ready;
+}
+
 namespace {
 std::string Trim(std::string value) {
   const auto not_space = [](unsigned char c) { return !std::isspace(c); };
@@ -109,6 +138,9 @@ ConfigResult LoadConfig(const fs::path &user_directory,
           port > 65535)
         return {.error = "netplay port must be between 1 and 65535"};
       config.netplay_port = static_cast<std::uint16_t>(port);
+    } else if (key == "mode") {
+      if (!ParseNetplayMode(value, &config.netplay_mode))
+        return {.error = "netplay mode must be fixed-delay or rollback"};
     } else if (key == "buffer") {
       if (value != "auto") {
         unsigned int frames = 0;
@@ -218,6 +250,7 @@ bool SaveConfig(const fs::path &user_directory, const ConfigResult &config,
     file << "controller" << i + 1 << '=' << config.controllers[i] << '\n';
   }
   file << "[Netplay]\n"
+       << "mode=" << NetplayModeConfigValue(config.netplay_mode) << '\n'
        << "nickname=" << config.netplay_nickname << '\n'
        << "address=" << config.netplay_address << '\n'
        << "port=" << config.netplay_port << '\n'

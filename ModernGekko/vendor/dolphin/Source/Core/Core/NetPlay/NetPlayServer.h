@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -19,6 +20,7 @@
 #include "Common/Timer.h"
 #include "Common/TraversalClient.h"
 #include "Core/NetPlay/NetPlayProto.h"
+#include "Core/NetPlay/RollbackStateDigestProtocol.h"
 #include "Core/SyncIdentifier.h"
 #include "UICommon/NetPlayIndex.h"
 
@@ -39,7 +41,8 @@ public:
                             const std::string& title = "");
 
   NetPlayServer(u16 port, bool forward_port, NetPlayUI* dialog,
-                const NetTraversalConfig& traversal_config);
+                const NetTraversalConfig& traversal_config,
+                std::string compatibility_fingerprint = {});
   ~NetPlayServer() override;
 
   bool ChangeGame(const SyncIdentifier& sync_identifier, const std::string& netplay_name);
@@ -52,6 +55,9 @@ public:
   bool StartGame();
   bool RequestStartGame();
   void AbortGameStart();
+  bool SetRequireReady(bool require_ready);
+  bool AreAllMappedPlayersReady();
+  void ClearReady();
 
   PadMappingArray GetPadMapping() const;
   void SetPadMapping(const PadMappingArray& mappings);
@@ -70,6 +76,7 @@ public:
   bool SetRollbackNetplayConfig(const RollbackNetplayConfig& config);
   bool CanUseRollbackNetplay();
   RollbackNetplaySession GetRollbackNetplaySession();
+  std::optional<u32> GetRollbackDigestRetiredThroughFrame();
 
   void KickPlayer(PlayerId player);
 
@@ -90,6 +97,8 @@ private:
     SyncIdentifierComparison game_status = SyncIdentifierComparison::Unknown;
     bool has_ipl_dump = false;
     bool has_hardware_fma = false;
+    bool connect_rollback_capable = false;
+    bool ready = false;
     u16 rollback_protocol_version = 0;
     u16 rollback_max_horizon_frames = 0;
 
@@ -146,6 +155,9 @@ private:
   unsigned int OnData(sf::Packet& packet, Client& player, u8 channel_id);
   RollbackNetplaySession SelectRollbackNetplaySession();
   void SendRollbackNetplaySession(const RollbackNetplaySession& session);
+  void FaultRollbackSession(u32 logical_frame, PlayerId blamed_player, bool desync);
+  // Caller holds m_crit.game. Queues relays only after releasing players.
+  void ClearReadyLocked();
 
   void OnTraversalStateChanged() override;
   void OnConnectReady(ENetAddress) override {}
@@ -185,9 +197,12 @@ private:
   bool m_saves_synced = true;
   bool m_codes_synced = true;
   bool m_start_pending = false;
+  bool m_require_ready = false;
   bool m_host_input_authority = false;
   RollbackNetplayConfig m_rollback_config{};
   RollbackNetplaySession m_rollback_session{};
+  RollbackStateDigestTracker m_rollback_digest_tracker;
+  std::string m_compatibility_fingerprint;
   u64 m_next_rollback_generation = 1;
   PlayerId m_current_golfer = 1;
   PlayerId m_pending_golfer = 0;
@@ -199,7 +214,7 @@ private:
 
   struct
   {
-    std::recursive_mutex game;
+    mutable std::recursive_mutex game;
     // lock order
     std::recursive_mutex players;
     std::recursive_mutex async_queue_write;

@@ -28,6 +28,7 @@
 #include "Core/HW/WiimoteCommon/WiimoteConstants.h"
 #include "Core/HW/WiimoteCommon/WiimoteHid.h"
 #include "Core/HW/WiimoteEmu/DesiredWiimoteState.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/HW/WiimoteEmu/Extension/Classic.h"
 #include "Core/HW/WiimoteEmu/Extension/DesiredExtensionState.h"
 #include "Core/HW/WiimoteEmu/Extension/DrawsomeTablet.h"
@@ -728,6 +729,11 @@ bool Wiimote::IsUpright() const
 
 void Wiimote::SetRumble(bool on)
 {
+  if (NetPlay::IsLiveRollbackSessionQuarantineActive())
+    on = false;
+  else if (NetPlay::IsLiveRollbackHiddenReplayActive())
+    return;
+
   const auto lock = GetStateLock();
   m_rumble->controls.front()->control_ref->State(on);
 }

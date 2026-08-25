@@ -134,18 +134,19 @@ bool RollbackCoordinator::CanCommitReplay(const ReplayRequest& request) const
          m_output_gate_active;
 }
 
-void RollbackCoordinator::CommitAcknowledgedReplay(const ReplayRequest& request)
+bool RollbackCoordinator::CommitAcknowledgedReplay(const ReplayRequest& request)
 {
   // AcknowledgeAndCommitReplay checked this under the journal lock immediately
   // before calling us. Coordinator ownership remains on the CPU thread.
   if (!CanCommitReplay(request))
-    return;
-  m_output_gate.EndHiddenReplay(true);
+    return false;
+  const bool published = m_output_gate.EndHiddenReplay(true);
   m_output_gate_active = false;
   m_active_request.reset();
   m_expected_replay_frame.reset();
   m_replay_frame_started = false;
-  m_state = State::Ready;
+  m_state = published ? State::Ready : State::Faulted;
+  return published;
 }
 
 RollbackCoordinator::RequestStatus

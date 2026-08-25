@@ -21,6 +21,7 @@
 #include "Common/TraversalClient.h"
 #include "Core/NetPlay/NetPlayProto.h"
 #include "Core/NetPlay/RollbackSIInputProtocol.h"
+#include "Core/NetPlay/RollbackStateDigestProtocol.h"
 #include "Core/SyncIdentifier.h"
 #include "InputCommon/GCPadStatus.h"
 
@@ -43,6 +44,8 @@ struct SerializedWiimoteState;
 
 namespace NetPlay
 {
+class LiveRollbackOutputGate;
+
 class NetPlayUI
 {
 public:
@@ -104,6 +107,7 @@ public:
   std::string revision;
   u32 ping = 0;
   SyncIdentifierComparison game_status = SyncIdentifierComparison::Unknown;
+  bool ready = false;
 
   bool IsHost() const { return pid == 1; }
 };
@@ -116,7 +120,9 @@ public:
 
   NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog, std::string name,
                 const NetTraversalConfig& traversal_config,
-                bool advertise_rollback_capability = false);
+                bool advertise_rollback_capability = false,
+                std::string compatibility_fingerprint = {},
+                bool rollback_gamecube_title_verified = false);
   ~NetPlayClient() override;
 
   // Return an immutable-by-ownership lobby view. The network thread may update
@@ -127,6 +133,7 @@ public:
 
   // Called from the GUI thread.
   bool IsConnected() const { return m_is_connected; }
+  ConnectionError GetConnectionError() const { return m_connection_error; }
   bool StartGame(const std::string& path);
   void InvokeStop();
   bool StopGame();
@@ -137,6 +144,7 @@ public:
   void SendPowerButtonEvent();
   void RequestGolfControl(PlayerId pid);
   void RequestGolfControl();
+  void SetReady(bool ready);
   std::string GetCurrentGolfer();
 
   // Send and receive pads values
@@ -176,9 +184,9 @@ public:
   static bool IsLiveRollbackSessionActive();
   bool DoAllPlayersHaveGame();
 
-  const PadMappingArray& GetPadMapping() const;
-  const GBAConfigArray& GetGBAConfig() const;
-  const PadMappingArray& GetWiimoteMapping() const;
+  PadMappingArray GetPadMapping() const;
+  GBAConfigArray GetGBAConfig() const;
+  PadMappingArray GetWiimoteMapping() const;
 
   void AdjustPadBufferSize(unsigned int size);
 
@@ -187,6 +195,7 @@ public:
   // only move already validated RSIB packets across the dedicated channel.
   RollbackNetplaySession GetRollbackNetplaySession() const;
   bool SendRollbackSIInput(const RollbackSIInputPacket& packet);
+  bool SendRollbackStateDigest(const RollbackStateDigest& digest);
   bool TryPopRollbackSIInput(RollbackSIInputPacket* packet);
   bool WaitForRollbackSIInput(std::chrono::milliseconds timeout);
 
@@ -206,7 +215,7 @@ protected:
 
   struct
   {
-    std::recursive_mutex game;
+    mutable std::recursive_mutex game;
     // lock order
     std::recursive_mutex players;
     std::recursive_mutex async_queue_write;
@@ -303,6 +312,7 @@ private:
   void OnData(sf::Packet& packet, u8 channel_id);
   void OnPlayerJoin(sf::Packet& packet);
   void OnPlayerLeave(sf::Packet& packet);
+  void OnPlayerReady(sf::Packet& packet, bool ready);
   void OnChatMessage(sf::Packet& packet);
   void OnChunkedDataStart(sf::Packet& packet);
   void OnChunkedDataEnd(sf::Packet& packet);
@@ -352,6 +362,11 @@ private:
 
   struct LiveRollbackState;
 
+  // Created and armed by StartGame before emulation begins, then transferred
+  // to the CPU-thread-owned LiveRollbackState at the first frame boundary.
+  // ResetLiveRollbackImpl owns balanced teardown for both locations.
+  std::unique_ptr<LiveRollbackOutputGate> m_pending_live_rollback_output_gate;
+
   bool m_is_connected = false;
   ConnectionState m_connection_state = ConnectionState::Failure;
 
@@ -394,6 +409,9 @@ private:
   };
 
   bool m_advertise_rollback_capability = false;
+  bool m_rollback_gamecube_title_verified = false;
+  std::string m_compatibility_fingerprint;
+  ConnectionError m_connection_error = ConnectionError::NoError;
   RollbackNetplaySession m_rollback_session{};
   Common::SPSCQueue<RollbackSIInputPacket> m_rollback_input_queue;
   std::vector<RollbackFaultAction> m_rollback_fault_actions;

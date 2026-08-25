@@ -219,6 +219,30 @@ std::optional<u64> RollbackSIInputJournal::GetConfirmedThroughBatch() const
   return m_timeline.GetConfirmedThrough();
 }
 
+std::optional<u64>
+RollbackSIInputJournal::GetLastAppliedBatchThroughEmulatedFrame(const u64 emulated_frame) const
+{
+  std::lock_guard guard(m_mutex);
+  for (auto applied = m_applied_batches.rbegin(); applied != m_applied_batches.rend(); ++applied)
+  {
+    if (applied->second.emulated_frame <= emulated_frame)
+      return applied->first;
+  }
+  return std::nullopt;
+}
+
+bool RollbackSIInputJournal::IsEmulatedFrameAuthoritative(const u64 emulated_frame) const
+{
+  std::lock_guard guard(m_mutex);
+  if (m_configuration_status != ConfigurationStatus::Valid || m_timeline.GetPendingRollback())
+    return false;
+  const std::optional<u64> confirmed = m_timeline.GetConfirmedThrough();
+  if (!confirmed || !m_last_applied_batch || m_last_applied_batch->emulated_frame != emulated_frame)
+    return false;
+  return *confirmed >= m_last_applied_batch->batch_id &&
+         m_resolved_batches.contains(m_last_applied_batch->batch_id);
+}
+
 std::optional<RollbackSIInputJournal::ReplayTrigger>
 RollbackSIInputJournal::GetReplayTrigger() const
 {
@@ -269,9 +293,9 @@ bool RollbackSIInputJournal::AcknowledgeAndCommitReplay(const ReplayTrigger& tri
   // visibility one linearizable operation relative to network-thread input
   // submission. RollbackOutputGate::EndHiddenReplay must not re-enter this
   // journal.
-  coordinator.CommitAcknowledgedReplay(trigger);
+  const bool published = coordinator.CommitAcknowledgedReplay(trigger);
   PruneMetadata();
-  return true;
+  return published;
 }
 
 RollbackSIInputJournal::Timeline::Config

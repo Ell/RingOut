@@ -157,8 +157,12 @@ case "${1:-}" in
     exit 0
     ;;
   --ringout-self-test)
+    [[ -x "$APPDIR/usr/bin/RingOut" ]]
+    [[ -x "$APPDIR/usr/bin/moderngekko-port" ]]
     [[ -x "$DATA_DIR/bin/moderngekko-run" ]]
     [[ -x "$DATA_DIR/tools/dolrecomp" ]]
+    [[ -s "$PAYLOAD/module-src/CMakeLists.txt" ]]
+    [[ -s "$PAYLOAD/GRSEAF.ini" ]]
     [[ -s "$DATA_DIR/module-src/CMakeLists.txt" ]]
     [[ -s "$DATA_DIR/APPIMAGE-RUNTIME-COMPONENTS.tsv" ]]
     [[ -s "$DATA_DIR/AppImage-runtime-licenses/SHA256SUMS" ]]
@@ -168,7 +172,11 @@ case "${1:-}" in
     )
     [[ -s "$APPDIR/usr/bin/Sys/GC/dsp_rom.bin" ]]
     LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      "$APPDIR/usr/bin/RingOut" --ringout-self-test >/dev/null
+    LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
       "$DATA_DIR/bin/moderngekko-run" --help >/dev/null
+    LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      "$APPDIR/usr/bin/moderngekko-port" --ringout-self-test >/dev/null
     "$DATA_DIR/tools/dolrecomp" --help >/dev/null
     [[ ! -e "$DATA_DIR/game" ]]
     if find "$DATA_DIR/bin" -maxdepth 1 -type f \
@@ -182,4 +190,5 @@ case "${1:-}" in
     ;;
 esac
 
-exec "$DATA_DIR/RingOut.payload" "$@"
+exec env LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  "$APPDIR/usr/bin/RingOut" --user-dir "$DATA_DIR" "$@"

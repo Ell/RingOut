@@ -11,6 +11,7 @@
 #include "Common/IOFile.h"
 
 #include "Core/Config/MainSettings.h"
+#include "Core/Config/SessionSettings.h"
 #include "Core/Config/ConfigManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/EXI/EXI_Channel.h"
@@ -181,7 +182,7 @@ void ExpansionInterfaceManager::Shutdown()
 
   CEXIMemoryCard::Shutdown();
 
-  if (!m_using_overridden_sram)
+  if (!m_using_overridden_sram && Config::Get(Config::SESSION_SAVE_DATA_WRITABLE))
   {
     File::IOFile file(SConfig::GetInstance().m_strSRAM, "wb");
     auto& sram = m_system.GetSRAM();

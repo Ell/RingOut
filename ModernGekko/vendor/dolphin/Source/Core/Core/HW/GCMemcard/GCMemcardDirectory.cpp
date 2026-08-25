@@ -619,6 +619,12 @@ bool GCMemcardDirectory::SetUsedBlocks(int save_index)
 
 void GCMemcardDirectory::FlushToFile()
 {
+  // NetPlay can intentionally expose a synchronized card to the guest without
+  // granting host persistence. This check belongs at the final write choke
+  // point as well as the worker entry: the destructor also calls FlushToFile.
+  if (!Config::Get(Config::SESSION_SAVE_DATA_WRITABLE))
+    return;
+
   std::unique_lock l(m_write_mutex);
   Memcard::DEntry invalid;
   for (Memcard::GCIFile& save : m_saves)

@@ -22,6 +22,10 @@ constexpr u32 ROLLBACK_SI_INPUT_MAGIC = 0x52534942;  // "RSIB"
 constexpr u16 ROLLBACK_SI_INPUT_VERSION = 1;
 constexpr std::size_t ROLLBACK_SI_MAX_BATCHES_PER_PACKET = 8;
 constexpr std::size_t ROLLBACK_SI_MAX_PACKET_SIZE = 481;
+// Sender-side storage bound for batches awaiting all-peer contiguous ACK. At
+// the typical 120 Hz SI rate this retains about 4.3 seconds independently of
+// the much shorter prediction/snapshot horizon.
+constexpr std::size_t ROLLBACK_SI_MAX_UNACKNOWLEDGED_BATCHES = 512;
 
 struct RollbackSIInputBatch
 {

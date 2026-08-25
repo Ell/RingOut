@@ -84,7 +84,14 @@ DataResponse CSIDevice_GCAdapter::GetData(u32& hi, u32& low)
 
 void CSIDevice_GCController::Rumble(int pad_num, ControlState strength, SIDevices device)
 {
-  if (NetPlay::IsLiveRollbackHiddenReplayActive())
+  // Rumble cannot be undone after a speculative frame. Keep the physical
+  // motor stopped for the whole rollback session; forwarding zero also clears
+  // any confirmed rumble which was already active when quarantine began.
+  const bool session_quarantined = NetPlay::IsLiveRollbackSessionQuarantineActive();
+  if (session_quarantined)
+    strength = 0;
+
+  if (NetPlay::IsLiveRollbackHiddenReplayActive() && !session_quarantined)
     return;
 
   if (device == SIDEVICE_WIIU_ADAPTER)

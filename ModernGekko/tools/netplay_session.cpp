@@ -1,29 +1,14 @@
-// netplay_session.cpp — headless netplay lobby.
+// netplay_session.cpp — RingOut's interactive and headless NetPlay lobby.
 //
-// The previous implementation was written against a private RecompCore fork of
-// NetPlayClient/NetPlayServer (SetReady, CanStart, SetLocalControllerCount,
-// GetPlayersSnapshot, GetConnectionError, SetAdaptiveBuffer, ...) that is not
-// in the vendored Dolphin, so it could not be compiled here and was replaced by
-// a stub that always reported "netplay is unavailable". This is a rewrite
-// against the vendored API only. The original is kept at
-// work/out/netplay_session.cpp.orig; its SessionUI carried over nearly intact,
-// while its ImGui/SDL3 lobby window is gone -- this runs headless and is driven
-// by flags, which is what a scripted two-instance test needs.
-//
-// Differences forced by the vendored API, all of them deliberate:
-//
-//   * There is no ready protocol. The fork had per-player SetReady/CanStart;
-//     upstream Dolphin has neither, and the host simply starts. So the host
-//     waits for --netplay-players machines to connect and for every one of them
-//     to report it has the game, then starts.
-//   * Pads must be assigned explicitly. NetPlayServer initialises its map with
-//     m_pad_map.fill(0), and 0 means "unassigned" (player ids start at 1), so
-//     without this nobody's controller reaches the game and both sides sit at a
-//     dead title screen looking like a sync failure.
-//   * The client exposes no GetConnectionError(), so the failure reason is
-//     captured from the OnConnectionError callback instead.
+// This layer uses the vendored Dolphin transport plus RingOut's bounded
+// compatibility hello, authoritative ready/not-ready relay, controller
+// mapping, and opt-in rollback session protocol. Headless flags drive the
+// two-process harness; the SDL3/ImGui path exposes the same lobby state to
+// players. Pads are assigned explicitly because player IDs start at one while
+// zero means unassigned.
 
 #include "netplay_session.hpp"
+#include "netplay_compatibility.hpp"
 
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
@@ -31,6 +16,7 @@
 #include "Core/HW/GCPad.h"
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/NetPlay/NetPlayClient.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/NetPlay/NetPlayServer.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
@@ -77,6 +63,10 @@ bool RollbackTestOptIn(const RuntimeConfig &config) {
   const char *ack = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
   return config.headless && ack != nullptr &&
          std::string_view(ack) == "HEADLESS_ISOLATED";
+}
+
+bool RollbackProductionReady() {
+  return NetPlay::IsLiveRollbackProductionReady();
 }
 
 std::optional<u16> RollbackTestNumber(const char *name, u16 fallback,
@@ -279,7 +269,7 @@ private:
 // from the host and the client paths alike, because only each peer's own view
 // counts.
 void LogPadRouting(NetPlay::NetPlayClient &client) {
-  const NetPlay::PadMappingArray &m = client.GetPadMapping();
+  const NetPlay::PadMappingArray m = client.GetPadMapping();
   std::string view;
   for (size_t i = 0; i < m.size(); ++i)
     view += (i ? "," : "") + std::to_string(static_cast<int>(m[i]));
@@ -307,6 +297,7 @@ void AssignPads(NetPlay::NetPlayServer &server,
   mapping.fill(0);
   for (size_t i = 0; i < ids.size() && i < mapping.size(); ++i)
     mapping[i] = ids[i];
+  server.ClearReady();
   server.SetPadMapping(mapping);
 
   std::string summary;
@@ -338,6 +329,11 @@ const char *GameStatusText(NetPlay::SyncIdentifierComparison status) {
   default:
     return "checking ...";
   }
+}
+
+bool PlayerHasMappedPad(const NetPlay::PadMappingArray &mapping,
+                        NetPlay::PlayerId player) {
+  return std::ranges::find(mapping, player) != mapping.end();
 }
 
 // SDL3 + ImGui lobby. The build already compiles the ImGui SDL3 backends into
@@ -622,14 +618,22 @@ private:
   std::chrono::steady_clock::time_point m_last{};
 };
 
-bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
-                    SessionUI &ui, NetPlay::NetPlayClient &client,
-                    NetPlay::NetPlayServer *server,
-                    const std::string &boot_path) {
+enum class LobbyWindowResult {
+  Started,
+  UserClosed,
+  Fatal,
+  RollbackStartRejected,
+};
+
+LobbyWindowResult RunLobbyWindow(RuntimeConfig &runtime_config,
+                                 NetplayOptions &options, SessionUI &ui,
+                                 NetPlay::NetPlayClient &client,
+                                 NetPlay::NetPlayServer *server,
+                                 const std::string &boot_path) {
   LobbyWindow window;
   if (!window.Open(runtime_config.window_system)) {
-    Log("could not open the lobby window; falling back to auto-start");
-    return true;
+    Log("could not open the lobby window");
+    return LobbyWindowResult::Fatal;
   }
 
   // Only a host is findable; a joiner has nothing to announce.
@@ -638,8 +642,10 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
     beacon.Start(options.port, options.nickname);
 
   size_t last_player_count = 0;
-  unsigned buffer = 5;
-  if (options.buffer != "auto") {
+  unsigned buffer = options.mode == NetplayMode::Rollback
+                        ? options.rollback_base_delay_samples
+                        : 5;
+  if (options.buffer != "auto" && options.mode != NetplayMode::Rollback) {
     try {
       buffer = static_cast<unsigned>(std::stoul(options.buffer));
     } catch (const std::exception &) {
@@ -648,12 +654,12 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
 
   while (true) {
     if (!window.Frame())
-      return false;
+      return LobbyWindowResult::UserClosed;
     beacon.Tick(); // rate-limits itself to once a second
     if (ui.ConnectionLost() || !client.IsConnected()) {
       window.Close();
       Log("connection lost while in the lobby");
-      return false;
+      return LobbyWindowResult::Fatal;
     }
 
     const std::vector<NetPlay::Player> players = client.GetPlayers();
@@ -666,12 +672,27 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
 
     // OnMsgStartGame only signals; StartGame() is what arms netplay and
     // produces the boot data.
-    if (ui.TakeStartRequest())
-      client.StartGame(boot_path);
+    if (ui.TakeStartRequest()) {
+      if (options.mode == NetplayMode::Rollback &&
+          !client.GetRollbackNetplaySession().enabled) {
+        Log("experimental rollback was requested but the host did not "
+            "negotiate it; refusing a silent fixed-delay fallback");
+        window.Close();
+        return LobbyWindowResult::Fatal;
+      }
+      if (!client.StartGame(boot_path)) {
+        Log("the client refused to start the game; leaving the lobby");
+        client.RequestStopGame();
+        window.Close();
+        return options.mode == NetplayMode::Rollback
+                   ? LobbyWindowResult::RollbackStartRejected
+                   : LobbyWindowResult::Fatal;
+      }
+    }
     if (auto boot_data = ui.TakeBootData()) {
       detail::SetBootSessionData(std::move(boot_data));
       window.Close();
-      return true;
+      return LobbyWindowResult::Started;
     }
 
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
@@ -687,14 +708,27 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
       ImGui::Text("Connected to %s:%u", options.address.c_str(),
                   unsigned{options.port});
     ImGui::Separator();
+    ImGui::TextDisabled(
+        "Direct UDP is unauthenticated and unencrypted. Use a trusted LAN or "
+        "private VPN; forward the port only if you understand the exposure.");
+    ImGui::Text("Mode: %s",
+                options.mode == NetplayMode::Rollback
+                    ? "Experimental rollback"
+                    : "Fixed delay");
+    if (options.mode == NetplayMode::Rollback)
+      ImGui::TextDisabled(
+          "Every peer must support rollback; RingOut will not silently fall "
+          "back to fixed delay.");
 
-    const NetPlay::PadMappingArray &map = client.GetPadMapping();
-    if (ImGui::BeginTable("players", 4,
+    const NetPlay::PadMappingArray map = client.GetPadMapping();
+    if (ImGui::BeginTable("players", 6,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
       ImGui::TableSetupColumn("Player");
       ImGui::TableSetupColumn("Ping");
       ImGui::TableSetupColumn("Controller");
       ImGui::TableSetupColumn("Game");
+      ImGui::TableSetupColumn("Setup");
+      ImGui::TableSetupColumn("Ready");
       ImGui::TableHeadersRow();
       for (const NetPlay::Player &player : players) {
         ImGui::TableNextRow();
@@ -724,33 +758,103 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
         else
           ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "%s",
                              GameStatusText(player.game_status));
+        ImGui::TableNextColumn();
+        if (ok && pad)
+          ImGui::TextUnformatted("complete");
+        else if (!pad)
+          ImGui::TextDisabled("needs mapping");
+        else
+          ImGui::TextDisabled("needs game");
+        ImGui::TableNextColumn();
+        if (player.ready)
+          ImGui::TextUnformatted("Ready");
+        else
+          ImGui::TextDisabled("Not ready");
       }
       ImGui::EndTable();
     }
 
     ImGui::Spacing();
     if (server) {
-      // Input delay in frames. Higher hides more jitter at the cost of
-      // responsiveness; this is the delay-based knob, and it is the host's.
+      if (players.size() == 2 && map[0] != 0 && map[1] != 0) {
+        if (ImGui::Button("Swap player sides")) {
+          NetPlay::PadMappingArray swapped = map;
+          std::swap(swapped[0], swapped[1]);
+          server->ClearReady();
+          server->SetPadMapping(swapped);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Changes which peer controls Player 1 / Player 2.");
+      }
+
+      // Input delay in SI samples. Higher hides more jitter at the cost of
+      // responsiveness; the SI update rate is variable and typically 120 Hz.
       int b = static_cast<int>(buffer);
       ImGui::SetNextItemWidth(220);
-      if (ImGui::SliderInt("Input buffer (frames)", &b, 1, 20)) {
+      const char *delay_label = options.mode == NetplayMode::Rollback
+                                    ? "Rollback base delay (SI samples)"
+                                    : "Input delay (SI samples)";
+      if (ImGui::SliderInt(delay_label, &b, 1, 20)) {
         buffer = static_cast<unsigned>(b);
+        server->ClearReady();
         server->AdjustPadBufferSize(buffer);
+        if (options.mode == NetplayMode::Rollback &&
+            !server->SetRollbackNetplayConfig({
+                .enabled = true,
+                .protocol_version = NetPlay::ROLLBACK_NETPLAY_VERSION,
+                .base_delay_samples = static_cast<u16>(buffer),
+                .rollback_horizon_frames = static_cast<u16>(
+                    options.rollback_horizon_frames),
+            })) {
+          Log("could not update experimental rollback base delay");
+        }
       }
-      ImGui::TextDisabled("About %d ms of delay at 60 fps.",
-                          static_cast<int>(buffer * 1000 / 60));
+      ImGui::TextDisabled("Typically about %.1f ms at 120 SI polls/second.",
+                          buffer * 1000.0 / 120.0);
     } else {
-      ImGui::TextDisabled("The host controls the input buffer.");
+      ImGui::TextDisabled("The host controls input delay and player sides.");
     }
 
     ImGui::Spacing();
     ImGui::Separator();
+    const auto local_player =
+        std::ranges::find_if(players, [&](const NetPlay::Player &player) {
+          return client.IsLocalPlayer(player.pid);
+        });
+    const bool local_setup_complete =
+        local_player != players.end() &&
+        local_player->game_status ==
+            NetPlay::SyncIdentifierComparison::SameGame &&
+        PlayerHasMappedPad(map, local_player->pid);
+    const bool local_ready =
+        local_player != players.end() && local_player->ready;
+    ImGui::BeginDisabled(!local_setup_complete);
+    if (ImGui::Button(local_ready ? "Not ready" : "Ready", ImVec2(140, 40)))
+      client.SetReady(!local_ready);
+    ImGui::EndDisabled();
+    if (!local_setup_complete) {
+      ImGui::SameLine();
+      ImGui::TextDisabled(
+          "Choose a controller side and verify the game first.");
+    } else {
+      ImGui::SameLine();
+      ImGui::TextDisabled("Ready resets if the host changes sides or delay.");
+    }
+
+    ImGui::Spacing();
     if (server) {
       const bool everyone_has_game = client.DoAllPlayersHaveGame();
       const size_t expected_players = std::max<size_t>(options.players, 1);
-      const bool enough = players.size() >= expected_players;
-      const bool can_start = everyone_has_game && enough;
+      const bool roster_complete = players.size() == expected_players;
+      const bool everyone_mapped =
+          std::ranges::all_of(players, [&](const NetPlay::Player &player) {
+            return PlayerHasMappedPad(map, player.pid);
+          });
+      const bool can_start =
+          everyone_has_game && roster_complete && everyone_mapped &&
+          server->AreAllMappedPlayersReady() &&
+          (options.mode != NetplayMode::Rollback ||
+           server->CanUseRollbackNetplay());
       ImGui::BeginDisabled(!can_start);
       if (ImGui::Button("Start game", ImVec2(160, 40)))
         server->RequestStartGame();
@@ -759,19 +863,31 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
                            "Waiting: not everyone has this game.");
-      } else if (!enough) {
+      } else if (!roster_complete) {
         ImGui::SameLine();
-        ImGui::TextDisabled("Waiting for players (%zu/%zu).", players.size(),
-                            expected_players);
+        ImGui::TextDisabled("Waiting for exactly %zu players (now %zu).",
+                            expected_players, players.size());
+      } else if (!everyone_mapped) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Waiting: every player needs a controller side.");
+      } else if (!server->AreAllMappedPlayersReady()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Waiting: every mapped player must be Ready.");
+      } else if (options.mode == NetplayMode::Rollback &&
+                 !server->CanUseRollbackNetplay()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Waiting: a peer does not support rollback.");
       }
     } else {
-      ImGui::TextUnformatted("Waiting for the host to start ...");
+      ImGui::TextUnformatted(options.mode == NetplayMode::Rollback
+                                 ? "Waiting for the host to confirm rollback ..."
+                                 : "Waiting for the host to start ...");
     }
 
     ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(110, 40))) {
       window.Close();
-      return false;
+      return LobbyWindowResult::UserClosed;
     }
 
     const std::string error = ui.Error();
@@ -792,6 +908,32 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   (void)frontend_config;
   if (options.controllers.empty())
     return static_cast<int>(NetplayExitCode::InvalidConfiguration);
+
+  const bool rollback_test_opt_in = RollbackTestOptIn(runtime_config);
+  const bool rollback_player_opt_in = options.mode == NetplayMode::Rollback;
+  const bool rollback_production_ready = RollbackProductionReady();
+  if (rollback_player_opt_in && !rollback_production_ready &&
+      !rollback_test_opt_in) {
+    Log("experimental rollback is not available in this build because its "
+        "production output-safety gate is incomplete");
+    return static_cast<int>(NetplayExitCode::RollbackUnavailable);
+  }
+  const bool rollback_enabled =
+      rollback_test_opt_in ||
+      (rollback_player_opt_in && rollback_production_ready);
+  if (rollback_player_opt_in && options.buffer != "auto") {
+    unsigned value = 0;
+    const auto [end, error] =
+        std::from_chars(options.buffer.data(),
+                        options.buffer.data() + options.buffer.size(), value);
+    if (error != std::errc{} ||
+        end != options.buffer.data() + options.buffer.size() || value == 0 ||
+        value > NetPlay::ROLLBACK_NETPLAY_MAX_BASE_DELAY) {
+      Log("invalid rollback base delay '" + options.buffer + "'");
+      return static_cast<int>(NetplayExitCode::InvalidConfiguration);
+    }
+    options.rollback_base_delay_samples = value;
+  }
 
   // NetPlayServer initializes ENet, but a direct join constructs only a
   // NetPlayClient. On Windows that used to reach enet_host_create before
@@ -848,7 +990,12 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
                   : "netplay: dual-core with a deterministic GPU thread");
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, true);
-  Config::SetBase(Config::NETPLAY_SAVEDATA_WRITE, true);
+  // Rollback restores speculative frames. Save reads and host-to-peer sync are
+  // safe, but writing memory cards or save folders from those frames is not.
+  // Keep the long-standing fixed-delay persistence behavior and make the
+  // player-selected rollback mode session-read-only.
+  Config::SetBase(Config::NETPLAY_SAVEDATA_WRITE,
+                  options.mode != NetplayMode::Rollback);
   Config::SetBase(Config::NETPLAY_SAVEDATA_SYNC_ALL_WII, false);
   // The in-game menu persists the host's selected AR/Gecko codes before this
   // lobby starts. Let Dolphin transfer that exact active codelist to every
@@ -904,21 +1051,24 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     UICommon::Shutdown();
     return static_cast<int>(NetplayExitCode::InvalidConfiguration);
   }
+  const std::string compatibility_fingerprint =
+      CompatibilityFingerprint(runtime_config, *inspected.metadata);
+  const bool rollback_gamecube_title_verified =
+      inspected.metadata->disc_id == MODERNGEKKO_REQUIRED_DISC_ID &&
+      inspected.metadata->platform == GamePlatform::GameCube;
 
   SessionUI ui(game);
   const NetPlay::NetTraversalConfig direct{};
   std::unique_ptr<NetPlay::NetPlayServer> server;
   std::unique_ptr<NetPlay::NetPlayClient> client;
-  const bool rollback_test_opt_in = RollbackTestOptIn(runtime_config);
-
   // Hosting can fail on a busy port, which is recoverable: offer to join the
   // host that already owns it, or retry. Headless keeps the old behaviour --
   // a script has nobody to ask and wants the exit code.
   while (options.role == NetplayRole::Host) {
     Log("hosting on port " + std::to_string(options.port));
     ui.SetHosting(true);
-    server = std::make_unique<NetPlay::NetPlayServer>(options.port, false, &ui,
-                                                      direct);
+    server = std::make_unique<NetPlay::NetPlayServer>(
+        options.port, false, &ui, direct, compatibility_fingerprint);
     if (server->is_connected)
       break;
 
@@ -950,13 +1100,29 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     // Fixed-delay, not host input authority: both peers run the same inputs on
     // the same frame, which is the model the determinism work validated.
     server->SetHostInputAuthority(false);
-    if (rollback_test_opt_in) {
-      const std::optional<u16> base_delay =
-          RollbackTestNumber("RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES", 2,
-                             NetPlay::ROLLBACK_NETPLAY_MAX_BASE_DELAY);
+    if (!server->SetRequireReady(true)) {
+      Log("could not enable the lobby Ready gate");
+      server.reset();
+      detail::SetExternalUICommon(false);
+      UICommon::Shutdown();
+      return static_cast<int>(NetplayExitCode::Failed);
+    }
+    if (rollback_enabled) {
+      const std::optional<u16> base_delay = rollback_test_opt_in
+          ? RollbackTestNumber(
+                "RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES",
+                static_cast<u16>(options.rollback_base_delay_samples),
+                NetPlay::ROLLBACK_NETPLAY_MAX_BASE_DELAY)
+          : std::optional<u16>(
+                static_cast<u16>(options.rollback_base_delay_samples));
       const std::optional<u16> horizon =
-          RollbackTestNumber("RINGOUT_ROLLBACK_HORIZON_FRAMES", 8,
-                             NetPlay::ROLLBACK_NETPLAY_MAX_HORIZON);
+          rollback_test_opt_in
+              ? RollbackTestNumber(
+                    "RINGOUT_ROLLBACK_HORIZON_FRAMES",
+                    static_cast<u16>(options.rollback_horizon_frames),
+                    NetPlay::ROLLBACK_NETPLAY_MAX_HORIZON)
+              : std::optional<u16>(
+                    static_cast<u16>(options.rollback_horizon_frames));
       if (!base_delay || !horizon || *horizon == 0 ||
           !server->SetRollbackNetplayConfig({
               .enabled = true,
@@ -970,8 +1136,11 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
         UICommon::Shutdown();
         return static_cast<int>(NetplayExitCode::InvalidConfiguration);
       }
-      Log("rollback test opt-in armed; waiting for peer capability "
-          "negotiation");
+      options.rollback_base_delay_samples = *base_delay;
+      options.rollback_horizon_frames = *horizon;
+      Log(std::string(rollback_test_opt_in ? "rollback test opt-in"
+                                          : "experimental rollback") +
+          " armed; waiting for peer capability negotiation");
     }
     if (options.buffer != "auto") {
       try {
@@ -987,43 +1156,82 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     // with the joiners.
     client = std::make_unique<NetPlay::NetPlayClient>(
         "127.0.0.1", server->GetPort(), &ui, options.nickname, direct,
-        rollback_test_opt_in);
+        rollback_enabled, compatibility_fingerprint,
+        rollback_gamecube_title_verified);
   } else {
     Log("connecting to " + options.address + ":" +
         std::to_string(options.port));
     client = std::make_unique<NetPlay::NetPlayClient>(
         options.address, options.port, &ui, options.nickname, direct,
-        rollback_test_opt_in);
+        rollback_enabled, compatibility_fingerprint,
+        rollback_gamecube_title_verified);
   }
 
   if (!client->IsConnected()) {
     const std::string error = ui.Error();
     Log(error.empty() ? "could not connect to the host" : error);
+    const NetPlay::ConnectionError connection_error =
+        client->GetConnectionError();
     client.reset();
     server.reset();
     detail::SetExternalUICommon(false);
     UICommon::Shutdown();
-    return static_cast<int>(NetplayExitCode::HostUnavailable);
+    switch (connection_error) {
+    case NetPlay::ConnectionError::VersionMismatch:
+      return static_cast<int>(NetplayExitCode::VersionMismatch);
+    case NetPlay::ConnectionError::CompatibilityMismatch:
+      return static_cast<int>(NetplayExitCode::CompatibilityMismatch);
+    case NetPlay::ConnectionError::ServerFull:
+      return static_cast<int>(NetplayExitCode::ServerFull);
+    case NetPlay::ConnectionError::GameRunning:
+      return static_cast<int>(NetplayExitCode::GameRunning);
+    case NetPlay::ConnectionError::NameTooLong:
+      return static_cast<int>(NetplayExitCode::NicknameRejected);
+    default:
+      return static_cast<int>(NetplayExitCode::HostUnavailable);
+    }
   }
   Log("connected as '" + options.nickname + "'");
 
   const std::chrono::seconds lobby_timeout(options.lobby_timeout);
   const std::string boot_path = game->GetFilePath();
   int result = 0;
+  auto next_ready_retry = std::chrono::steady_clock::now();
+  const auto maintain_local_ready = [&] {
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_ready_retry)
+      return;
+    const auto players = client->GetPlayers();
+    const auto local =
+        std::ranges::find_if(players, [&](const NetPlay::Player &player) {
+          return client->IsLocalPlayer(player.pid);
+        });
+    if (local != players.end() && !local->ready) {
+      client->SetReady(true);
+      next_ready_retry = now + std::chrono::milliseconds(250);
+    }
+  };
 
   // Interactive lobby when there is a screen to draw it on. Headless keeps the
   // flag-driven auto-start below, which is what the scripted two-instance tests
   // use -- they must not start needing a human to click Start.
   if (!runtime_config.headless) {
-    if (!RunLobbyWindow(runtime_config, options, ui, *client, server.get(),
-                        boot_path)) {
+    const LobbyWindowResult lobby = RunLobbyWindow(
+        runtime_config, options, ui, *client, server.get(), boot_path);
+    if (lobby != LobbyWindowResult::Started) {
       Log("lobby closed");
+      if (lobby == LobbyWindowResult::Fatal)
+        client->RequestStopGame();
       client->Stop();
       client.reset();
       server.reset();
       detail::SetExternalUICommon(false);
       UICommon::Shutdown();
-      return 0;
+      if (lobby == LobbyWindowResult::UserClosed)
+        return 0;
+      if (lobby == LobbyWindowResult::RollbackStartRejected)
+        return static_cast<int>(NetplayExitCode::RollbackStartRejected);
+      return static_cast<int>(NetplayExitCode::Failed);
     }
     // RunLobbyWindow only returns true once StartGame has armed netplay and
     // the boot data has been handed to the runtime.
@@ -1041,21 +1249,24 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     auto created = Runtime::Create(std::move(runtime_config));
     if (!created) {
       Log("initialization failed: " + created.error->message);
-      result = 1;
+      result = static_cast<int>(NetplayExitCode::SessionRuntimeFailed);
     } else {
       ui.SetRuntime(created.runtime.get());
       const RuntimeRunResult run_result = created.runtime->Run();
       ui.SetRuntime(nullptr);
       if (run_result.error) {
         Log("run failed: " + run_result.error->message);
-        result = 1;
+        result = static_cast<int>(NetplayExitCode::SessionRuntimeFailed);
       }
       created.runtime.reset();
     }
     if (ui.Desynced()) {
       Log("session ended DESYNCED at frame " +
           std::to_string(ui.DesyncFrame()));
-      result = 1;
+      result = static_cast<int>(NetplayExitCode::SessionDesynced);
+    } else if (ui.ConnectionLost()) {
+      Log("session ended because the peer connection was lost");
+      result = static_cast<int>(NetplayExitCode::SessionConnectionLost);
     } else if (result == 0) {
       Log("session ended cleanly, no desync reported");
     }
@@ -1072,7 +1283,7 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     const size_t expected = std::max<size_t>(options.players, 1);
     Log("waiting for " + std::to_string(expected) + " player(s)");
     if (!WaitFor(ui, *client, lobby_timeout,
-                 [&] { return client->GetPlayers().size() >= expected; })) {
+                 [&] { return client->GetPlayers().size() == expected; })) {
       Log("timed out waiting for players");
       result = static_cast<int>(NetplayExitCode::Failed);
     } else if (!WaitFor(ui, *client, std::chrono::seconds(30),
@@ -1085,18 +1296,54 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
       // can race it, and a player whose pad has not landed yet is dropped from
       // the start.
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      Log("starting game");
-      if (!server->RequestStartGame()) {
+      client->SetReady(true);
+      if (!WaitFor(ui, *client, std::chrono::seconds(30),
+                   [&] {
+                     maintain_local_ready();
+                     return server->AreAllMappedPlayersReady();
+                   })) {
+        Log("not every mapped player became Ready; refusing to start");
+        result = static_cast<int>(NetplayExitCode::Failed);
+      }
+      if (result == 0 && options.mode == NetplayMode::Rollback &&
+          !server->CanUseRollbackNetplay()) {
+        Log("a peer does not support requested rollback; refusing a silent "
+            "fixed-delay fallback");
+        result = static_cast<int>(NetplayExitCode::CompatibilityMismatch);
+      }
+      if (result == 0)
+        Log("starting game");
+      if (result == 0 && !server->RequestStartGame()) {
         Log("the host refused to start the game");
         result = static_cast<int>(NetplayExitCode::Failed);
       }
     }
   } else {
-    Log("waiting for the host to start");
+    Log("waiting for matching game and controller mapping");
+    if (!WaitFor(ui, *client, std::chrono::seconds(30), [&] {
+          const auto players = client->GetPlayers();
+          const auto local =
+              std::ranges::find_if(players, [&](const NetPlay::Player &player) {
+                return client->IsLocalPlayer(player.pid);
+              });
+          return local != players.end() &&
+                 local->game_status ==
+                     NetPlay::SyncIdentifierComparison::SameGame &&
+                 PlayerHasMappedPad(client->GetPadMapping(), local->pid);
+        })) {
+      Log("matching game/controller setup did not arrive; refusing to become "
+          "Ready");
+      result = static_cast<int>(NetplayExitCode::Failed);
+    } else {
+      client->SetReady(true);
+      Log("Ready; waiting for the host to start");
+    }
   }
 
-  if (result == 0 && !WaitFor(ui, *client, lobby_timeout,
-                              [&] { return ui.TakeStartRequest(); })) {
+  if (result == 0 && !WaitFor(ui, *client, lobby_timeout, [&] {
+        maintain_local_ready();
+        return ui.TakeStartRequest();
+      })) {
     Log("no start signal arrived");
     result = static_cast<int>(NetplayExitCode::Failed);
   }
@@ -1110,9 +1357,17 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     // that look like a clean netplay run: it reports no desync precisely
     // because nothing was checking. That false pass is why the assertion below
     // exists.
-    if (!client->StartGame(game->GetFilePath())) {
+    if (options.mode == NetplayMode::Rollback &&
+        !client->GetRollbackNetplaySession().enabled) {
+      Log("experimental rollback was requested but was not negotiated; "
+          "refusing a silent fixed-delay fallback");
+      result = static_cast<int>(NetplayExitCode::CompatibilityMismatch);
+    } else if (!client->StartGame(game->GetFilePath())) {
       Log("the client refused to start the game");
-      result = static_cast<int>(NetplayExitCode::Failed);
+      client->RequestStopGame();
+      result = static_cast<int>(options.mode == NetplayMode::Rollback
+                                    ? NetplayExitCode::RollbackStartRejected
+                                    : NetplayExitCode::Failed);
     }
   }
 
@@ -1120,7 +1375,7 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     // What this peer believes it owns. A client with zero local pads still
     // boots and runs perfectly happily -- it just never sends any input, and
     // the game sits in attract mode looking like it ignores the controller.
-    const NetPlay::PadMappingArray &map = client->GetPadMapping();
+    const NetPlay::PadMappingArray map = client->GetPadMapping();
     std::string map_text;
     for (size_t i = 0; i < map.size(); ++i)
       map_text += (i ? "," : "") + std::to_string(static_cast<int>(map[i]));
@@ -1157,14 +1412,14 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     auto created = Runtime::Create(std::move(runtime_config));
     if (!created) {
       Log("initialization failed: " + created.error->message);
-      result = 1;
+      result = static_cast<int>(NetplayExitCode::SessionRuntimeFailed);
     } else {
       ui.SetRuntime(created.runtime.get());
       const RuntimeRunResult run_result = created.runtime->Run();
       ui.SetRuntime(nullptr);
       if (run_result.error) {
         Log("run failed: " + run_result.error->message);
-        result = 1;
+        result = static_cast<int>(NetplayExitCode::SessionRuntimeFailed);
       }
       created.runtime.reset();
     }
@@ -1172,7 +1427,10 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
 
   if (ui.Desynced()) {
     Log("session ended DESYNCED at frame " + std::to_string(ui.DesyncFrame()));
-    result = 1;
+    result = static_cast<int>(NetplayExitCode::SessionDesynced);
+  } else if (ui.ConnectionLost()) {
+    Log("session ended because the peer connection was lost");
+    result = static_cast<int>(NetplayExitCode::SessionConnectionLost);
   } else if (result == 0) {
     Log("session ended cleanly, no desync reported");
   }

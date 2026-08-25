@@ -8,6 +8,19 @@
 #include <vector>
 
 namespace moderngekko::frontend {
+enum class NetplayMode {
+  FixedDelay,
+  Rollback,
+};
+
+std::string_view NetplayModeConfigValue(NetplayMode mode);
+bool ParseNetplayMode(std::string_view value, NetplayMode *mode);
+// The runtime supplies rollback_production_ready from its authoritative output
+// and activation gate. This keeps config/UI policy testable without duplicating
+// that safety decision in the frontend layer.
+bool IsPlayerUsableNetplayMode(NetplayMode mode,
+                               bool rollback_production_ready);
+
 struct ResolutionOption {
   const char *text;
   int dolphin_scale;
@@ -23,6 +36,7 @@ struct ConfigResult {
   std::string netplay_address = "127.0.0.1";
   std::uint16_t netplay_port = 2626;
   std::string netplay_buffer = "auto";
+  NetplayMode netplay_mode = NetplayMode::FixedDelay;
   std::string error;
 
   explicit operator bool() const { return error.empty(); }

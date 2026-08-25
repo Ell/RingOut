@@ -16,8 +16,8 @@ namespace NetPlay
 {
 
 // CPU-thread scheduler for the grouped GC-controller SI batches used by live
-// rollback. Network-thread delivery enters only through SubmitRemotePacket;
-// RollbackSIInputJournal supplies the synchronization for that path.
+// rollback. Decoded network input must cross the client's bounded queue before
+// SubmitRemotePacket; ACK watermarks and retransmit history are CPU-thread-owned.
 //
 // Input is sampled base_delay_batches ahead of consumption. The first delayed
 // slots are deterministic connected-neutral actual input on every peer. A
@@ -39,6 +39,7 @@ public:
     u64 max_prediction_batches = 0;
     u32 max_polls_per_frame = 0;
     std::size_t redundant_batch_count = 3;
+    std::size_t unacknowledged_history_capacity = ROLLBACK_SI_MAX_UNACKNOWLEDGED_BATCHES;
     std::array<Timeline::PadAuthority, Timeline::PAD_COUNT> pad_authority{};
   };
 
@@ -51,6 +52,7 @@ public:
     DelayOutOfRange,
     InsufficientHistory,
     InvalidRedundancy,
+    InvalidAcknowledgementHistory,
   };
 
   enum class BatchStatus : u8
@@ -74,6 +76,7 @@ public:
     DuplicateOrRetired,
     WrongGeneration,
     InvalidPadMask,
+    InvalidAcknowledgement,
     SubmitFailed,
     InvalidConfiguration,
   };
@@ -109,8 +112,8 @@ public:
   bool StartReplay(const Journal::ReplayTrigger& trigger);
   void CancelReplay();
 
-  // Network-thread safe through the journal. The whole packet is authority-
-  // checked before any batch mutates the timeline.
+  // CPU-thread only. The whole packet, including its sender mask and ACK range,
+  // is checked before any batch mutates the timeline or retransmit history.
   RemotePacketStatus SubmitRemotePacket(const RollbackSIInputPacket& packet);
 
   std::optional<Journal::ReplayTrigger> GetReplayTrigger() const;
@@ -129,6 +132,8 @@ private:
   ConfigurationStatus ValidateConfiguration() const;
   bool SeedDelayWindow();
   std::optional<RollbackSIInputPacket> BuildOutgoingPacket(const RollbackSIInputBatch& newest);
+  bool ApplyRemoteAcknowledgement(const RollbackSIInputPacket& packet, u8 source_pad_mask);
+  void PruneAcknowledgedLocalHistory();
   static bool IsAcceptedSubmitStatus(Journal::SubmitStatus status);
 
   const Config m_config;
@@ -139,7 +144,9 @@ private:
   ConfigurationStatus m_configuration_status;
   u64 m_next_normal_batch_id;
   std::optional<PendingNormalBatch> m_pending_normal;
-  std::deque<RollbackSIInputBatch> m_local_history;
+  std::deque<RollbackSIInputBatch> m_unacknowledged_local_history;
+  std::optional<u64> m_highest_local_batch;
+  std::array<std::optional<u64>, Timeline::PAD_COUNT> m_remote_ack_by_pad{};
   std::optional<Journal::ReplayTrigger> m_replay_trigger;
   u64 m_next_replay_batch_id = 0;
 };

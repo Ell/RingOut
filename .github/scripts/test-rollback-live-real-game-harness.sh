@@ -37,12 +37,54 @@ make_case() {
     > "$WORK/$name/host/log.txt"
   printf '%s\n' '[rollback live] negotiated mode=rollback version=1 horizon=8' \
     > "$WORK/$name/guest/log.txt"
+  printf '%s\n' \
+    '60 11111111 aaaaaaaa 000000000000003c' \
+    '120 22222222 bbbbbbbb 0000000000000078' \
+    '180 33333333 cccccccc 00000000000000b4' \
+    > "$WORK/$name/host/confirmed-state.log"
+  cp "$WORK/$name/host/confirmed-state.log" \
+    "$WORK/$name/guest/confirmed-state.log"
 }
 
 make_case pass
 printf '%s\n' '[rollback live] correction committed' \
   >> "$WORK/pass/guest/log.txt"
 "$HARNESS" --verify-existing "$WORK/pass" >/dev/null
+
+make_case production
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  >> "$WORK/production/host/log.txt"
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  >> "$WORK/production/guest/log.txt"
+"$HARNESS" --verify-existing "$WORK/production" --production >/dev/null
+
+make_case production-correction
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  >> "$WORK/production-correction/host/log.txt"
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  '[rollback live] correction committed' \
+  >> "$WORK/production-correction/guest/log.txt"
+"$HARNESS" --verify-existing "$WORK/production-correction" --production \
+  --fault-script "$REPO/.github/input-scripts/rollback-fault-correction.txt" >/dev/null
+
+make_case production-missing-correction
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  >> "$WORK/production-missing-correction/host/log.txt"
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  >> "$WORK/production-missing-correction/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/production-missing-correction" --production \
+    --fault-script "$REPO/.github/input-scripts/rollback-fault-correction.txt" \
+    >/dev/null 2>&1; then
+  echo "uncorrected production fault unexpectedly passed" >&2
+  exit 1
+fi
+
+make_case production-inactive
+if "$HARNESS" --verify-existing "$WORK/production-inactive" --production \
+    >/dev/null 2>&1; then
+  echo "inactive production rollback unexpectedly passed" >&2
+  exit 1
+fi
 
 make_case received-only
 printf '%s\n' '[rollback live] correction received before frame boundary' \
@@ -99,11 +141,57 @@ if "$HARNESS" --verify-existing "$WORK/desync" >/dev/null 2>&1; then
   exit 1
 fi
 
+make_case expected-digest-mismatch
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  'netplay: DESYNC at frame 60' \
+  >> "$WORK/expected-digest-mismatch/host/log.txt"
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  '[rollback live] isolated digest fault injected at frame 60' \
+  'netplay: DESYNC at frame 60' \
+  >> "$WORK/expected-digest-mismatch/guest/log.txt"
+"$HARNESS" --verify-existing "$WORK/expected-digest-mismatch" \
+  --expect-digest-mismatch 60 >/dev/null
+
+make_case one-sided-digest-mismatch
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  >> "$WORK/one-sided-digest-mismatch/host/log.txt"
+printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
+  '[rollback live] isolated digest fault injected at frame 60' \
+  'netplay: DESYNC at frame 60' \
+  >> "$WORK/one-sided-digest-mismatch/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/one-sided-digest-mismatch" \
+    --expect-digest-mismatch 60 >/dev/null 2>&1; then
+  echo "one-sided digest mismatch unexpectedly passed" >&2
+  exit 1
+fi
+
 make_case faulted
 printf '%s\n' '[rollback live] correction committed' \
   '[rollback live] session faulted' >> "$WORK/faulted/guest/log.txt"
 if "$HARNESS" --verify-existing "$WORK/faulted" >/dev/null 2>&1; then
   echo "faulted rollback unexpectedly passed" >&2
+  exit 1
+fi
+
+make_case state-diverged
+printf '%s\n' '[rollback live] correction committed' \
+  >> "$WORK/state-diverged/guest/log.txt"
+sed -i 's/22222222/22222223/' \
+  "$WORK/state-diverged/guest/confirmed-state.log"
+if "$HARNESS" --verify-existing "$WORK/state-diverged" >/dev/null 2>&1; then
+  echo "divergent confirmed logical state unexpectedly passed" >&2
+  exit 1
+fi
+
+make_case too-few-confirmed
+printf '%s\n' '[rollback live] correction committed' \
+  >> "$WORK/too-few-confirmed/guest/log.txt"
+head -n 2 "$WORK/too-few-confirmed/host/confirmed-state.log" \
+  > "$WORK/too-few-confirmed/host/short.log"
+mv "$WORK/too-few-confirmed/host/short.log" \
+  "$WORK/too-few-confirmed/host/confirmed-state.log"
+if "$HARNESS" --verify-existing "$WORK/too-few-confirmed" >/dev/null 2>&1; then
+  echo "too few confirmed logical states unexpectedly passed" >&2
   exit 1
 fi
 

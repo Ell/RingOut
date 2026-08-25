@@ -54,7 +54,11 @@ public:
     return true;
   }
 
-  void EndHiddenReplay(bool) override { m_active = false; }
+  bool EndHiddenReplay(const bool publishable) override
+  {
+    m_active = false;
+    return publishable;
+  }
 
 private:
   bool m_active = false;

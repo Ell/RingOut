@@ -10,6 +10,8 @@ BUILD_DIR="$REPO/build-appimage"
 DOLRECOMP_BUILD_DIR="$REPO/build-dolrecomp-appimage"
 OUT_DIR="$REPO/dist/out"
 RUNTIME=""
+LAUNCHER=""
+PORT=""
 DOLRECOMP=""
 SYS_DIR=""
 APPIMAGETOOL=""
@@ -28,6 +30,8 @@ Usage: package-appimage.sh [options]
   --dolrecomp-build-dir DIR DolRecomp build tree
   --out-dir DIR             output directory (default dist/out)
   --runtime FILE            explicit moderngekko-run executable
+  --launcher FILE           explicit C++ RingOut launcher
+  --port FILE               explicit moderngekko-port helper
   --dolrecomp FILE          explicit static dolrecomp executable
   --sys-dir DIR             explicit Dolphin Sys resource directory
   --appimagetool FILE       pinned appimagetool 1.9.1 executable
@@ -54,6 +58,8 @@ while (($#)); do
     --dolrecomp-build-dir) (($# >= 2)) || die "$1 needs a value"; DOLRECOMP_BUILD_DIR=$2; shift 2 ;;
     --out-dir)             (($# >= 2)) || die "$1 needs a value"; OUT_DIR=$2; shift 2 ;;
     --runtime)             (($# >= 2)) || die "$1 needs a value"; RUNTIME=$2; shift 2 ;;
+    --launcher)            (($# >= 2)) || die "$1 needs a value"; LAUNCHER=$2; shift 2 ;;
+    --port)                (($# >= 2)) || die "$1 needs a value"; PORT=$2; shift 2 ;;
     --dolrecomp)           (($# >= 2)) || die "$1 needs a value"; DOLRECOMP=$2; shift 2 ;;
     --sys-dir)             (($# >= 2)) || die "$1 needs a value"; SYS_DIR=$2; shift 2 ;;
     --appimagetool)        (($# >= 2)) || die "$1 needs a value"; APPIMAGETOOL=$2; shift 2 ;;
@@ -108,6 +114,10 @@ resolve_file() {
 
 RUNTIME="$(resolve_file "$RUNTIME" moderngekko-run \
   "$BUILD_DIR/moderngekko-run" "$BUILD_DIR/Binaries/moderngekko-run")"
+LAUNCHER="$(resolve_file "$LAUNCHER" RingOut \
+  "$BUILD_DIR/RingOut" "$BUILD_DIR/Binaries/RingOut")"
+PORT="$(resolve_file "$PORT" moderngekko-port \
+  "$BUILD_DIR/moderngekko-port" "$BUILD_DIR/Binaries/moderngekko-port")"
 DOLRECOMP="$(resolve_file "$DOLRECOMP" dolrecomp \
   "$DOLRECOMP_BUILD_DIR/dolrecomp" "$DOLRECOMP_BUILD_DIR/Binaries/dolrecomp")"
 MODULE_INFO="$(resolve_file '' moderngekko-module-info \
@@ -151,18 +161,25 @@ sys_files="$(find "$SYS_DIR" -type f | wc -l)"
 ((sys_files >= 100)) || die "incomplete Sys tree: only $sys_files files"
 
 [[ "$(head -c 4 "$RUNTIME")" == $'\x7fELF' ]] || die "runtime is not ELF"
+[[ "$(head -c 4 "$LAUNCHER")" == $'\x7fELF' ]] || die "launcher is not ELF"
+[[ "$(head -c 4 "$PORT")" == $'\x7fELF' ]] || die "port helper is not ELF"
 [[ "$(head -c 4 "$DOLRECOMP")" == $'\x7fELF' ]] || die "dolrecomp is not ELF"
 file "$RUNTIME" | grep -q 'x86-64' || die "runtime is not x86-64"
+file "$LAUNCHER" | grep -q 'x86-64' || die "launcher is not x86-64"
+file "$PORT" | grep -q 'x86-64' || die "setup helper is not x86-64"
 file "$DOLRECOMP" | grep -q 'x86-64' || die "dolrecomp is not x86-64"
 if readelf -l "$DOLRECOMP" | grep -q 'INTERP'; then
   die "dolrecomp must be statically linked so first-run extraction is portable"
 fi
-if ldd "$RUNTIME" 2>&1 | grep -q 'not found'; then
-  ldd "$RUNTIME" >&2 || true
-  die "runtime has unresolved shared-library dependencies"
-fi
+for executable in "$RUNTIME" "$LAUNCHER" "$PORT"; do
+  if ldd "$executable" 2>&1 | grep -q 'not found'; then
+    ldd "$executable" >&2 || true
+    die "$(basename "$executable") has unresolved shared-library dependencies"
+  fi
+done
 
-glibc_floor="$(objdump -T "$RUNTIME" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+glibc_floor="$({ objdump -T "$RUNTIME"; objdump -T "$LAUNCHER"; objdump -T "$PORT"; } \
+  2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
 [[ -n "$glibc_floor" ]] || die "could not determine the runtime glibc floor"
 glibc_version=${glibc_floor#GLIBC_}
 if [[ "$glibc_version" != "2.36" ]] &&
@@ -240,8 +257,20 @@ install -m 644 "$REPO/dist/appimage/ringout.svg" \
   "$APPDIR/usr/share/icons/hicolor/scalable/apps/ringout.svg"
 
 printf '==> runtime, recompiler, and Sys resources\n'
+install -m 755 "$LAUNCHER" "$APPDIR/usr/bin/RingOut"
 install -m 755 "$RUNTIME" "$APPDIR/usr/bin/moderngekko-run"
+install -m 755 "$PORT" "$APPDIR/usr/bin/moderngekko-port"
 install -m 755 "$DOLRECOMP" "$APPDIR/usr/bin/dolrecomp"
+strings -a "$APPDIR/usr/bin/RingOut" | grep -Fq \
+  'RingOut C++ launcher self-test' || \
+  die "AppImage top-level entry is not the integrated C++ launcher"
+[[ -s "$(dirname "$LAUNCHER")/fonts/DroidSans.ttf" ]] || \
+  die "C++ launcher font payload is missing beside $LAUNCHER"
+mkdir -p "$APPDIR/usr/bin/fonts"
+install -m 644 "$(dirname "$LAUNCHER")/fonts/DroidSans.ttf" \
+  "$APPDIR/usr/bin/fonts/DroidSans.ttf"
+install -m 644 "$(dirname "$LAUNCHER")/fonts/Roboto-Medium.ttf" \
+  "$APPDIR/usr/bin/fonts/Roboto-Medium.ttf"
 copy_tree "$SYS_DIR" "$APPDIR/usr/bin/Sys"
 
 printf '==> selective support-library payload\n'
@@ -309,7 +338,11 @@ while IFS=$'\t' read -r soname path; do
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$soname" "$library_hash" "$binary_package" "$binary_version" \
     "$source_package" "$source_version" "$source_url" >>"$LIBRARY_MANIFEST"
-done < <(ldd "$RUNTIME" | awk '$2 == "=>" && $3 ~ /^\// { print $1 "\t" $3 }')
+done < <(
+  { ldd "$RUNTIME"; ldd "$LAUNCHER"; ldd "$PORT"; } |
+    awk '$2 == "=>" && $3 ~ /^\// { print $1 "\t" $3 }' |
+    LC_ALL=C sort -u
+)
 printf '    %s libraries; %s Debian copyright files\n' \
   "$(find "$APPDIR/usr/lib" -maxdepth 1 -type f | wc -l)" \
   "${#copied_licenses[@]}"
@@ -685,15 +718,21 @@ mkdir -p "$VERIFY"
 )
 EXTRACTED="$VERIFY/squashfs-root"
 [[ -x "$EXTRACTED/AppRun" ]] || die "AppRun is not executable after extraction"
+[[ -x "$EXTRACTED/usr/bin/RingOut" ]] || die "C++ launcher missing after extraction"
 [[ -x "$EXTRACTED/usr/bin/moderngekko-run" ]] || die "runtime missing after extraction"
+[[ -x "$EXTRACTED/usr/bin/moderngekko-port" ]] || die "setup helper missing after extraction"
 [[ -x "$EXTRACTED/usr/bin/dolrecomp" ]] || die "dolrecomp missing after extraction"
+[[ -s "$EXTRACTED/usr/share/ringout/module-src/CMakeLists.txt" ]] || \
+  die "setup helper module sources missing from their resolved AppImage path"
+[[ -s "$EXTRACTED/usr/share/ringout/GRSEAF.ini" ]] || \
+  die "setup helper game settings missing from their resolved AppImage path"
 (
   cd "$EXTRACTED"
   sha256sum -c usr/share/ringout/MANIFEST.sha256 >/dev/null
 )
 EXTRACTED_PAYLOAD="$EXTRACTED/usr/share/ringout"
 [[ $(wc -l <"$EXTRACTED_PAYLOAD/APPIMAGE-RUNTIME-COMPONENTS.tsv") -eq 8 ]] || \
-  die "extracted runtime component manifest does not contain seven rows"
+  die "extracted runtime component manifest does not contain eight rows"
 [[ $(sha256sum "$EXTRACTED_PAYLOAD/APPIMAGE-RUNTIME-COMPONENTS.tsv" | awk '{print $1}') == \
    afee9393f5fef576d7e63b837aa6151b2805c9e080af03188d48761bdde0c243 ]] || \
   die "extracted runtime component manifest fails its authoritative digest gate"

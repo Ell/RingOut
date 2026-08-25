@@ -9,6 +9,8 @@ VERSION="v1.2.1-ell.6"
 BUILD_DIR="$REPO/build-windows-cross"
 OUT_DIR="$REPO/dist/out"
 RUNTIME=""
+LAUNCHER=""
+PORT=""
 DOLRECOMP=""
 SYS_DIR=""
 TOOLCHAIN_DIR=""
@@ -27,6 +29,8 @@ Usage: package-windows-cross.sh [options]
   --build-dir DIR               cross-build tree
   --out-dir DIR                 output directory (default dist/out)
   --runtime FILE                explicit moderngekko-run.exe
+  --launcher FILE               explicit C++ RingOut.exe
+  --port FILE                   explicit moderngekko-port.exe
   --dolrecomp FILE              explicit dolrecomp.exe
   --sys-dir DIR                 explicit Dolphin Sys resource directory
   --dll-dir DIR                 additional PE runtime-DLL search directory
@@ -60,6 +64,8 @@ while (($#)); do
     --build-dir)             (($# >= 2)) || die "$1 needs a value"; BUILD_DIR=$2; shift 2 ;;
     --out-dir)               (($# >= 2)) || die "$1 needs a value"; OUT_DIR=$2; shift 2 ;;
     --runtime)               (($# >= 2)) || die "$1 needs a value"; RUNTIME=$2; shift 2 ;;
+    --launcher)              (($# >= 2)) || die "$1 needs a value"; LAUNCHER=$2; shift 2 ;;
+    --port)                  (($# >= 2)) || die "$1 needs a value"; PORT=$2; shift 2 ;;
     --dolrecomp)             (($# >= 2)) || die "$1 needs a value"; DOLRECOMP=$2; shift 2 ;;
     --sys-dir)               (($# >= 2)) || die "$1 needs a value"; SYS_DIR=$2; shift 2 ;;
     --toolchain-dir)         (($# >= 2)) || die "$1 needs a value"; TOOLCHAIN_DIR=$2; shift 2 ;;
@@ -137,6 +143,12 @@ RUNTIME="$(resolve_project_binary moderngekko-run.exe "$RUNTIME" \
   "$BUILD_DIR/Binaries/moderngekko-run.exe" \
   "$BUILD_DIR/Binary/x64/moderngekko-run.exe" \
   "$REPO/ModernGekko/Binary/x64/moderngekko-run.exe")"
+LAUNCHER="$(resolve_project_binary RingOut.exe "$LAUNCHER" \
+  "$BUILD_DIR/RingOut.exe" \
+  "$BUILD_DIR/Binaries/RingOut.exe")"
+PORT="$(resolve_project_binary moderngekko-port.exe "$PORT" \
+  "$BUILD_DIR/moderngekko-port.exe" \
+  "$BUILD_DIR/Binaries/moderngekko-port.exe")"
 DOLRECOMP="$(resolve_project_binary dolrecomp.exe "$DOLRECOMP" \
   "$BUILD_DIR/dolrecomp-build/dolrecomp.exe" \
   "$BUILD_DIR/dolrecomp-build/src/dolrecomp.exe" \
@@ -211,10 +223,17 @@ install -m 644 "$REPO/dist/windows/README.txt" "$STAGE/README.txt"
 install -m 644 "$REPO/dist/windows/CREDITS.txt" "$STAGE/CREDITS.txt"
 install -m 644 "$REPO/dist/windows/THIRD-PARTY-NOTICES.txt" "$STAGE/THIRD-PARTY-NOTICES.txt"
 
-x86_64-w64-mingw32-gcc "$REPO/dist/windows/launcher/RingOut.c" \
-  -o "$STAGE/RingOut.exe" -municode -Os -s -static-libgcc -lcomdlg32
+install -m 755 "$LAUNCHER" "$STAGE/RingOut.exe"
 install -m 755 "$RUNTIME" "$STAGE/bin/moderngekko-run.exe"
+install -m 755 "$PORT" "$STAGE/tools/moderngekko-port.exe"
 install -m 755 "$DOLRECOMP" "$STAGE/tools/dolrecomp.exe"
+[[ -s "$(dirname "$LAUNCHER")/fonts/DroidSans.ttf" ]] || \
+  die "C++ launcher font payload is missing beside $LAUNCHER"
+mkdir -p "$STAGE/fonts"
+install -m 644 "$(dirname "$LAUNCHER")/fonts/DroidSans.ttf" \
+  "$STAGE/fonts/DroidSans.ttf"
+install -m 644 "$(dirname "$LAUNCHER")/fonts/Roboto-Medium.ttf" \
+  "$STAGE/fonts/Roboto-Medium.ttf"
 copy_tree "$SYS_DIR" "$STAGE/bin/Sys"
 
 copy_tree "$REPO/dist/RingOut-1.0-dist/module-src" "$STAGE/module-src"
@@ -422,11 +441,13 @@ copy_import_closure() {
   done
 }
 
-for file in "$STAGE/RingOut.exe" "$STAGE/bin/moderngekko-run.exe" "$STAGE/tools/dolrecomp.exe"; do
+for file in "$STAGE/RingOut.exe" "$STAGE/bin/moderngekko-run.exe" \
+            "$STAGE/tools/moderngekko-port.exe" "$STAGE/tools/dolrecomp.exe"; do
   x86_64-w64-mingw32-strip --strip-unneeded "$file" 2>/dev/null || true
 done
 copy_import_closure "$STAGE/RingOut.exe" "$STAGE"
 copy_import_closure "$STAGE/bin/moderngekko-run.exe" "$STAGE/bin"
+copy_import_closure "$STAGE/tools/moderngekko-port.exe" "$STAGE/tools"
 copy_import_closure "$STAGE/tools/dolrecomp.exe" "$STAGE/tools"
 
 validate_import_dir() {
@@ -456,7 +477,10 @@ validate_import_dir "$STAGE/tools"
 
 printf '==> privacy and package-structure validation\n'
 [[ -s "$STAGE/bin/moderngekko-run.exe" ]] || die "runtime was not staged"
+[[ -s "$STAGE/tools/moderngekko-port.exe" ]] || die "portable setup helper was not staged"
 [[ -s "$STAGE/tools/dolrecomp.exe" ]] || die "dolrecomp was not staged"
+strings -a "$STAGE/RingOut.exe" | grep -Fq 'RingOut C++ launcher self-test' || \
+  die "top-level RingOut.exe is not the integrated C++ launcher"
 [[ -d "$STAGE/bin/Sys/GC" ]] || die "Sys must be staged specifically as bin/Sys"
 [[ -s "$STAGE/module-src/CMakeLists.txt" ]] || die "module sources missing"
 [[ -s "$STAGE/shaders/crt.glsl" ]] || die "shaders missing"

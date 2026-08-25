@@ -5,6 +5,7 @@
 #include "DiscIO/DiscExtractor.h"
 #include "DiscIO/Filesystem.h"
 #include "DiscIO/Volume.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -316,7 +317,10 @@ fs::path SiblingRunner(const char *argv0) {
   runner += ".exe";
 #endif
   const fs::path sibling = self.parent_path() / runner;
-  return fs::is_regular_file(sibling) ? sibling : runner;
+  if (fs::is_regular_file(sibling))
+    return sibling;
+  const fs::path packaged = self.parent_path() / "bin" / runner;
+  return fs::is_regular_file(packaged) ? packaged : runner;
 }
 
 fs::path SiblingPort(const char *argv0) {
@@ -327,7 +331,10 @@ fs::path SiblingPort(const char *argv0) {
   port += ".exe";
 #endif
   const fs::path sibling = self.parent_path() / port;
-  return fs::is_regular_file(sibling) ? sibling : port;
+  if (fs::is_regular_file(sibling))
+    return sibling;
+  const fs::path packaged = self.parent_path() / "tools" / port;
+  return fs::is_regular_file(packaged) ? packaged : port;
 }
 
 fs::path SiblingAsset(const char *argv0, const fs::path &asset) {
@@ -583,18 +590,57 @@ void StatusLine(const char *label, const ImVec4 &color, float scale,
 
 int main(int argc, char **argv) {
   bool use_wayland = false;
+  bool self_test = false;
+  std::optional<fs::path> user_directory_override;
   std::optional<fs::path> extract_only;
   for (int i = 1; i < argc; ++i) {
-    if (std::string_view(argv[i]) == "-X11" ||
-        std::string_view(argv[i]) == "--x11")
+    const std::string_view arg(argv[i]);
+    if (arg == "-X11" || arg == "--x11")
       use_wayland = false;
-    else if (std::string_view(argv[i]) == "--wayland")
+    else if (arg == "--wayland")
       use_wayland = true;
-    else if (std::string_view(argv[i]) == "--extract" && i + 1 < argc)
+    else if (arg == "--extract") {
+      if (i + 1 >= argc) {
+        std::cerr << "--extract requires a value\n";
+        return 2;
+      }
       extract_only = argv[++i];
+    } else if (arg == "--ringout-self-test")
+      self_test = true;
+    else if (arg == "--user-dir") {
+      if (i + 1 >= argc) {
+        std::cerr << "--user-dir requires a value\n";
+        return 2;
+      }
+      user_directory_override = argv[++i];
+    } else if (arg == "--help" || arg == "-h") {
+      std::cout << "usage: RingOut [--x11|--wayland] [--user-dir DIR] "
+                   "[--extract DISC] [--ringout-self-test]\n";
+      return 0;
+    } else {
+      std::cerr << "unknown option: " << arg << '\n';
+      return 2;
+    }
   }
 
-  const fs::path user_directory = DefaultUserDirectory();
+  if (self_test) {
+    const fs::path runner = SiblingRunner(argv[0]);
+    const fs::path port = SiblingPort(argv[0]);
+    const fs::path fonts = SiblingAsset(argv[0], "fonts");
+    const bool valid =
+        fs::is_regular_file(runner) && fs::is_regular_file(port) &&
+        fs::is_regular_file(fonts / "DroidSans.ttf") &&
+        fs::is_regular_file(fonts / "Roboto-Medium.ttf");
+    std::cout << "RingOut C++ launcher self-test"
+              << " runner=" << runner.string() << " port=" << port.string()
+              << " rollback_ready="
+              << (NetPlay::IsLiveRollbackProductionReady() ? "yes" : "no")
+              << '\n';
+    return valid ? 0 : 1;
+  }
+
+  const fs::path user_directory =
+      user_directory_override.value_or(DefaultUserDirectory());
   if (extract_only) {
     ExtractionState extraction;
     extraction.running = true;
@@ -704,6 +750,11 @@ int main(int argc, char **argv) {
   int netplay_port = config.netplay_port;
   bool automatic_buffer = config.netplay_buffer == "auto";
   int manual_buffer = automatic_buffer ? 5 : std::stoi(config.netplay_buffer);
+  const bool rollback_production_ready =
+      NetPlay::IsLiveRollbackProductionReady();
+  int netplay_mode =
+      config.netplay_mode == moderngekko::frontend::NetplayMode::Rollback ? 1
+                                                                          : 0;
   int resolution_index = 0;
   for (std::size_t i = 0; i < resolutions.size(); ++i) {
     if (config.resolution == resolutions[i].text)
@@ -829,6 +880,9 @@ int main(int argc, char **argv) {
     config.netplay_port = static_cast<std::uint16_t>(netplay_port);
     config.netplay_buffer =
         automatic_buffer ? "auto" : std::to_string(manual_buffer);
+    config.netplay_mode =
+        netplay_mode == 1 ? moderngekko::frontend::NetplayMode::Rollback
+                          : moderngekko::frontend::NetplayMode::FixedDelay;
     config.controllers = configured_controllers;
     if (config.controllers.empty() && !selected_controller.empty())
       config.controllers.push_back(selected_controller);
@@ -1142,8 +1196,8 @@ int main(int argc, char **argv) {
       }
     } else if (page == LauncherPage::Netplay) {
       SectionHeading(fonts.heading, "Netplay",
-                     "Host or join a fixed-delay session. Both players need "
-                     "the same RingOut build and game files.",
+                     "Host or join a direct session. Both players need the "
+                     "same RingOut build, network mode, and game files.",
                      content_width, scale);
       ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
       ImGui::TextDisabled(
@@ -1156,11 +1210,32 @@ int main(int argc, char **argv) {
                    ImVec4(0.85f, 0.64f, 0.27f, 1.0f), scale, true);
       }
       ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+      ImGui::TextUnformatted("Network mode");
+      ImGui::RadioButton("Fixed delay (stable)", &netplay_mode, 0);
+      if (!rollback_production_ready)
+        ImGui::BeginDisabled();
+      ImGui::RadioButton("Experimental rollback", &netplay_mode, 1);
+      if (!rollback_production_ready)
+        ImGui::EndDisabled();
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
+      if (rollback_production_ready) {
+        ImGui::TextDisabled(
+            "Rollback predicts late remote input and corrects it by restoring "
+            "and replaying emulator state. If a peer cannot negotiate it, "
+            "switch both players to fixed delay; there is no silent fallback.");
+      } else {
+        ImGui::TextDisabled(
+            "Experimental rollback is unavailable in this build until the "
+            "runtime's production output-safety gate is complete. Fixed delay "
+            "remains available.");
+      }
+      ImGui::PopTextWrapPos();
+      ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
       ImGui::TextUnformatted("Nickname");
       ImGui::SetNextItemWidth(300.0f * scale);
       ImGui::InputText("##nickname", netplay_nickname.data(),
                        netplay_nickname.size());
-      ImGui::TextUnformatted("Host or IP address");
+      ImGui::TextUnformatted("Host name or IPv4 address");
       ImGui::SetNextItemWidth(300.0f * scale);
       ImGui::InputText("##address", netplay_address.data(),
                        netplay_address.size());
@@ -1168,14 +1243,37 @@ int main(int argc, char **argv) {
       ImGui::SetNextItemWidth(145.0f * scale);
       ImGui::InputInt("##port", &netplay_port);
       netplay_port = std::clamp(netplay_port, 1, 65535);
-      ImGui::Checkbox("Choose input buffer automatically", &automatic_buffer);
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
+      ImGui::TextDisabled(
+          "Direct UDP netplay is not authenticated or encrypted. Play with "
+          "trusted friends on a LAN or private VPN. Forward this UDP port only "
+          "if you understand the exposure.");
+      ImGui::PopTextWrapPos();
+      ImGui::Checkbox(netplay_mode == 1 ? "Use recommended base delay"
+                                        : "Use default input delay",
+                      &automatic_buffer);
+      if (automatic_buffer) {
+        ImGui::TextDisabled(netplay_mode == 1
+                                ? "Rollback base delay: 2 SI samples."
+                                : "Fixed-delay input delay: 5 SI samples.");
+      }
       if (!automatic_buffer) {
-        ImGui::TextUnformatted("Buffer frames");
+        ImGui::TextUnformatted(netplay_mode == 1
+                                   ? "Rollback base delay (SI samples)"
+                                   : "Input delay (SI samples)");
         ImGui::SetNextItemWidth(250.0f * scale);
-        ImGui::SliderInt("##buffer-frames", &manual_buffer, 1, 20);
+        ImGui::SliderInt("##buffer-samples", &manual_buffer, 1, 20);
+        ImGui::TextDisabled("Typically about %.1f ms at 120 SI polls/second.",
+                            manual_buffer * 1000.0 / 120.0);
       }
       ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-      ImGui::BeginDisabled(!active_module);
+      const bool selected_mode_available =
+          moderngekko::frontend::IsPlayerUsableNetplayMode(
+              netplay_mode == 1
+                  ? moderngekko::frontend::NetplayMode::Rollback
+                  : moderngekko::frontend::NetplayMode::FixedDelay,
+              rollback_production_ready);
+      ImGui::BeginDisabled(!active_module || !selected_mode_available);
       if (PrimaryButton("Host", ImVec2(150.0f * scale, 42.0f * scale)) &&
           ensure_controller() && save_netplay()) {
         launch_mode = LaunchMode::Host;
@@ -1192,10 +1290,18 @@ int main(int argc, char **argv) {
       ImGui::Separator();
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
       ImGui::TextUnformatted("Status");
-      StatusLine(active_module ? "Ready for netplay" : "Game setup required",
-                 active_module ? ImVec4(0.32f, 0.65f, 0.45f, 1.0f)
-                               : ImVec4(0.85f, 0.64f, 0.27f, 1.0f),
-                 scale, !active_module);
+      const char *netplay_status =
+          !active_module
+              ? "Game setup required"
+              : (!selected_mode_available
+                     ? "Rollback safety gate incomplete — choose fixed delay"
+                     : (netplay_mode == 1 ? "Ready for experimental rollback"
+                                          : "Ready for fixed-delay netplay"));
+      StatusLine(netplay_status,
+                 active_module && selected_mode_available
+                     ? ImVec4(0.32f, 0.65f, 0.45f, 1.0f)
+                     : ImVec4(0.85f, 0.64f, 0.27f, 1.0f),
+                 scale, !active_module || !selected_mode_available);
     } else if (page == LauncherPage::Mods) {
       SectionHeading(fonts.heading, "Mods",
                      "Install, enable, and update supported mods.",
@@ -1347,6 +1453,10 @@ int main(int argc, char **argv) {
         argument_storage.emplace_back(config.netplay_nickname);
         argument_storage.emplace_back("--buffer");
         argument_storage.emplace_back(config.netplay_buffer);
+        argument_storage.emplace_back("--netplay-mode");
+        argument_storage.emplace_back(std::string(
+            moderngekko::frontend::NetplayModeConfigValue(
+                config.netplay_mode)));
         for (const std::string &controller : config.controllers) {
           argument_storage.emplace_back("--controller");
           argument_storage.emplace_back(controller);
@@ -1408,6 +1518,39 @@ int main(int argc, char **argv) {
           if (!waited) {
             launch_error = "The game process could not be monitored: " +
                            std::string(SDL_GetError());
+          } else if (exit_code == static_cast<int>(
+                                      moderngekko::frontend::NetplayExitCode::
+                                          RollbackUnavailable)) {
+            launch_error =
+                "Rollback is not available in this build because its runtime "
+                "safety gate is incomplete. Start a new Fixed delay session "
+                "or install a matching rollback-capable release.";
+          } else if (exit_code == static_cast<int>(
+                                      moderngekko::frontend::NetplayExitCode::
+                                          RollbackStartRejected)) {
+            launch_error =
+                "Rollback could not start because the synchronized session "
+                "did not meet its safety policy. RingOut supports folder "
+                "memory cards or no card for rollback; raw memory-card images "
+                "are refused. Check the log for the exact policy failure.";
+          } else if (exit_code == static_cast<int>(
+                                      moderngekko::frontend::NetplayExitCode::
+                                          SessionDesynced)) {
+            launch_error =
+                "The peers produced different confirmed game state, so "
+                "RingOut stopped the match instead of continuing desynchronized.";
+          } else if (exit_code == static_cast<int>(
+                                      moderngekko::frontend::NetplayExitCode::
+                                          SessionRuntimeFailed)) {
+            launch_error =
+                "The synchronized game runtime failed. The session was stopped "
+                "safely; check the log for the failing subsystem.";
+          } else if (exit_code == static_cast<int>(
+                                      moderngekko::frontend::NetplayExitCode::
+                                          SessionConnectionLost)) {
+            launch_error =
+                "The connection to the other player was lost and the match "
+                "was stopped.";
           } else if (launch_mode == LaunchMode::Join) {
             switch (static_cast<moderngekko::frontend::NetplayExitCode>(
                 exit_code)) {

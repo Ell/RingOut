@@ -227,6 +227,51 @@ bool TestAuthorityGenerationAndScheduleRejection() {
   return true;
 }
 
+bool TestAuthoritativeEmulatedFrameGate() {
+  Journal journal(Config());
+  CHECK(!journal.IsEmulatedFrameAuthoritative(60));
+  CHECK(journal.ObserveAppliedBatch(1, 42, Applied(10, 60, 0)) ==
+        Journal::ObserveStatus::Accepted);
+  CHECK(journal.ObserveAppliedBatch(1, 42, Applied(11, 60, 1)) ==
+        Journal::ObserveStatus::Accepted);
+  for (u64 id = 10; id <= 11; ++id) {
+    CHECK(journal.SubmitInputBatch(
+              1, 42, Journal::InputSource::Local,
+              Batch(id, 0b0001, Pads(Pad(PAD_BUTTON_A)))) ==
+          Journal::SubmitStatus::Accepted);
+  }
+  CHECK(journal.SubmitInputBatch(
+            1, 42, Journal::InputSource::Remote,
+            Batch(10, 0b0010, Pads({}, Pad(PAD_BUTTON_B)))) ==
+        Journal::SubmitStatus::Accepted);
+  CHECK(journal.ResolveBatch(10));
+  CHECK(journal.ResolveBatch(11));
+  CHECK(!journal.IsEmulatedFrameAuthoritative(60));
+  CHECK(journal.SubmitInputBatch(
+            1, 42, Journal::InputSource::Remote,
+            Batch(11, 0b0010, Pads({}, Pad(PAD_BUTTON_B)))) ==
+        Journal::SubmitStatus::Accepted);
+  CHECK(journal.IsEmulatedFrameAuthoritative(60));
+  CHECK(!journal.IsEmulatedFrameAuthoritative(59));
+
+  CHECK(journal.ObserveAppliedBatch(1, 42, Applied(12, 120, 0)) ==
+        Journal::ObserveStatus::Accepted);
+  CHECK(journal.SubmitInputBatch(
+            1, 42, Journal::InputSource::Local,
+            Batch(12, 0b0001, Pads(Pad(PAD_BUTTON_A)))) ==
+        Journal::SubmitStatus::Accepted);
+  CHECK(journal.ResolveBatch(12));
+  CHECK(!journal.IsEmulatedFrameAuthoritative(120));
+  CHECK(journal.SubmitInputBatch(
+            1, 42, Journal::InputSource::Remote,
+            Batch(12, 0b0010, Pads({}, Pad(PAD_BUTTON_X)))) ==
+        Journal::SubmitStatus::CorrectedPrediction);
+  CHECK(journal.GetConfirmedThroughBatch() == 12);
+  CHECK(journal.GetReplayTrigger());
+  CHECK(!journal.IsEmulatedFrameAuthoritative(120));
+  return true;
+}
+
 bool TestPrunedConfirmedPollRemainsReplayableWithItsFrame() {
   auto config = Config();
   config.history_capacity = 3;
@@ -300,6 +345,7 @@ int main() {
   if (!TestCodecRoundTripAndFailClosedParsing() ||
       !TestVariablePollJournalAndReplayTrigger() ||
       !TestAuthorityGenerationAndScheduleRejection() ||
+      !TestAuthoritativeEmulatedFrameGate() ||
       !TestPrunedConfirmedPollRemainsReplayableWithItsFrame() ||
       !TestInvalidConfiguration()) {
     return 1;

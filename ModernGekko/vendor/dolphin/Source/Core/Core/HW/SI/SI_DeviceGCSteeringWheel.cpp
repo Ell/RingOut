@@ -8,6 +8,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Core/HW/GCPad.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 
 namespace SerialInterface
 {
@@ -116,7 +117,13 @@ void CSIDevice_GCSteeringWheel::SendCommand(u32 command, u8 poll)
       case ForceCommandType::MotorOn:
       {
         // Map 0..256 to -1.0..1.0
-        const ControlState mapped_strength = strength / 128.0 - 1;
+        const ControlState mapped_strength =
+            NetPlay::IsLiveRollbackSessionQuarantineActive() ? 0 : strength / 128.0 - 1;
+        if (NetPlay::IsLiveRollbackHiddenReplayActive() &&
+            !NetPlay::IsLiveRollbackSessionQuarantineActive())
+        {
+          break;
+        }
         Pad::Rumble(pad_num, mapped_strength);
         break;
       }

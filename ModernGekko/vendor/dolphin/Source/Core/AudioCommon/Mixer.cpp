@@ -16,6 +16,7 @@
 #include "Common/Swap.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/System.h"
 
 static u32 DPL2QualityToFrameBlockSize(AudioCommon::DPL2Quality quality)
@@ -168,6 +169,36 @@ std::size_t Mixer::Mix(s16* samples, std::size_t num_samples)
 
   memset(samples, 0, num_samples * 2 * sizeof(s16));
 
+  const u64 rollback_generation = NetPlay::GetLiveRollbackAudioResetGeneration();
+  bool reset_for_rollback = m_dma_mixer.PrepareMixForRollbackGeneration(rollback_generation);
+  reset_for_rollback |= m_streaming_mixer.PrepareMixForRollbackGeneration(rollback_generation);
+  for (std::size_t i = 0; i < m_wiimote_speaker_mixers.size(); ++i)
+  {
+    // A routed Wiimote has its own Cubeb consumer callback. Do not mutate that
+    // callback's queue/interpolation state from the main audio callback.
+    if (!m_config_wiimote_routing_enabled || !m_config_wiimote_output_enabled[i])
+    {
+      reset_for_rollback |=
+          m_wiimote_speaker_mixers[i].PrepareMixForRollbackGeneration(rollback_generation);
+    }
+  }
+  reset_for_rollback |=
+      m_skylander_portal_mixer.PrepareMixForRollbackGeneration(rollback_generation);
+  for (auto& mixer : m_gba_mixers)
+    reset_for_rollback |= mixer.PrepareMixForRollbackGeneration(rollback_generation);
+  if (rollback_generation != m_rollback_surround_generation)
+  {
+    m_rollback_surround_generation = rollback_generation;
+    m_surround_decoder.Clear();
+    reset_for_rollback = true;
+  }
+
+  // Silence every backend callback during replay. Also return one silent
+  // buffer after observing a new epoch so a replay shorter than the backend
+  // callback period cannot let pre-rollback samples escape.
+  if (NetPlay::IsLiveRollbackHiddenReplayActive() || reset_for_rollback)
+    return num_samples;
+
   m_dma_mixer.Mix(samples, num_samples);
   m_streaming_mixer.Mix(samples, num_samples);
   for (std::size_t i = 0; i < m_wiimote_speaker_mixers.size(); ++i)
@@ -215,6 +246,10 @@ std::size_t Mixer::MixSurround(float* samples, std::size_t num_samples)
 
 void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
 {
+  m_dma_mixer.PrepareForRollbackGeneration(NetPlay::GetLiveRollbackAudioResetGeneration());
+  if (NetPlay::IsLiveRollbackHiddenReplayActive())
+    return;
+
   if (IsOutputSampleRateValid())
   {
     // Big-endian RL-orderered stereo samples.
@@ -227,7 +262,7 @@ void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
     }
   }
 
-  if (m_log_dsp_audio)
+  if (m_log_dsp_audio && !NetPlay::IsLiveRollbackSessionQuarantineActive())
   {
     const s32 sample_rate_divisor = m_dma_mixer.GetInputSampleRateDivisor();
     auto const volume = m_dma_mixer.GetVolume();
@@ -238,6 +273,10 @@ void Mixer::PushSamples(const s16* samples, std::size_t num_samples)
 
 void Mixer::PushStreamingSamples(const s16* samples, std::size_t num_samples)
 {
+  m_streaming_mixer.PrepareForRollbackGeneration(NetPlay::GetLiveRollbackAudioResetGeneration());
+  if (NetPlay::IsLiveRollbackHiddenReplayActive())
+    return;
+
   if (IsOutputSampleRateValid())
   {
     // Big-endian RL-orderered stereo samples.
@@ -250,7 +289,7 @@ void Mixer::PushStreamingSamples(const s16* samples, std::size_t num_samples)
     }
   }
 
-  if (m_log_dtk_audio)
+  if (m_log_dtk_audio && !NetPlay::IsLiveRollbackSessionQuarantineActive())
   {
     const s32 sample_rate_divisor = m_streaming_mixer.GetInputSampleRateDivisor();
     const auto volume = m_streaming_mixer.GetVolume();
@@ -262,7 +301,11 @@ void Mixer::PushStreamingSamples(const s16* samples, std::size_t num_samples)
 void Mixer::PushWiimoteSpeakerSamples(std::size_t wiimote_index, const s16* samples,
                                       std::size_t num_samples, u32 sample_rate_divisor)
 {
-  if (!IsOutputSampleRateValid() || wiimote_index >= m_wiimote_speaker_mixers.size())
+  if (wiimote_index >= m_wiimote_speaker_mixers.size())
+    return;
+  m_wiimote_speaker_mixers[wiimote_index].PrepareForRollbackGeneration(
+      NetPlay::GetLiveRollbackAudioResetGeneration());
+  if (NetPlay::IsLiveRollbackHiddenReplayActive() || !IsOutputSampleRateValid())
     return;
 
   // WiimoteEmu produces host-endian mono samples.
@@ -282,13 +325,20 @@ std::size_t Mixer::MixWiimoteSpeaker(std::size_t wiimote_index, s16* samples,
     return 0;
 
   memset(samples, 0, num_samples * 2 * sizeof(s16));
+  const u64 rollback_generation = NetPlay::GetLiveRollbackAudioResetGeneration();
+  const bool reset_for_rollback =
+      m_wiimote_speaker_mixers[wiimote_index].PrepareMixForRollbackGeneration(rollback_generation);
+  if (NetPlay::IsLiveRollbackHiddenReplayActive() || reset_for_rollback)
+    return num_samples;
   m_wiimote_speaker_mixers[wiimote_index].Mix(samples, num_samples);
   return num_samples;
 }
 
 void Mixer::PushSkylanderPortalSamples(const u8* samples, std::size_t num_samples)
 {
-  if (!IsOutputSampleRateValid())
+  m_skylander_portal_mixer.PrepareForRollbackGeneration(
+      NetPlay::GetLiveRollbackAudioResetGeneration());
+  if (NetPlay::IsLiveRollbackHiddenReplayActive() || !IsOutputSampleRateValid())
     return;
 
   // Skylander samples are always supplied as 64 bytes, 32 x 16 bit samples
@@ -305,7 +355,11 @@ void Mixer::PushSkylanderPortalSamples(const u8* samples, std::size_t num_sample
 
 void Mixer::PushGBASamples(std::size_t device_number, const s16* samples, std::size_t num_samples)
 {
-  if (!IsOutputSampleRateValid())
+  if (device_number >= m_gba_mixers.size())
+    return;
+  m_gba_mixers[device_number].PrepareForRollbackGeneration(
+      NetPlay::GetLiveRollbackAudioResetGeneration());
+  if (NetPlay::IsLiveRollbackHiddenReplayActive() || !IsOutputSampleRateValid())
     return;
 
   // Integrated GBA pushes host-endian LR-ordered stereo samples.
@@ -351,6 +405,12 @@ void Mixer::SetGBAVolume(std::size_t device_number, u32 lvolume, u32 rvolume)
 
 void Mixer::StartLogDTKAudio(const std::string& filename)
 {
+  if (NetPlay::IsLiveRollbackSessionQuarantineActive())
+  {
+    WARN_LOG_FMT(AUDIO, "DTK audio logging is disabled during a rollback session");
+    return;
+  }
+
   if (!m_log_dtk_audio)
   {
     const bool success =
@@ -389,6 +449,12 @@ void Mixer::StopLogDTKAudio()
 
 void Mixer::StartLogDSPAudio(const std::string& filename)
 {
+  if (NetPlay::IsLiveRollbackSessionQuarantineActive())
+  {
+    WARN_LOG_FMT(AUDIO, "DSP audio logging is disabled during a rollback session");
+    return;
+  }
+
   if (!m_log_dsp_audio)
   {
     const bool success = m_wave_writer_dsp.Start(filename, m_dma_mixer.GetInputSampleRateDivisor());
@@ -471,6 +537,38 @@ void Mixer::MixerFifo::SetVolume(u32 lvolume, u32 rvolume)
 std::pair<s32, s32> Mixer::MixerFifo::GetVolume() const
 {
   return std::make_pair(m_LVolume.load(), m_RVolume.load());
+}
+
+void Mixer::MixerFifo::PrepareForRollbackGeneration(const u64 generation)
+{
+  if (generation == m_rollback_push_generation)
+    return;
+
+  // This is producer-owned state. Do not touch the consumer queue here; the
+  // sound thread owns that reset independently in DiscardQueuedAudioOnMixThread.
+  m_rollback_push_generation = generation;
+  m_next_buffer.fill({});
+  m_next_buffer_index = 0;
+}
+
+bool Mixer::MixerFifo::PrepareMixForRollbackGeneration(const u64 generation)
+{
+  if (generation == m_rollback_mix_generation)
+    return false;
+
+  m_rollback_mix_generation = generation;
+  // m_queue_tail and the interpolation state are consumer-owned. Moving tail
+  // to the current published head is safe with a concurrent producer: a
+  // granule published after this acquire remains queued for corrected play.
+  m_queue_tail.store(m_queue_head.load(std::memory_order_acquire), std::memory_order_release);
+  m_current_index = 0;
+  m_front.fill({});
+  m_back.fill({});
+  m_queue_fading.store(false, std::memory_order_relaxed);
+  m_queue_looping.store(false, std::memory_order_relaxed);
+  m_fade_volume = 0.0f;
+  m_quantization_error = {};
+  return true;
 }
 
 void Mixer::MixerFifo::Enqueue()

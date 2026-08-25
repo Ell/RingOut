@@ -151,7 +151,7 @@ jobs:
             --env CCACHE_COMPILERCHECK=content \
             "$BUILD_IMAGE" \
           cmake --build "$BUILD_DIR" \
-            --target moderngekko-run moderngekko-module-info moderngekko-tests \
+            --target moderngekko-launcher moderngekko-module-info moderngekko-tests \
             --parallel "$(nproc)"
 
       - name: Test Linux runtime

@@ -38,6 +38,7 @@ void Usage() {
                "       [--netplay-host | --netplay-join <host>] "
                "[--netplay-port <port>]\n"
                "       [--nickname <name>] [--buffer <auto|1-20>] "
+               "[--netplay-mode <fixed-delay|rollback>] "
                "[--controller <device>]...\n"
                "       [--netplay-players <n>]   (host: machines to wait for, "
                "default 2)\n"
@@ -111,6 +112,7 @@ int RunMain(int argc, char **argv) {
   std::optional<std::uint16_t> netplay_port;
   std::string netplay_nickname;
   std::string netplay_buffer;
+  std::optional<moderngekko::frontend::NetplayMode> netplay_mode;
   std::vector<std::string> netplay_controllers;
   std::optional<unsigned> netplay_players;
   std::optional<unsigned> netplay_timeout;
@@ -146,9 +148,17 @@ int RunMain(int argc, char **argv) {
       config.headless = true;
     else if (arg == "--allow-interpreter")
       config.allow_interpreter = true;
-    else if (arg == "--netplay-host")
+    else if (arg == "--netplay-host") {
+      if (netplay_role) {
+        std::cerr << "choose exactly one of --netplay-host or --netplay-join\n";
+        return 2;
+      }
       netplay_role = moderngekko::frontend::NetplayRole::Host;
-    else if (arg == "--netplay-join") {
+    } else if (arg == "--netplay-join") {
+      if (netplay_role) {
+        std::cerr << "choose exactly one of --netplay-host or --netplay-join\n";
+        return 2;
+      }
       netplay_role = moderngekko::frontend::NetplayRole::Join;
       netplay_address = value("--netplay-join");
     } else if (arg == "--netplay-port") {
@@ -167,24 +177,43 @@ int RunMain(int argc, char **argv) {
       netplay_nickname = value("--nickname");
     else if (arg == "--buffer")
       netplay_buffer = value("--buffer");
+    else if (arg == "--netplay-mode") {
+      moderngekko::frontend::NetplayMode parsed{};
+      if (!moderngekko::frontend::ParseNetplayMode(value("--netplay-mode"),
+                                                    &parsed)) {
+        std::cerr << "--netplay-mode must be fixed-delay or rollback\n";
+        return 2;
+      }
+      netplay_mode = parsed;
+    }
     else if (arg == "--controller")
       netplay_controllers.emplace_back(value("--controller"));
     else if (arg == "--netplay-players") {
       const std::string players_value = value("--netplay-players");
-      const long players = std::strtol(players_value.c_str(), nullptr, 10);
-      if (players < 1 || players > 4) {
+      unsigned players = 0;
+      const auto parsed = std::from_chars(
+          players_value.data(), players_value.data() + players_value.size(),
+          players);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != players_value.data() + players_value.size() ||
+          players < 1 || players > 4) {
         std::cerr << "--netplay-players must be between 1 and 4\n";
         return 2;
       }
-      netplay_players = static_cast<unsigned>(players);
+      netplay_players = players;
     } else if (arg == "--netplay-timeout") {
       const std::string timeout_value = value("--netplay-timeout");
-      const long timeout = std::strtol(timeout_value.c_str(), nullptr, 10);
-      if (timeout < 1) {
+      unsigned timeout = 0;
+      const auto parsed = std::from_chars(
+          timeout_value.data(), timeout_value.data() + timeout_value.size(),
+          timeout);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != timeout_value.data() + timeout_value.size() ||
+          timeout < 1) {
         std::cerr << "--netplay-timeout must be at least 1 second\n";
         return 2;
       }
-      netplay_timeout = static_cast<unsigned>(timeout);
+      netplay_timeout = timeout;
     } else if (arg == "--keyboard") {
       const std::string layout_value = value("--keyboard");
       if (layout_value != "1" && layout_value != "2") {
@@ -307,6 +336,7 @@ int RunMain(int argc, char **argv) {
                            : netplay_nickname;
     options.buffer = netplay_buffer.empty() ? frontend_config.netplay_buffer
                                             : netplay_buffer;
+    options.mode = netplay_mode.value_or(frontend_config.netplay_mode);
     if (netplay_players)
       options.players = *netplay_players;
     if (netplay_timeout)
@@ -335,6 +365,7 @@ int RunMain(int argc, char **argv) {
     frontend_config.netplay_port = options.port;
     frontend_config.netplay_nickname = options.nickname;
     frontend_config.netplay_buffer = options.buffer;
+    frontend_config.netplay_mode = options.mode;
     frontend_config.controllers = options.controllers;
     frontend_config.controller = options.controllers.front();
     std::string controller_message;
@@ -449,6 +480,7 @@ int RunMain(int argc, char **argv) {
                                 : frontend_config.netplay_port;
         netplay.nickname = frontend_config.netplay_nickname;
         netplay.buffer = frontend_config.netplay_buffer;
+        netplay.mode = frontend_config.netplay_mode;
         // A session started from the in-game menu is a person walking between
         // two machines: quit here, wait for the game to tear down, boot the
         // other one, find the row, join. The 120 s default is a scripted-test

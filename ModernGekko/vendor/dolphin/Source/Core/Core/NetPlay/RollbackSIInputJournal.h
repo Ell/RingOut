@@ -133,7 +133,17 @@ public:
 
   std::optional<AppliedBatch> GetAppliedBatch(u64 batch_id) const;
   std::optional<u64> GetConfirmedThroughBatch() const;
+  // Returns the final SI batch consumed at or before |emulated_frame|. An
+  // empty token is valid when no SI poll has occurred yet; such a frame has no
+  // input dependency of its own.
+  std::optional<u64> GetLastAppliedBatchThroughEmulatedFrame(u64 emulated_frame) const;
   std::optional<ReplayTrigger> GetReplayTrigger() const;
+
+  // True only after this complete emulated frame consumed at least one SI
+  // batch and every consumed batch through its final poll has authoritative
+  // input. A pending correction makes the frontier unpublished even if the
+  // contiguous confirmation counter has already advanced.
+  bool IsEmulatedFrameAuthoritative(u64 emulated_frame) const;
 
 private:
   friend class RollbackCoordinator;

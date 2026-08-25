@@ -115,27 +115,71 @@ launch() {
   local d="$W/$name"
   local -a mode=(--headless)
   local -a rollback_test_env=()
+  local -a rollback_mode_args=()
+  local -a rollback_oracle_env=()
   [ "${WINDOWED:-0}" = "1" ] && mode=()
+  if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ] ||
+     [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||
+     [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
+    # Every rollback harness route requests rollback through the same explicit
+    # frontend mode as a player. The isolated acknowledgement chooses only the
+    # disposable output gate and numeric overrides; it must not make a
+    # nominally fixed-delay session turn into rollback behind the UI's back.
+    rollback_mode_args=(--netplay-mode rollback)
+    rollback_oracle_env=("RINGOUT_ROLLBACK_CONFIRMED_LOG=$d/confirmed-state.log")
+  fi
   if [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ]; then
-    rollback_test_env=(
-      "RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED"
+    rollback_oracle_env=("RINGOUT_ROLLBACK_CONFIRMED_LOG=$d/confirmed-state.log")
+    if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ]; then
+      # This acknowledgement enables only deterministic packet impairment.
+      # It deliberately does not select the isolated output gate: StartGame
+      # still constructs the same production gate used by ordinary players.
+      rollback_test_env=("RINGOUT_ROLLBACK_FAULT_ACK=PRODUCTION_OUTPUT_GATE")
+    else
+      rollback_test_env=("RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED")
+    fi
+    rollback_test_env+=(
       "RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES=${RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES:-2}"
-      "RINGOUT_ROLLBACK_HORIZON_FRAMES=${RINGOUT_ROLLBACK_HORIZON_FRAMES:-8}"
-    )
-    if [ "$name" = guest ]; then
+      "RINGOUT_ROLLBACK_HORIZON_FRAMES=${RINGOUT_ROLLBACK_HORIZON_FRAMES:-8}")
+    if [ "$name" = host ]; then
+      # The scripted route changes host input immediately while the guest's
+      # first button press is much later at character select. Impairing host
+      # rollback packets therefore guarantees that a bounded early window can
+      # carry a real input edge and exercise correction on the guest.
       rollback_test_env+=("RINGOUT_ROLLBACK_FAULT_SCRIPT=$RINGOUT_ROLLBACK_FAULT_SCRIPT")
     fi
   fi
-  ( cd "$PKG" && exec env RINGOUT_DETERMINISM_LOG="$d/hash.log" \
+  if [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
+    rollback_test_env+=("RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED")
+    if [ "$name" = guest ]; then
+      rollback_test_env+=(
+        "RINGOUT_ROLLBACK_DIGEST_FAULT_FRAME=$RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME")
+    fi
+  fi
+  # The orchestration variables are exported to this script, but injection is
+  # deliberately one-sided. Remove any inherited per-process hook before
+  # adding it back through rollback_test_env for exactly one peer only.
+  ( cd "$PKG" && exec env \
+      -u RINGOUT_ROLLBACK_FAULT_SCRIPT \
+      -u RINGOUT_ROLLBACK_DIGEST_FAULT_FRAME \
+      RINGOUT_DETERMINISM_LOG="$d/hash.log" \
+      "${rollback_oracle_env[@]}" \
       "${rollback_test_env[@]}" \
       ./bin/moderngekko-run "${mode[@]}" --user-dir "$d/user" --game ./game \
       --module ./bin/gGRSEAF_recomp.so --controller "Standard Controller" \
-      "$@" ) > "$d/log.txt" 2>&1 &
+      "${rollback_mode_args[@]}" "$@" ) > "$d/log.txt" 2>&1 &
   echo $! > "$d/pid"
 }
 
+match_buffer=5
+if [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||
+   [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
+  # Pass the same requested delay through the ordinary player CLI even when an
+  # isolated test subsequently applies the explicit numeric test override.
+  match_buffer="${RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES:-2}"
+fi
 launch host  --netplay-host --netplay-port "$PORT" --netplay-players 2 \
-             --nickname Host --buffer 5 --netplay-timeout 120
+             --nickname Host --buffer "$match_buffer" --netplay-timeout 120
 sleep 4
 launch guest --netplay-join 127.0.0.1 --netplay-port "$PORT" \
              --nickname Guest --netplay-timeout 120
@@ -151,6 +195,63 @@ if ! grep -qa "netplay armed" "$W/host/log.txt" 2>/dev/null || \
   echo "peers never armed"; grep -ha "netplay:" "$W"/*/log.txt | tail -8; exit 1
 fi
 echo "both peers armed after ${waited}s"
+
+# `netplay armed` means the synchronized StartGame handshake completed. Live
+# rollback is not actually exercising snapshots, prediction, or resimulation
+# until the CPU reaches the first frame boundary and both clients report the
+# active scheduler. Waiting here prevents a slow or wedged boot from being
+# mistaken for a successful rollback route while the input script blindly
+# advances on wall-clock time.
+if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ] ||
+   [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||
+   [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
+  waited_active=0
+  while [ "$waited_active" -lt 120 ]; do
+    grep -qa '\[rollback live\] active' "$W/host/log.txt" 2>/dev/null &&
+    grep -qa '\[rollback live\] active' "$W/guest/log.txt" 2>/dev/null && break
+    ensure_peers_alive || {
+      echo "a netplay peer exited before live rollback activated"
+      exit 1
+    }
+    sleep 2
+    waited_active=$((waited_active + 2))
+  done
+  if ! grep -qa '\[rollback live\] active' "$W/host/log.txt" 2>/dev/null ||
+     ! grep -qa '\[rollback live\] active' "$W/guest/log.txt" 2>/dev/null; then
+    echo "live rollback never activated"
+    grep -ha '\[rollback live\]\|netplay:' "$W"/*/log.txt | tail -16
+    exit 1
+  fi
+  echo "live rollback active on both peers after ${waited_active}s"
+fi
+
+if [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
+  digest_frame="$RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME"
+  waited_digest=0
+  while [ "$waited_digest" -lt 120 ]; do
+    if grep -Fqa "DESYNC at frame $digest_frame" "$W/host/log.txt" 2>/dev/null &&
+       grep -Fqa "DESYNC at frame $digest_frame" "$W/guest/log.txt" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+    waited_digest=$((waited_digest + 1))
+  done
+  cleanup
+  trap - EXIT INT TERM
+  if ! grep -Fqa "isolated digest fault injected at frame $digest_frame" \
+       "$W/guest/log.txt" 2>/dev/null; then
+    echo "FAIL: guest did not inject the acknowledged digest fault"
+    exit 1
+  fi
+  if ! grep -Fqa "DESYNC at frame $digest_frame" "$W/host/log.txt" 2>/dev/null ||
+     ! grep -Fqa "DESYNC at frame $digest_frame" "$W/guest/log.txt" 2>/dev/null; then
+    echo "FAIL: both peers did not report the expected digest mismatch"
+    grep -ha 'DESYNC\|digest\|rollback live' "$W"/*/log.txt | tail -24
+    exit 1
+  fi
+  echo "RESULT: both peers rejected the injected digest mismatch at frame $digest_frame"
+  exit 0
+fi
 
 press() {  # $1 = host|guest  $2 = button  [$3 = settle seconds]
   local p="$W/$1/user/Pipes/ctrl"
@@ -224,13 +325,14 @@ if [ -s "$W/host/hash.log" ] && [ -s "$W/guest/hash.log" ]; then
   if [ "$n" -lt "$MIN_HASH_FRAMES" ]; then
     echo "  FAIL: expected at least $MIN_HASH_FRAMES comparable frames"
     result=1
-  elif [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ]; then
+  elif [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] || \
+       [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ]; then
     # Rollback deliberately creates speculative physical-frame rows and then
     # replays corrected logical frames, so the legacy line-for-line trace is
     # not a valid oracle in fault mode.  Keep both traces as evidence; the
     # rollback wrapper checks negotiated/correction markers and Dolphin's live
     # desync detector.  Non-fault fixed-delay coverage remains byte-exact.
-    echo "  retained (rollback replay makes physical-frame rows incomparable)"
+    echo "  retained (rollback physical-frame rows are not the logical-state oracle)"
   elif diff -q "$W/h.trim" "$W/g.trim" >/dev/null; then
     echo "  IDENTICAL on every frame"
   else

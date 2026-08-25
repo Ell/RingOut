@@ -4,6 +4,7 @@
 #include "Core/NetPlay/NetPlayClientRollback.h"
 
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -12,8 +13,12 @@
 #include <optional>
 #include <string_view>
 
+#include "Common/Hash.h"
 #include "Core/Core.h"
+#include "Core/HW/Memmap.h"
+#include "Core/HW/SystemTimers.h"
 #include "Core/System.h"
+#include "VideoCommon/Fifo.h"
 
 namespace NetPlay
 {
@@ -27,11 +32,6 @@ u8 PadBit(const std::size_t pad)
   return static_cast<u8>(u8{1} << pad);
 }
 
-bool IsHeadlessIsolatedTestAcknowledged()
-{
-  const char* const acknowledgement = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
-  return acknowledgement != nullptr && std::string_view(acknowledgement) == "HEADLESS_ISOLATED";
-}
 }  // namespace
 
 bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
@@ -60,22 +60,56 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
     auto live = std::make_unique<LiveRollbackState>();
     live->session = session;
 
-    if (!IsHeadlessIsolatedTestAcknowledged() || session.base_delay_samples == 0 ||
-        session.rollback_horizon_frames >
+    const char* const test_ack = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
+    const char* const digest_fault = std::getenv("RINGOUT_ROLLBACK_DIGEST_FAULT_FRAME");
+    if (digest_fault != nullptr && digest_fault[0] != '\0')
+    {
+      // Deliberately corrupt only the diagnostic report, never guest memory.
+      // The ordinary launcher does not set either variable; a fault hook is
+      // accepted solely inside the explicitly disposable headless harness.
+      if (test_ack == nullptr || std::string_view(test_ack) != "HEADLESS_ISOLATED")
+      {
+        std::fprintf(stderr, "[rollback live] activation refused: digest fault hook not isolated\n");
+        return false;
+      }
+      u32 frame = 0;
+      const std::string_view value(digest_fault);
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), frame);
+      if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || frame == 0 ||
+          frame % ROLLBACK_STATE_DIGEST_INTERVAL != 0)
+      {
+        std::fprintf(stderr, "[rollback live] activation refused: invalid digest fault frame\n");
+        return false;
+      }
+      live->digest_fault_frame = frame;
+    }
+
+    if (const char* const path = std::getenv("RINGOUT_ROLLBACK_CONFIRMED_LOG");
+        path != nullptr && path[0] != '\0')
+    {
+      live->confirmed_state_log = std::fopen(path, "wb");
+      if (live->confirmed_state_log == nullptr)
+      {
+        std::fprintf(stderr, "[rollback live] activation refused: cannot open confirmed log\n");
+        return false;
+      }
+    }
+
+    if (session.base_delay_samples == 0 || session.rollback_horizon_frames >
             std::numeric_limits<u64>::max() / MAX_ROLLBACK_POLLS_PER_FRAME)
     {
       std::fprintf(stderr,
-                   "[rollback live] activation refused: isolated output-safety acknowledgement "
-                   "or numeric contract missing\n");
+                   "[rollback live] activation refused: numeric contract missing\n");
       return false;
     }
 
     std::array<RollbackInputTimeline::PadAuthority, RollbackInputTimeline::PAD_COUNT> authority{};
+    const PadMappingArray pad_map = GetPadMapping();
     for (std::size_t pad = 0; pad < authority.size(); ++pad)
     {
-      if (m_pad_map[pad] <= 0)
+      if (pad_map[pad] <= 0)
         authority[pad] = RollbackInputTimeline::PadAuthority::Inactive;
-      else if (IsLocalPlayer(m_pad_map[pad]))
+      else if (IsLocalPlayer(pad_map[pad]))
         authority[pad] = RollbackInputTimeline::PadAuthority::Local;
       else
         authority[pad] = RollbackInputTimeline::PadAuthority::Remote;
@@ -94,8 +128,13 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
 
     live->state_store = std::make_unique<DolphinRollbackStateStore>(
         Core::System::GetInstance(), static_cast<std::size_t>(session.rollback_horizon_frames) + 2);
-    live->output_gate = LiveRollbackOutputGate::CreateHeadlessIsolatedTestGate();
-    if (!live->output_gate || live->state_store->GetConfigurationStatus() !=
+    live->output_gate = std::move(m_pending_live_rollback_output_gate);
+    Core::System& system = Core::System::GetInstance();
+    const bool corrected_frontier_runtime_safe =
+        !system.IsDualCoreMode() || system.GetFifo().UseDeterministicGPUThread();
+    if (!live->output_gate || !live->output_gate->IsSessionQuarantineActive() ||
+        !corrected_frontier_runtime_safe ||
+        live->state_store->GetConfigurationStatus() !=
                                   DolphinRollbackStateStore::ConfigurationStatus::Valid)
     {
       std::fprintf(stderr, "[rollback live] activation refused: state/output gate unavailable\n");
@@ -104,7 +143,7 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
 
     live->scheduler =
         std::make_unique<LiveRollbackInputScheduler>(LiveRollbackInputScheduler::Config{
-            .protocol_version = session.protocol_version,
+            .protocol_version = ROLLBACK_SI_INPUT_VERSION,
             .session_generation = session.generation,
             .first_batch_id = 0,
             .history_capacity = static_cast<std::size_t>(required_history),
@@ -119,6 +158,7 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
       std::fprintf(stderr, "[rollback live] activation refused: SI scheduler contract invalid\n");
       return false;
     }
+    live->digest_candidates.Reset(session.generation);
 
     live->coordinator = std::make_unique<RollbackCoordinator>(
         RollbackCoordinator::Config{
@@ -174,11 +214,78 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
   }
 
   const auto status = live.frame_boundary->CompleteCurrentFrame();
+  const auto capture_completed_state = [&]() {
+    const std::optional<u64> next_frame = live.frame_boundary->GetCurrentFrame();
+    if (!next_frame || *next_frame == 0)
+      return false;
+    const u64 completed_frame = *next_frame - 1;
+    if (completed_frame == 0 || completed_frame % ROLLBACK_STATE_DIGEST_INTERVAL != 0)
+      return true;
+    if (completed_frame > std::numeric_limits<u32>::max())
+      return false;
+
+    Core::System& system = Core::System::GetInstance();
+    auto& memory = system.GetMemory();
+    const u8* const mem1 = memory.GetRAM();
+    const u8* const locked_l1 = memory.GetL1Cache();
+    if (mem1 == nullptr || locked_l1 == nullptr)
+      return false;
+
+    // Dual-core GPU work can write guest RAM. Quiesce it on the CPU thread
+    // before reading, exactly as the determinism oracle does, so a comparison
+    // cannot observe pre-copy RAM on one peer and post-copy RAM on the other.
+    system.GetFifo().SyncGPUForRegisterAccess();
+    RollbackStateDigestCandidates::Candidate candidate{
+        .digest = {.session_generation = live.session.generation,
+                   .logical_frame = static_cast<u32>(completed_frame),
+                   .mem1_crc32 = Common::ComputeCRC32(mem1, memory.GetRamSizeReal()),
+                   .locked_l1_crc32 = Common::ComputeCRC32(locked_l1, memory.GetL1CacheSize()),
+                   .emulated_timebase = system.GetSystemTimers().GetFakeTimeBase()},
+        .required_confirmed_batch =
+            live.scheduler->GetJournal().GetLastAppliedBatchThroughEmulatedFrame(completed_frame)};
+    const auto captured = live.digest_candidates.Capture(std::move(candidate));
+    return captured == RollbackStateDigestCandidates::CaptureStatus::Captured ||
+           captured == RollbackStateDigestCandidates::CaptureStatus::Replaced;
+  };
+  const auto publish_confirmed_states = [&]() {
+    if (live.coordinator->GetState() != RollbackCoordinator::State::Ready)
+      return true;
+    auto& journal = live.scheduler->GetJournal();
+    const std::vector<RollbackStateDigest> confirmed = live.digest_candidates.TakeConfirmed(
+        journal.GetConfirmedThroughBatch(), journal.GetReplayTrigger().has_value());
+    for (RollbackStateDigest digest : confirmed)
+    {
+      // Apply the isolated fault only to a report that is actually leaving the
+      // confirmed queue. A speculative capture can be replaced by corrected
+      // replay before publication; consuming the one-shot hook there made the
+      // intended mismatch disappear nondeterministically.
+      if (live.digest_fault_frame == digest.logical_frame && !live.digest_fault_applied)
+      {
+        digest.mem1_crc32 ^= 1;
+        live.digest_fault_applied = true;
+        std::fprintf(stderr, "[rollback live] isolated digest fault injected at frame %u\n",
+                     digest.logical_frame);
+        std::fflush(stderr);
+      }
+      if (live.confirmed_state_log != nullptr &&
+          (std::fprintf(live.confirmed_state_log, "%u %08x %08x %016llx\n",
+                        digest.logical_frame, digest.mem1_crc32, digest.locked_l1_crc32,
+                        static_cast<unsigned long long>(digest.emulated_timebase)) < 0 ||
+           std::fflush(live.confirmed_state_log) != 0))
+      {
+        return false;
+      }
+      if (!SendRollbackStateDigest(digest))
+        return false;
+    }
+    return true;
+  };
   switch (status)
   {
   case LiveRollbackFrameBoundary::BoundaryStatus::Advanced:
+    return capture_completed_state() && publish_confirmed_states();
   case LiveRollbackFrameBoundary::BoundaryStatus::ReplayAdvanced:
-    return true;
+    return capture_completed_state();
   case LiveRollbackFrameBoundary::BoundaryStatus::RollbackStarted:
   case LiveRollbackFrameBoundary::BoundaryStatus::ChainedRollbackStarted:
   {
@@ -207,7 +314,7 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
     live.next_poll_ordinal = 0;
     std::fprintf(stderr, "[rollback live] correction committed\n");
     std::fflush(stderr);
-    return true;
+    return capture_completed_state() && publish_confirmed_states();
   case LiveRollbackFrameBoundary::BoundaryStatus::Inactive:
   case LiveRollbackFrameBoundary::BoundaryStatus::Faulted:
     FaultLiveRollbackImpl();
@@ -408,6 +515,7 @@ void NetPlayClient::ResetLiveRollbackImpl()
 {
   DeactivateLiveRollbackImpl();
   m_live_rollback.reset();
+  m_pending_live_rollback_output_gate.reset();
 }
 
 }  // namespace NetPlay

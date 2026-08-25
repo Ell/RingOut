@@ -58,12 +58,14 @@ public:
     return allow_begin;
   }
 
-  void EndHiddenReplay(const bool publishable) override {
+  bool EndHiddenReplay(const bool publishable) override {
     ends.push_back(publishable);
     active = false;
+    return publishable && allow_end;
   }
 
   bool allow_begin = true;
+  bool allow_end = true;
   bool active = false;
   std::vector<std::pair<u64, u64>> begins;
   std::vector<bool> ends;
@@ -336,6 +338,42 @@ bool TestRestoreAndScheduleFailuresFault() {
   return true;
 }
 
+bool TestPublicationFailureFaultsCommit() {
+  Journal journal(JournalConfig());
+  CHECK(journal.ObserveAppliedBatch(1, 42, Applied(10, 100)) ==
+        Journal::ObserveStatus::Accepted);
+  CHECK(journal.SubmitInputBatch(1, 42, Journal::InputSource::Local,
+                                 Batch(10, 0b0001, Pads(Pad(PAD_BUTTON_A)))) ==
+        Journal::SubmitStatus::Accepted);
+  CHECK(journal.ResolveBatch(10));
+  CHECK(journal.SubmitInputBatch(
+            1, 42, Journal::InputSource::Remote,
+            Batch(10, 0b0010, Pads({}, Pad(PAD_BUTTON_B)))) ==
+        Journal::SubmitStatus::CorrectedPrediction);
+
+  const auto trigger = journal.GetReplayTrigger();
+  CHECK(trigger);
+  FakeStateStore store;
+  FakeOutputGate gate;
+  gate.allow_end = false;
+  Coordinator coordinator({.enabled = true, .max_replay_frames = 2}, store,
+                          gate);
+  CHECK(coordinator.BeginFrame(100) == Coordinator::FrameStartStatus::Captured);
+  CHECK(coordinator.StartRollback(*trigger) ==
+        Coordinator::RequestStatus::Started);
+  CHECK(coordinator.BeginFrame(100) ==
+        Coordinator::FrameStartStatus::RestoredFrameAlreadyCaptured);
+  CHECK(coordinator.CompleteFrame(100) ==
+        Coordinator::FrameCompleteStatus::AwaitingCommit);
+
+  CHECK(!coordinator.CommitReplay(journal));
+  CHECK(coordinator.GetState() == Coordinator::State::Faulted);
+  CHECK(!gate.active);
+  CHECK(gate.ends == std::vector<bool>{true});
+  CHECK(!journal.GetReplayTrigger());
+  return true;
+}
+
 bool TestCorrectedCaptureFailureAndCancellation() {
   FakeStateStore store;
   FakeOutputGate gate;
@@ -373,6 +411,7 @@ int main() {
       !TestRequestFailsClosedBeforeRestore() ||
       !TestJournalAcknowledgementAndPublicationAreAtomic() ||
       !TestRestoreAndScheduleFailuresFault() ||
+      !TestPublicationFailureFaultsCommit() ||
       !TestCorrectedCaptureFailureAndCancellation()) {
     return 1;
   }

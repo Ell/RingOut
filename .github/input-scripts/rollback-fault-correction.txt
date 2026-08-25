@@ -1,59 +1,66 @@
-# Each three-line window holds every redundant copy of its oldest batch across
-# four sends. Windows are spread across the harness's repeated START presses so
+# Each four-line window holds the original/redundant copies plus the persistent
+# oldest-gap repair until the release ordinal. Windows are spread across the
+# harness's repeated START presses so
 # at least one crosses a press or release edge on machines with different
 # emulation speeds. A run still fails unless a real prediction mismatch causes
 # checkpoint restore and replay; mere packet delay cannot pass it.
 delay 20 24
 delay 21 24
 delay 22 24
+delay 23 24
 delay 28 32
 delay 29 32
 delay 30 32
+delay 31 32
 delay 36 40
 delay 37 40
 delay 38 40
+delay 39 40
 delay 44 48
 delay 45 48
 delay 46 48
+delay 47 48
 delay 52 56
 delay 53 56
 delay 54 56
+delay 55 56
 delay 60 64
 delay 61 64
 delay 62 64
+delay 63 64
 delay 68 72
 delay 69 72
 delay 70 72
+delay 71 72
 delay 76 80
 delay 77 80
 delay 78 80
+delay 79 80
 delay 84 88
 delay 85 88
 delay 86 88
+delay 87 88
 delay 92 96
 delay 93 96
 delay 94 96
+delay 95 96
 delay 100 104
 delay 101 104
 delay 102 104
+delay 103 104
 delay 108 112
 delay 109 112
 delay 110 112
+delay 111 112
 delay 116 120
 delay 117 120
 delay 118 120
+delay 119 120
 delay 124 128
 delay 125 128
 delay 126 128
+delay 127 128
 delay 132 136
 delay 133 136
 delay 134 136
-delay 140 144
-delay 141 144
-delay 142 144
-delay 148 152
-delay 149 152
-delay 150 152
-delay 156 160
-delay 157 160
-delay 158 160
+delay 135 136

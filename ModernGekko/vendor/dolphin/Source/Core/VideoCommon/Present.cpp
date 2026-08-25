@@ -258,7 +258,8 @@ void Presenter::SetNextSwapEstimatedTime(u64 ticks, TimePoint host_time)
 
 void Presenter::ProcessFrameDumping(u64 ticks) const
 {
-  if (NetPlay::IsLiveRollbackHiddenReplayActive())
+  if (NetPlay::IsLiveRollbackHiddenReplayActive() ||
+      NetPlay::IsLiveRollbackSessionQuarantineActive())
     return;
 
   if (g_frame_dumper->IsFrameDumping() && m_xfb_entry)

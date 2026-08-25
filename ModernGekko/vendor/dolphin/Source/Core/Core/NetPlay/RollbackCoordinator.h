@@ -33,14 +33,17 @@ public:
 // available; the coordinator will not restore state without them. During hidden
 // replay the gate must retain the corrected frontier needed for presentation.
 // EndHiddenReplay(true) atomically publishes/deduplicates that frontier, while
-// EndHiddenReplay(false) discards it and leaves the session unable to resume.
+// EndHiddenReplay(false) keeps suppression latched through core teardown and
+// leaves the session unable to resume.
 class RollbackOutputGate
 {
 public:
   virtual ~RollbackOutputGate() = default;
 
   virtual bool BeginHiddenReplay(u64 first_frame, u64 replay_through_frame) = 0;
-  virtual void EndHiddenReplay(bool corrected_frontier_is_publishable) = 0;
+  // Returns true only when a corrected frontier was safely published. False
+  // leaves production suppression latched until core teardown.
+  virtual bool EndHiddenReplay(bool corrected_frontier_is_publishable) = 0;
 };
 
 // Not thread-safe: session code must marshal journal triggers and normal state
@@ -140,7 +143,7 @@ private:
 
   RequestStatus ValidateRequest(const ReplayRequest& request) const;
   bool CanCommitReplay(const ReplayRequest& request) const;
-  void CommitAcknowledgedReplay(const ReplayRequest& request);
+  bool CommitAcknowledgedReplay(const ReplayRequest& request);
   void EnterFaultedState();
 
   const Config m_config;

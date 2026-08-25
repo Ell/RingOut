@@ -34,14 +34,15 @@
 #include "Core/HW/DVD/DVDInterface.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/MMIO.h"
-#include "Core/State.h"
 #include "Core/HW/MemoryInterface.h"
 #include "Core/HW/ProcessorInterface.h"
+#include "Core/HW/RollbackMemorySnapshot.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/VideoInterface.h"
 #include "Core/HW/WII_IPC.h"
 #include "Core/PowerPC/JitCommon/JitBase.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/State.h"
 #include "Core/System.h"
 #include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/PixelEngine.h"
@@ -567,16 +568,34 @@ void MemoryManager::DoState(PointerWrap& p)
     }
   }
 
+  const bool rollback_snapshot = State::IsRollbackSnapshotActive();
   const u32 skip = State::SnapshotSkipMask();
   // MEM1 is serialised at GetRamSize(), which is padded up to the fastmem arena
-  // granularity; only GetRamSizeReal() is addressable by the guest.
+  // granularity; only GetRamSizeReal() is addressable by the guest. Rollback
+  // always reconstructs the inaccessible suffix as zero. Ordinary savestates
+  // retain their byte-for-byte format unless the legacy experiment is enabled.
   const u32 ram_bytes =
-      (skip & State::SKIP_PAD) ? std::min(current_ram_size, GetRamSizeReal()) : current_ram_size;
+      rollback_snapshot ?
+          RollbackSnapshot::AddressableRamBytes(current_ram_size, GetRamSizeReal()) :
+      (skip & State::SKIP_PAD) ? std::min(current_ram_size, GetRamSizeReal()) :
+                                 current_ram_size;
   p.DoArray(m_ram, ram_bytes);
+  if (rollback_snapshot && p.IsReadMode())
+    RollbackSnapshot::ZeroRamPadding(m_ram, current_ram_size, GetRamSizeReal());
   p.DoArray(m_l1_cache, current_l1_cache_size);
   p.DoMarker("Memory RAM");
-  if (current_have_fake_vmem && (skip & State::SKIP_VMEM) == 0)
-    p.DoArray(m_fake_vmem, current_fake_vmem_size);
+  if (current_have_fake_vmem)
+  {
+    if (rollback_snapshot)
+    {
+      if (!RollbackSnapshot::DoZeroAwareMemory(p, m_fake_vmem, current_fake_vmem_size))
+        return;
+    }
+    else if ((skip & State::SKIP_VMEM) == 0)
+    {
+      p.DoArray(m_fake_vmem, current_fake_vmem_size);
+    }
+  }
   p.DoMarker("Memory FakeVMEM");
   if (current_have_exram)
     p.DoArray(m_exram, current_exram_size);

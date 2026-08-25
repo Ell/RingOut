@@ -38,8 +38,18 @@ LiveRollbackInputScheduler::LiveRollbackInputScheduler(Config config)
       m_configuration_status(ValidateConfiguration()),
       m_next_normal_batch_id(m_config.first_batch_id)
 {
-  if (m_configuration_status == ConfigurationStatus::Valid && !SeedDelayWindow())
-    m_configuration_status = ConfigurationStatus::InvalidJournal;
+  if (m_configuration_status == ConfigurationStatus::Valid)
+  {
+    if (!SeedDelayWindow())
+    {
+      m_configuration_status = ConfigurationStatus::InvalidJournal;
+    }
+    else
+    {
+      m_highest_local_batch =
+          m_config.first_batch_id + m_config.base_delay_batches - u64{1};
+    }
+  }
 }
 
 LiveRollbackInputScheduler::BatchResult LiveRollbackInputScheduler::BeginNormalBatch(
@@ -171,12 +181,20 @@ LiveRollbackInputScheduler::SubmitRemotePacket(const RollbackSIInputPacket& pack
   }
   if (packet.batch_count == 0 || packet.batch_count > packet.batches.size())
     return RemotePacketStatus::SubmitFailed;
+  const u8 source_pad_mask = packet.batches[0].pad_mask;
   for (std::size_t i = 0; i < packet.batch_count; ++i)
   {
-    if (packet.batches[i].pad_mask == 0 || (packet.batches[i].pad_mask & ~m_remote_pad_mask) != 0)
+    if (packet.batches[i].pad_mask == 0 || packet.batches[i].pad_mask != source_pad_mask ||
+        (packet.batches[i].pad_mask & ~m_remote_pad_mask) != 0)
     {
       return RemotePacketStatus::InvalidPadMask;
     }
+  }
+  if (packet.has_contiguous_ack &&
+      (packet.contiguous_ack < m_config.first_batch_id || !m_highest_local_batch ||
+       packet.contiguous_ack > *m_highest_local_batch))
+  {
+    return RemotePacketStatus::InvalidAcknowledgement;
   }
 
   bool accepted = false;
@@ -201,9 +219,10 @@ LiveRollbackInputScheduler::SubmitRemotePacket(const RollbackSIInputPacket& pack
       return RemotePacketStatus::SubmitFailed;
     }
   }
+  const bool acknowledgement_advanced = ApplyRemoteAcknowledgement(packet, source_pad_mask);
   if (corrected)
     return RemotePacketStatus::CorrectedPrediction;
-  if (accepted)
+  if (accepted || acknowledgement_advanced)
     return RemotePacketStatus::Accepted;
   return RemotePacketStatus::DuplicateOrRetired;
 }
@@ -254,10 +273,15 @@ LiveRollbackInputScheduler::ValidateConfiguration() const
   {
     return ConfigurationStatus::InsufficientHistory;
   }
-  if (m_config.redundant_batch_count == 0 ||
+  if (m_config.redundant_batch_count < 2 ||
       m_config.redundant_batch_count > ROLLBACK_SI_MAX_BATCHES_PER_PACKET)
   {
     return ConfigurationStatus::InvalidRedundancy;
+  }
+  if (m_config.unacknowledged_history_capacity < m_config.redundant_batch_count ||
+      m_config.unacknowledged_history_capacity > ROLLBACK_SI_MAX_UNACKNOWLEDGED_BATCHES)
+  {
+    return ConfigurationStatus::InvalidAcknowledgementHistory;
   }
   return ConfigurationStatus::Valid;
 }
@@ -290,11 +314,14 @@ bool LiveRollbackInputScheduler::SeedDelayWindow()
 std::optional<RollbackSIInputPacket>
 LiveRollbackInputScheduler::BuildOutgoingPacket(const RollbackSIInputBatch& newest)
 {
-  if (!m_local_history.empty() && newest.batch_id <= m_local_history.back().batch_id)
+  if (!m_highest_local_batch || *m_highest_local_batch == std::numeric_limits<u64>::max() ||
+      newest.batch_id != *m_highest_local_batch + u64{1} ||
+      m_unacknowledged_local_history.size() >= m_config.unacknowledged_history_capacity)
+  {
     return std::nullopt;
-  m_local_history.push_back(newest);
-  while (m_local_history.size() > m_config.redundant_batch_count)
-    m_local_history.pop_front();
+  }
+  m_unacknowledged_local_history.push_back(newest);
+  m_highest_local_batch = newest.batch_id;
 
   RollbackSIInputPacket packet{.protocol_version = m_config.protocol_version,
                                .session_generation = m_config.session_generation};
@@ -303,9 +330,72 @@ LiveRollbackInputScheduler::BuildOutgoingPacket(const RollbackSIInputBatch& newe
     packet.has_contiguous_ack = true;
     packet.contiguous_ack = *confirmed;
   }
-  packet.batch_count = m_local_history.size();
-  std::copy(m_local_history.begin(), m_local_history.end(), packet.batches.begin());
+  packet.batch_count =
+      std::min(m_unacknowledged_local_history.size(), m_config.redundant_batch_count);
+  if (m_unacknowledged_local_history.size() <= packet.batch_count)
+  {
+    std::copy(m_unacknowledged_local_history.begin(), m_unacknowledged_local_history.end(),
+              packet.batches.begin());
+  }
+  else
+  {
+    // Keep repairing the oldest contiguous-ACK gap while the remaining slots
+    // carry the newest bounded redundant tail. This prevents one fully lost
+    // batch from becoming a permanent undetected prediction merely because
+    // newer authoritative batches continue to arrive.
+    packet.batches[0] = m_unacknowledged_local_history.front();
+    const std::size_t tail_count = packet.batch_count - 1;
+    std::copy(m_unacknowledged_local_history.end() -
+                  static_cast<std::ptrdiff_t>(tail_count),
+              m_unacknowledged_local_history.end(), packet.batches.begin() + 1);
+  }
   return packet;
+}
+
+bool LiveRollbackInputScheduler::ApplyRemoteAcknowledgement(const RollbackSIInputPacket& packet,
+                                                            const u8 source_pad_mask)
+{
+  if (!packet.has_contiguous_ack)
+    return false;
+
+  bool advanced = false;
+  for (std::size_t pad = 0; pad < m_remote_ack_by_pad.size(); ++pad)
+  {
+    if ((source_pad_mask & PadBit(pad)) == 0)
+      continue;
+    std::optional<u64>& acknowledged = m_remote_ack_by_pad[pad];
+    if (!acknowledged || packet.contiguous_ack > *acknowledged)
+    {
+      acknowledged = packet.contiguous_ack;
+      advanced = true;
+    }
+  }
+  if (advanced)
+    PruneAcknowledgedLocalHistory();
+  return advanced;
+}
+
+void LiveRollbackInputScheduler::PruneAcknowledgedLocalHistory()
+{
+  std::optional<u64> acknowledged_by_all;
+  for (std::size_t pad = 0; pad < m_remote_ack_by_pad.size(); ++pad)
+  {
+    if ((m_remote_pad_mask & PadBit(pad)) == 0)
+      continue;
+    if (!m_remote_ack_by_pad[pad])
+      return;
+    acknowledged_by_all =
+        acknowledged_by_all ? std::min(*acknowledged_by_all, *m_remote_ack_by_pad[pad]) :
+                              m_remote_ack_by_pad[pad];
+  }
+
+  if (!acknowledged_by_all)
+    return;
+  while (!m_unacknowledged_local_history.empty() &&
+         m_unacknowledged_local_history.front().batch_id <= *acknowledged_by_all)
+  {
+    m_unacknowledged_local_history.pop_front();
+  }
 }
 
 bool LiveRollbackInputScheduler::IsAcceptedSubmitStatus(const Journal::SubmitStatus status)

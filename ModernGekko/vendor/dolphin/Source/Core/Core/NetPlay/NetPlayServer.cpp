@@ -63,6 +63,7 @@
 #include "Core/IOS/Uids.h"
 #include "Core/NetPlay/NetPlayClient.h"  //for NetPlayUI
 #include "Core/NetPlay/NetPlayCommon.h"
+#include "Core/NetPlay/NetPlayConnectProtocol.h"
 #include "Core/NetPlay/RollbackSIInputProtocol.h"
 #include "Core/SyncIdentifier.h"
 
@@ -122,8 +123,9 @@ NetPlayServer::~NetPlayServer()
 
 // called from ---GUI--- thread
 NetPlayServer::NetPlayServer(const u16 port, const bool forward_port, NetPlayUI* dialog,
-                             const NetTraversalConfig& traversal_config)
-    : m_dialog(dialog)
+                             const NetTraversalConfig& traversal_config,
+                             std::string compatibility_fingerprint)
+    : m_compatibility_fingerprint(std::move(compatibility_fingerprint)), m_dialog(dialog)
 {
   //--use server time
   if (enet_initialize() != 0)
@@ -447,8 +449,16 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 {
   std::string netplay_version;
   received_packet >> netplay_version;
+  if (!received_packet)
+    return ConnectionError::MalformedHandshake;
   if (netplay_version != Common::GetScmRevGitStr())
     return ConnectionError::VersionMismatch;
+
+  // Start/stop and mode changes originate on the GUI thread.  Hold the game
+  // mutex for the complete admission decision so a peer cannot be accepted
+  // against a mixture of the old and new session state.  Helpers below may
+  // take the recursive players mutex; the established order is game -> players.
+  std::lock_guard game_guard(m_crit.game);
 
   if (m_is_running || m_start_pending)
     return ConnectionError::GameRunning;
@@ -457,14 +467,46 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
     return ConnectionError::ServerFull;
 
   Client new_player{};
-  new_player.pid = GiveFirstAvailableIDTo(incoming_connection);
-  new_player.socket = incoming_connection;
-
   received_packet >> new_player.revision;
   received_packet >> new_player.name;
 
+  if (!received_packet)
+    return ConnectionError::MalformedHandshake;
+
   if (StringUTF8CodePointCount(new_player.name) > MAX_NAME_LENGTH)
     return ConnectionError::NameTooLong;
+
+  NetPlayConnectExtension extension;
+  const NetPlayConnectExtensionStatus extension_status =
+      ParseNetPlayConnectExtension(received_packet, &extension);
+  if (extension_status == NetPlayConnectExtensionStatus::Malformed)
+    return ConnectionError::MalformedHandshake;
+
+  // RingOut servers always provide a compatibility identity and therefore
+  // require the matching extension in both modes. A generic fixed-delay
+  // Dolphin server with no identity may still accept a legacy hello, but that
+  // handshake-only allowance does not claim support for RingOut's later lobby
+  // extensions.
+  if (extension_status == NetPlayConnectExtensionStatus::Legacy)
+  {
+    if (!m_compatibility_fingerprint.empty() || m_rollback_config.enabled)
+      return ConnectionError::CompatibilityMismatch;
+  }
+  else
+  {
+    if (m_compatibility_fingerprint.empty() ||
+        extension.compatibility_fingerprint != m_compatibility_fingerprint ||
+        extension.rollback_requested != m_rollback_config.enabled ||
+        (extension.rollback_requested && !extension.rollback_capable))
+    {
+      return ConnectionError::CompatibilityMismatch;
+    }
+    new_player.connect_rollback_capable = extension.rollback_capable;
+  }
+
+  new_player.pid = GiveFirstAvailableIDTo(incoming_connection);
+  new_player.socket = incoming_connection;
+  ClearReadyLocked();
 
   // Update time in milliseconds of no acknowledgment of
   // sent packets before a connection is deemed disconnected
@@ -508,6 +550,8 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
     SendResponseToPlayer(new_player, MessageID::GameStatus, existing_player.pid,
                          static_cast<u8>(existing_player.game_status));
+    SendResponseToPlayer(new_player, existing_player.ready ? MessageID::Ready : MessageID::NotReady,
+                         existing_player.pid);
   }
 
   if (Config::Get(Config::NETPLAY_ENABLE_QOS))
@@ -530,6 +574,15 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 unsigned int NetPlayServer::OnDisconnect(const Client& player)
 {
   const PlayerId pid = player.pid;
+  // Serialize the disconnect transition with GUI-thread start/stop changes.
+  // This also keeps m_is_running, m_start_pending, the mappings, and rollback
+  // session teardown in one atomic state transition.
+  std::lock_guard game_guard(m_crit.game);
+
+  // Every connected rollback peer is part of confirmed-state comparison,
+  // including an unmapped spectator that still runs the emulation. Losing any
+  // expected report invalidates the active session.
+  FaultRollbackSession(0, 0, false);
 
   if (m_is_running)
   {
@@ -537,7 +590,6 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
     {
       if (mapping == pid && pid != 1)
       {
-        std::lock_guard lkg(m_crit.game);
         m_is_running = false;
 
         sf::Packet spac;
@@ -552,7 +604,6 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
     {
       if (m_is_running && mapping == pid && pid != 1)
       {
-        std::lock_guard lkg(m_crit.game);
         m_is_running = false;
 
         sf::Packet spac;
@@ -577,10 +628,13 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
 
   enet_peer_disconnect(player.socket, 0);
 
-  std::lock_guard lkp(m_crit.players);
-  auto it = m_players.find(player.pid);
-  if (it != m_players.end())
-    m_players.erase(it);
+  {
+    std::lock_guard lkp(m_crit.players);
+    auto it = m_players.find(player.pid);
+    if (it != m_players.end())
+      m_players.erase(it);
+  }
+  ClearReadyLocked();
 
   // alert other players of disconnect
   SendToClients(spac);
@@ -636,7 +690,8 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player, const u8 
   MessageID mid{};
   packet >> mid;
 
-  if (!packet || (channel_id == ROLLBACK_INPUT_CHANNEL) != (mid == MessageID::RollbackSIInput))
+  if (!packet || (channel_id == ROLLBACK_INPUT_CHANNEL) != (mid == MessageID::RollbackSIInput) ||
+      (mid == MessageID::RollbackStateDigest && channel_id != DEFAULT_CHANNEL))
   {
     return 1;
   }
@@ -661,6 +716,22 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player, const u8 
     spac << msg;
 
     SendToClients(spac, player.pid);
+  }
+  break;
+
+  case MessageID::Ready:
+  case MessageID::NotReady:
+  {
+    {
+      std::lock_guard game_guard(m_crit.game);
+      if (!packet.endOfPacket() || m_is_running || m_start_pending)
+        return 1;
+      std::lock_guard players_guard(m_crit.players);
+      player.ready = mid == MessageID::Ready;
+    }
+    sf::Packet response;
+    response << mid << player.pid;
+    SendToClients(response);
   }
   break;
 
@@ -896,10 +967,13 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player, const u8 
 
   case MessageID::StopGame:
   {
+    std::lock_guard game_guard(m_crit.game);
     if (!m_is_running)
       break;
 
     m_is_running = false;
+    m_rollback_session = {};
+    m_rollback_digest_tracker.Reset({});
 
     // tell clients to stop game
     sf::Packet spac;
@@ -945,16 +1019,16 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player, const u8 
     {
       return 1;
     }
-    player.rollback_protocol_version = protocol_version;
-    player.rollback_max_horizon_frames = max_horizon;
+    {
+      std::lock_guard players_guard(m_crit.players);
+      player.rollback_protocol_version = protocol_version;
+      player.rollback_max_horizon_frames = max_horizon;
+    }
   }
   break;
 
   case MessageID::RollbackSIInput:
   {
-    if (!m_rollback_session.enabled || player.current_game != m_current_game)
-      return 1;
-
     u16 payload_size = 0;
     packet >> payload_size;
     if (!packet || payload_size == 0 || payload_size > ROLLBACK_SI_MAX_PACKET_SIZE)
@@ -967,18 +1041,90 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player, const u8 
       return 1;
 
     const RollbackSIInputDecodeResult decoded = DecodeRollbackSIInputPacket(
-        std::span<const u8>(payload.data(), payload_size), m_rollback_session.generation);
+        std::span<const u8>(payload.data(), payload_size), 0);
     if (!decoded)
       return 1;
 
-    if (!IsRollbackSIInputOwnedByPlayer(decoded.packet, m_pad_map, player.pid))
-      return 1;
+    // Valid packets from an older unreliable-channel generation can outlive
+    // StopGame or cross the next StartGame boundary. Retire them; only a
+    // malformed packet or a current-generation ownership violation is fatal.
+    {
+      std::lock_guard game_guard(m_crit.game);
+      if (!m_rollback_session.enabled || player.current_game != m_current_game ||
+          decoded.packet.session_generation != m_rollback_session.generation)
+      {
+        return 0;
+      }
 
-    sf::Packet relay;
-    relay << MessageID::RollbackSIInput << payload_size;
-    for (std::size_t i = 0; i < payload_size; ++i)
-      relay << payload[i];
-    SendToClients(relay, player.pid, ROLLBACK_INPUT_CHANNEL);
+      if (!IsRollbackSIInputOwnedByPlayer(decoded.packet, m_pad_map, player.pid))
+        return 1;
+
+      sf::Packet relay;
+      relay << MessageID::RollbackSIInput << payload_size;
+      for (std::size_t i = 0; i < payload_size; ++i)
+        relay << payload[i];
+      SendToClients(relay, player.pid, ROLLBACK_INPUT_CHANNEL);
+    }
+  }
+  break;
+
+  case MessageID::RollbackStateDigest:
+  {
+    u16 payload_size = 0;
+    packet >> payload_size;
+    if (!packet || payload_size != ROLLBACK_STATE_DIGEST_PACKET_SIZE)
+    {
+      FaultRollbackSession(0, 0, false);
+      return 1;
+    }
+
+    std::array<u8, ROLLBACK_STATE_DIGEST_PACKET_SIZE> payload{};
+    for (u8& byte : payload)
+      packet >> byte;
+    if (!packet || !packet.endOfPacket())
+    {
+      FaultRollbackSession(0, 0, false);
+      return 1;
+    }
+    const RollbackStateDigestDecodeResult decoded = DecodeRollbackStateDigest(payload);
+    if (!decoded)
+    {
+      FaultRollbackSession(0, 0, false);
+      return 1;
+    }
+
+    // A reliable packet queued immediately before StopGame can still be read
+    // after lifecycle state changes. A valid foreign generation is stale, not
+    // evidence that the current session is corrupt.
+    {
+      std::lock_guard game_guard(m_crit.game);
+      if (!m_rollback_session.enabled ||
+          decoded.digest.session_generation != m_rollback_session.generation)
+      {
+        return 0;
+      }
+
+      const RollbackStateDigestTracker::SubmitResult submitted =
+          m_rollback_digest_tracker.Submit(player.pid, decoded.digest);
+      switch (submitted.status)
+      {
+      case RollbackStateDigestTracker::SubmitStatus::Accepted:
+      case RollbackStateDigestTracker::SubmitStatus::Matched:
+        break;
+      case RollbackStateDigestTracker::SubmitStatus::Mismatch:
+        FaultRollbackSession(decoded.digest.logical_frame, submitted.blamed_player, true);
+        break;
+      case RollbackStateDigestTracker::SubmitStatus::InactiveSession:
+      case RollbackStateDigestTracker::SubmitStatus::BadSession:
+      case RollbackStateDigestTracker::SubmitStatus::UnexpectedPlayer:
+      case RollbackStateDigestTracker::SubmitStatus::Malformed:
+      case RollbackStateDigestTracker::SubmitStatus::Duplicate:
+      case RollbackStateDigestTracker::SubmitStatus::Stale:
+      case RollbackStateDigestTracker::SubmitStatus::Future:
+        FaultRollbackSession(decoded.digest.logical_frame, 0, false);
+        return 1;
+      }
+    }
   }
   break;
 
@@ -1243,6 +1389,7 @@ bool NetPlayServer::ChangeGame(const SyncIdentifier& sync_identifier,
 
   m_selected_game_identifier = sync_identifier;
   m_selected_game_name = netplay_name;
+  ClearReadyLocked();
 
   // send changed game to clients
   sf::Packet spac;
@@ -1439,6 +1586,12 @@ bool NetPlayServer::RequestStartGame()
 {
   INFO_LOG_FMT(NETPLAY, "Start Game requested.");
 
+  if (m_require_ready && !AreAllMappedPlayersReady())
+  {
+    INFO_LOG_FMT(NETPLAY, "Start refused because a mapped player is not ready.");
+    return false;
+  }
+
   if (!SetupNetSettings())
     return false;
 
@@ -1500,20 +1653,98 @@ bool NetPlayServer::RequestStartGame()
   return true;
 }
 
+bool NetPlayServer::SetRequireReady(const bool require_ready)
+{
+  std::lock_guard game_guard(m_crit.game);
+  if (m_is_running || m_start_pending)
+    return false;
+  m_require_ready = require_ready;
+  return true;
+}
+
+bool NetPlayServer::AreAllMappedPlayersReady()
+{
+  std::lock_guard game_guard(m_crit.game);
+  std::lock_guard players_guard(m_crit.players);
+  bool has_mapped_player = false;
+  for (const PlayerId pid : m_pad_map)
+  {
+    if (pid == 0)
+      continue;
+    has_mapped_player = true;
+    const auto player = m_players.find(pid);
+    if (player == m_players.end() || !player->second.ready)
+      return false;
+  }
+  return has_mapped_player;
+}
+
+void NetPlayServer::ClearReady()
+{
+  std::lock_guard game_guard(m_crit.game);
+  if (m_is_running || m_start_pending)
+    return;
+  ClearReadyLocked();
+}
+
+void NetPlayServer::ClearReadyLocked()
+{
+  std::vector<PlayerId> changed_players;
+  {
+    std::lock_guard players_guard(m_crit.players);
+    for (auto& [pid, player] : m_players)
+    {
+      if (player.ready)
+      {
+        player.ready = false;
+        changed_players.push_back(pid);
+      }
+    }
+  }
+  for (const PlayerId pid : changed_players)
+  {
+    sf::Packet packet;
+    packet << MessageID::NotReady << pid;
+    SendAsyncToClients(std::move(packet));
+  }
+}
+
 // called from multiple threads
 bool NetPlayServer::SetRollbackNetplayConfig(const RollbackNetplayConfig& config)
 {
   std::lock_guard guard(m_crit.game);
-  if (m_is_running || m_start_pending || (config.enabled && !IsValidRollbackNetplayConfig(config)))
+  if (m_is_running || m_start_pending ||
+      (config.enabled &&
+       (!IsValidRollbackNetplayConfig(config) || m_compatibility_fingerprint.empty())))
     return false;
+  if (config.enabled)
+  {
+    std::lock_guard players_guard(m_crit.players);
+    if (!std::ranges::all_of(
+            m_players, [](const auto& entry) { return entry.second.connect_rollback_capable; }))
+    {
+      return false;
+    }
+  }
+  if (config.enabled != m_rollback_config.enabled ||
+      config.protocol_version != m_rollback_config.protocol_version ||
+      config.base_delay_samples != m_rollback_config.base_delay_samples ||
+      config.rollback_horizon_frames != m_rollback_config.rollback_horizon_frames)
+  {
+    ClearReadyLocked();
+  }
   m_rollback_config = config;
   if (!config.enabled)
+  {
     m_rollback_session = {};
+    m_rollback_digest_tracker.Reset({});
+  }
   return true;
 }
 
 bool NetPlayServer::CanUseRollbackNetplay()
 {
+  std::lock_guard game_guard(m_crit.game);
   std::lock_guard players_guard(m_crit.players);
   return m_rollback_config.enabled && IsValidRollbackNetplayConfig(m_rollback_config) &&
          !m_players.empty() && std::ranges::all_of(m_players, [this](const auto& entry) {
@@ -1527,6 +1758,12 @@ RollbackNetplaySession NetPlayServer::GetRollbackNetplaySession()
 {
   std::lock_guard guard(m_crit.game);
   return m_rollback_session;
+}
+
+std::optional<u32> NetPlayServer::GetRollbackDigestRetiredThroughFrame()
+{
+  std::lock_guard guard(m_crit.game);
+  return m_rollback_digest_tracker.GetRetiredThroughFrame();
 }
 
 RollbackNetplaySession NetPlayServer::SelectRollbackNetplaySession()
@@ -1564,8 +1801,34 @@ void NetPlayServer::SendRollbackNetplaySession(const RollbackNetplaySession& ses
   for (const Client& player : std::views::values(m_players))
   {
     if (player.rollback_protocol_version != 0)
-      Send(player.socket, packet);
+    {
+      sf::Packet player_packet = packet;
+      SendAsync(std::move(player_packet), player.pid);
+    }
   }
+}
+
+void NetPlayServer::FaultRollbackSession(const u32 logical_frame, const PlayerId blamed_player,
+                                         const bool desync)
+{
+  std::lock_guard game_guard(m_crit.game);
+  if (!m_is_running || !m_rollback_session.enabled)
+    return;
+
+  if (desync)
+  {
+    sf::Packet desync_packet;
+    desync_packet << MessageID::DesyncDetected << static_cast<int>(blamed_player) << logical_frame;
+    SendToClients(desync_packet);
+    m_desync_detected = true;
+  }
+
+  sf::Packet stop_packet;
+  stop_packet << MessageID::DisableGame;
+  SendToClients(stop_packet);
+  m_is_running = false;
+  m_rollback_session = {};
+  m_rollback_digest_tracker.Reset({});
 }
 
 // called from multiple threads
@@ -1576,10 +1839,37 @@ bool NetPlayServer::StartGame()
   m_timebase_by_frame.clear();
   m_desync_detected = false;
   std::lock_guard lkg(m_crit.game);
+  if (m_require_ready && !AreAllMappedPlayersReady())
+  {
+    INFO_LOG_FMT(NETPLAY, "Start refused because ready state changed before launch.");
+    return false;
+  }
   // only used as an identifier, not time value, so truncation is fine
   m_current_game = static_cast<u32>(Common::Timer::NowMs());
 
   m_rollback_session = SelectRollbackNetplaySession();
+  if (m_rollback_session.enabled)
+  {
+    std::vector<PlayerId> expected_players;
+    {
+      std::lock_guard players_guard(m_crit.players);
+      expected_players.reserve(m_players.size());
+      for (const Client& player : std::views::values(m_players))
+        expected_players.push_back(player.pid);
+    }
+    m_rollback_digest_tracker.Reset(
+        {.session_generation = m_rollback_session.generation,
+         .expected_players = std::move(expected_players)});
+    if (!m_rollback_digest_tracker.IsActive())
+    {
+      m_rollback_session = {};
+      return false;
+    }
+  }
+  else
+  {
+    m_rollback_digest_tracker.Reset({});
+  }
   SendRollbackNetplaySession(m_rollback_session);
 
   // no change, just update with clients

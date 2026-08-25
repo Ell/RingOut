@@ -154,6 +154,7 @@ enum class MessageID : u8
   PadHostData = 0x63,
   GBAConfig = 0x64,
   RollbackSIInput = 0x65,
+  RollbackStateDigest = 0x66,
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,
@@ -202,7 +203,9 @@ enum class ConnectionError : u8
   ServerFull = 1,
   GameRunning = 2,
   VersionMismatch = 3,
-  NameTooLong = 4
+  NameTooLong = 4,
+  CompatibilityMismatch = 5,
+  MalformedHandshake = 6,
 };
 
 enum class SyncSaveDataID : u8
@@ -243,7 +246,10 @@ enum : u8
 // do not answer RollbackCapabilityQuery remain valid fixed-delay peers.  A
 // session is enabled only when every connected peer advertises the exact wire
 // version selected by the host.
-constexpr u16 ROLLBACK_NETPLAY_VERSION = 1;
+// Version 2 makes confirmed-state digest reporting mandatory. Version 1 peers
+// cannot safely mix because they would leave live deterministic drift
+// undetected rather than contributing to each periodic comparison.
+constexpr u16 ROLLBACK_NETPLAY_VERSION = 2;
 constexpr u16 ROLLBACK_NETPLAY_MAX_BASE_DELAY = 120;
 constexpr u16 ROLLBACK_NETPLAY_MAX_HORIZON = 120;
 
@@ -267,6 +273,7 @@ struct RollbackNetplaySession
 constexpr bool IsValidRollbackNetplayConfig(const RollbackNetplayConfig& config)
 {
   return config.protocol_version == ROLLBACK_NETPLAY_VERSION &&
+         config.base_delay_samples != 0 &&
          config.base_delay_samples <= ROLLBACK_NETPLAY_MAX_BASE_DELAY &&
          config.rollback_horizon_frames != 0 &&
          config.rollback_horizon_frames <= ROLLBACK_NETPLAY_MAX_HORIZON;
@@ -281,6 +288,7 @@ constexpr bool IsValidRollbackNetplaySession(const RollbackNetplaySession& sessi
            session.base_delay_samples <= ROLLBACK_NETPLAY_MAX_BASE_DELAY;
   }
   return session.protocol_version == ROLLBACK_NETPLAY_VERSION && session.generation != 0 &&
+         session.base_delay_samples != 0 &&
          session.base_delay_samples <= ROLLBACK_NETPLAY_MAX_BASE_DELAY &&
          session.rollback_horizon_frames != 0 &&
          session.rollback_horizon_frames <= ROLLBACK_NETPLAY_MAX_HORIZON;

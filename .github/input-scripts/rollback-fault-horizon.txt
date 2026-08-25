@@ -1,8 +1,70 @@
-# Run this schedule with RINGOUT_ROLLBACK_HORIZON_FRAMES=1. The live scheduler
-# conservatively permits one predicted SI batch per horizon frame, so holding
-# all redundant copies beyond that batch must stall. The sender keeps running
-# and releases the retained packets at ordinal 37, so the frozen peer resumes.
-delay 32 37
-delay 33 37
-delay 34 37
-delay 35 37
+# Run this schedule with RINGOUT_ROLLBACK_HORIZON_FRAMES=1. Drop a full
+# 64-send burst from one peer so the receiver must exhaust its one-batch
+# prediction allowance and wait for authoritative input. Send 65 is not
+# impaired; the sender's persistent oldest-unacknowledged repair then delivers
+# the first missing batch and lets the frozen peer resume. Starting at ordinal
+# one avoids depending on how far one localhost process runs ahead during boot.
+drop 1
+drop 2
+drop 3
+drop 4
+drop 5
+drop 6
+drop 7
+drop 8
+drop 9
+drop 10
+drop 11
+drop 12
+drop 13
+drop 14
+drop 15
+drop 16
+drop 17
+drop 18
+drop 19
+drop 20
+drop 21
+drop 22
+drop 23
+drop 24
+drop 25
+drop 26
+drop 27
+drop 28
+drop 29
+drop 30
+drop 31
+drop 32
+drop 33
+drop 34
+drop 35
+drop 36
+drop 37
+drop 38
+drop 39
+drop 40
+drop 41
+drop 42
+drop 43
+drop 44
+drop 45
+drop 46
+drop 47
+drop 48
+drop 49
+drop 50
+drop 51
+drop 52
+drop 53
+drop 54
+drop 55
+drop 56
+drop 57
+drop 58
+drop 59
+drop 60
+drop 61
+drop 62
+drop 63
+drop 64

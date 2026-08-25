@@ -85,6 +85,9 @@ LiveRollbackFrameBoundary::BoundaryStatus LiveRollbackFrameBoundary::CompleteCur
     return BeginTrackedFrame(m_current_frame) ? BoundaryStatus::ReplayCommitted : Fault();
   }
 
+  if (m_coordinator.GetState() == RollbackCoordinator::State::Faulted)
+    return Fault();
+
   // A newer correction can arrive between reaching the frontier and commit.
   // Keep output hidden and immediately restart from the replacement trigger.
   return StartPendingRollback(true);

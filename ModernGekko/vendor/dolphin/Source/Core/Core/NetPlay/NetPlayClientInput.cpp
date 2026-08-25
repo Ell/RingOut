@@ -248,7 +248,14 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
 
 GCPadStatus NetPlayClient::SampleLocalPad(const int local_pad) const
 {
-  const int ingame_pad = LocalPadToInGamePad(local_pad);
+  int ingame_pad = 4;
+  bool gba_enabled = false;
+  {
+    std::lock_guard game_guard(m_crit.game);
+    ingame_pad = LocalPadToInGamePad(local_pad);
+    gba_enabled = ingame_pad >= 0 && static_cast<std::size_t>(ingame_pad) < m_gba_config.size() &&
+                  m_gba_config[ingame_pad].enabled;
+  }
   GCPadStatus pad_status{};
 
   // The active netplay overlay cannot pause only one peer, so emulation keeps
@@ -261,7 +268,7 @@ GCPadStatus NetPlayClient::SampleLocalPad(const int local_pad) const
   {
     pad_status = {};
   }
-  else if (m_gba_config[ingame_pad].enabled)
+  else if (gba_enabled)
   {
     pad_status = Pad::GetGBAStatus(local_pad);
   }
@@ -354,14 +361,15 @@ void NetPlayClient::SendPadHostPoll(const PadIndex pad_num)
   if (m_local_player->pid != m_current_golfer)
     return;
 
+  const PadMappingArray pad_map = GetPadMapping();
   sf::Packet packet;
   packet << MessageID::PadHostData;
 
   if (pad_num < 0)
   {
-    for (size_t i = 0; i < m_pad_map.size(); i++)
+    for (size_t i = 0; i < pad_map.size(); i++)
     {
-      if (m_pad_map[i] <= 0)
+      if (pad_map[i] <= 0)
         continue;
 
       while (!m_first_pad_status_received[i])
@@ -373,9 +381,9 @@ void NetPlayClient::SendPadHostPoll(const PadIndex pad_num)
       }
     }
 
-    for (size_t i = 0; i < m_pad_map.size(); i++)
+    for (size_t i = 0; i < pad_map.size(); i++)
     {
-      if (m_pad_map[i] == 0 || m_pad_buffer[i].Size() > 0)
+      if (pad_map[i] == 0 || m_pad_buffer[i].Size() > 0)
         continue;
 
       const GCPadStatus& pad_status = m_last_pad_status[i];
@@ -383,7 +391,7 @@ void NetPlayClient::SendPadHostPoll(const PadIndex pad_num)
       AddPadStateToPacket(static_cast<int>(i), pad_status, packet);
     }
   }
-  else if (m_pad_map[pad_num] != 0)
+  else if (pad_map[pad_num] != 0)
   {
     while (!m_first_pad_status_received[pad_num])
     {

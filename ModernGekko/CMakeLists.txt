@@ -553,17 +553,35 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     add_executable(moderngekko-port tools/moderngekko_port.cpp)
     target_link_libraries(moderngekko-port PRIVATE ModernGekko::Runtime)
     target_compile_definitions(moderngekko-port PRIVATE
-        MODERNGEKKO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
         MODERNGEKKO_REQUIRED_DISC_ID="GRSEAF")
     add_dependencies(moderngekko-port dolrecomp moderngekko-run)
     add_dependencies(moderngekko-launcher moderngekko-port)
     add_custom_command(TARGET moderngekko-port POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/../dist/RingOut-1.0-dist/module-src"
+                "$<TARGET_FILE_DIR:moderngekko-port>/module-src"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:moderngekko-port>/resources"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/../work/mg_userdir/GameSettings/GRSEAF.ini"
+                "$<TARGET_FILE_DIR:moderngekko-port>/resources/GRSEAF.ini"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:dolrecomp>"
                 "$<TARGET_FILE_DIR:moderngekko-port>")
 endif()
 
 if(BUILD_TESTING)
+    add_executable(moderngekko_rollback_memory_snapshot_test
+        tests/rollback_memory_snapshot_test.cpp)
+    target_include_directories(moderngekko_rollback_memory_snapshot_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_memory_snapshot_test PRIVATE cxx_std_20)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_memory_snapshot_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_memory_snapshot
+        COMMAND moderngekko_rollback_memory_snapshot_test)
+
     add_executable(moderngekko_live_rollback_gate_test
         tests/live_rollback_gate_test.cpp
         vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackFrameBoundary.cpp
@@ -657,6 +675,18 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME moderngekko.rollback_live_scheduler
         COMMAND moderngekko_rollback_live_scheduler_test)
+
+    add_executable(moderngekko_rollback_state_digest_test
+        tests/rollback_state_digest_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackStateDigestProtocol.cpp)
+    target_include_directories(moderngekko_rollback_state_digest_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_state_digest_test PRIVATE cxx_std_23)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_state_digest_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_state_digest
+        COMMAND moderngekko_rollback_state_digest_test)
 
     if(UNIX)
         add_test(NAME moderngekko.rollback_live_harness

@@ -19,8 +19,9 @@
 #include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
 #include "Core/CommonTitles.h"
-#include "Core/Config/MainSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
+#include "Core/Config/SessionSettings.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/EXI/EXI_Channel.h"
@@ -32,6 +33,7 @@
 #include "Core/HW/Sram.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
+#include "Core/State.h"
 #include "Core/System.h"
 #include "DiscIO/Enums.h"
 
@@ -184,14 +186,15 @@ void CEXIMemoryCard::SetupGciFolder(const Memcard::HeaderData& header_data)
       GetGCIFolderPath(m_card_slot, AllowMovieFolder::Yes, m_system.GetMovie());
 
   const File::FileInfo file_info(dir_path);
-  if (!file_info.Exists())
+  const bool save_data_writable = Config::Get(Config::SESSION_SAVE_DATA_WRITABLE);
+  if (save_data_writable && !file_info.Exists())
   {
     if (migrate)  // first use of memcard folder, migrate automatically
       MigrateFromMemcardFile(dir_path + DIR_SEP, m_card_slot, SConfig::GetInstance().m_region);
     else
       File::CreateFullPath(dir_path + DIR_SEP);
   }
-  else if (!file_info.IsDirectory())
+  else if (save_data_writable && !file_info.IsDirectory())
   {
     if (File::Rename(dir_path, dir_path + ".original"))
     {
@@ -497,11 +500,10 @@ void CEXIMemoryCard::TransferByte(u8& byte)
 
 void CEXIMemoryCard::DoState(PointerWrap& p)
 {
-  // for movie sync, we need to save/load memory card contents (and other data) in savestates.
-  // otherwise, we'll assume the user wants to keep their memcards and saves separate,
-  // unless we're loading (in which case we let the savestate contents decide, in order to stay
-  // aligned with them).
-  bool storeContents = m_system.GetMovie().IsMovieActive();
+  // Movies and rollback both need card protocol/content state to rewind with
+  // the guest. Ordinary savestates preserve Dolphin's existing policy of
+  // keeping a user's live memory card separate.
+  bool storeContents = State::ShouldSerializeMemoryCardState(m_system.GetMovie().IsMovieActive());
   p.Do(storeContents);
 
   if (storeContents)

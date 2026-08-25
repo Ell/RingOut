@@ -48,6 +48,7 @@ This file mainly deals with the [Drive I/F], however [AIDFR] controls
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/State.h"
 #include "Core/System.h"
 
 namespace AudioInterface
@@ -90,7 +91,20 @@ void AudioInterfaceManager::DoState(PointerWrap& p)
   p.Do(m_cpu_cycles_per_sample);
 
   SoundStream* sound_stream = m_system.GetSoundStream();
-  sound_stream->GetMixer()->DoState(p);
+  Mixer* const mixer = sound_stream->GetMixer();
+  if (State::ShouldSerializeHostMixerState())
+  {
+    mixer->DoState(p);
+  }
+  else if (p.IsReadMode())
+  {
+    // The host FIFO remains monotonic across rewind. Only synchronize guest
+    // configuration which controls future pushes; queued speculative audio is
+    // allowed to drain while hidden replay pushes are suppressed.
+    mixer->SetDMAInputSampleRateDivisor(m_aid_sample_rate_divisor);
+    mixer->SetStreamInputSampleRateDivisor(m_ais_sample_rate_divisor);
+    mixer->SetStreamingVolume(m_volume.left, m_volume.right);
+  }
 }
 
 void AudioInterfaceManager::UpdateInterrupts()

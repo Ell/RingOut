@@ -3,6 +3,7 @@
 
 #include "Core/NetPlay/DolphinRollbackStateStore.h"
 
+#include <cstdio>
 #include <span>
 
 #include "Core/Core.h"
@@ -32,11 +33,22 @@ bool DolphinRollbackStateStore::CaptureFrameStart(const u64 frame)
   // as either the old frame or the requested new frame.
   slot.frame.reset();
   slot.valid_size = 0;
+  const State::ScopedRollbackSnapshot rollback_snapshot_scope;
   const std::size_t size = State::SaveToBuffer(m_system, slot.buffer);
   if (size == 0)
     return false;
   slot.valid_size = size;
   slot.frame = frame;
+  if (!m_last_reported_snapshot_size.has_value())
+  {
+    std::fprintf(stderr,
+                 "[rollback state] checkpoint frame=%llu bytes=%zu (%.2f MiB); "
+                 "addressable MEM1 + lossless zero-aware VMEM\n",
+                 static_cast<unsigned long long>(frame), size,
+                 static_cast<double>(size) / (1024.0 * 1024.0));
+    std::fflush(stderr);
+    m_last_reported_snapshot_size = size;
+  }
   return true;
 }
 
@@ -52,6 +64,7 @@ bool DolphinRollbackStateStore::RestoreFrameStart(const u64 frame)
   Slot* const slot = FindSlot(frame);
   if (slot == nullptr)
     return false;
+  const State::ScopedRollbackSnapshot rollback_snapshot_scope;
   return State::LoadFromBuffer(m_system, std::span<u8>{slot->buffer.data(), slot->valid_size});
 }
 

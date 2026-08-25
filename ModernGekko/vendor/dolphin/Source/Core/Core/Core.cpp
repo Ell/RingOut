@@ -137,7 +137,7 @@ void SetIsThrottlerTempDisabled(bool disable)
 void FrameUpdateOnCPUThread()
 {
   if (NetPlay::IsNetPlayRunning() && !NetPlay::NetPlayClient::IsLiveRollbackSessionActive() &&
-      !NetPlay::IsLiveRollbackHiddenReplayActive())
+      NetPlay::IsLiveRollbackReplayDerivedOutboundAllowed())
     NetPlay::NetPlayClient::SendTimeBase();
 
   // On the CPU thread and once per emulated frame, which is the only place a
@@ -488,6 +488,12 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
 {
   NotifyStateChanged(State::Starting);
   Common::ScopeGuard flag_guard{[] {
+    // Failed/cancelled rollback keeps every host output gate armed. This scope
+    // guard is destroyed last, after GPU, audio, and HW guards, so it is the
+    // first safe point at which an unpublished historical state can no longer
+    // leak to the host.
+    NetPlay::FinalizeLiveRollbackOutputSuppressionAfterCoreTeardown();
+
     {
       std::lock_guard lock(s_core_mutex);
       s_state.store(State::Uninitialized);
@@ -812,7 +818,8 @@ void Callback_NewField(Core::System& system)
     }
   }
 
-  if (!NetPlay::IsLiveRollbackHiddenReplayActive())
+  if (!NetPlay::IsLiveRollbackHiddenReplayActive() &&
+      !NetPlay::IsLiveRollbackSessionQuarantineActive())
     AchievementManager::GetInstance().DoFrame();
 }
 

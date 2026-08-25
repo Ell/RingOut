@@ -109,6 +109,8 @@ private:
     {
     }
     void DoState(PointerWrap& p);
+    void PrepareForRollbackGeneration(u64 generation);
+    bool PrepareMixForRollbackGeneration(u64 generation);
 
     DOLPHIN_FORCE_INLINE void PushSample(s16 left, s16 right)
     {
@@ -161,6 +163,8 @@ private:
     std::atomic<s32> m_RVolume{256};
 
     StereoPair m_quantization_error;
+    u64 m_rollback_push_generation = 0;
+    u64 m_rollback_mix_generation = 0;
   };
 
   void RefreshConfig();
@@ -187,6 +191,7 @@ private:
   u32 m_output_sample_rate;
 
   AudioCommon::SurroundDecoder m_surround_decoder;
+  u64 m_rollback_surround_generation = 0;
 
   WaveFileWriter m_wave_writer_dtk;
   WaveFileWriter m_wave_writer_dsp;

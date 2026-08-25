@@ -45,12 +45,25 @@ Scheduler::Config Config() {
 }
 
 NetPlay::RollbackSIInputPacket RemotePacket(const u64 batch_id,
-                                            const u16 button) {
+                                            const u16 button,
+                                            const u8 pad_mask = 0b0010) {
   NetPlay::RollbackSIInputPacket packet{.session_generation = 77,
                                         .batch_count = 1};
   packet.batches[0].batch_id = batch_id;
-  packet.batches[0].pad_mask = 0b0010;
-  packet.batches[0].pads[1] = Pad(button);
+  packet.batches[0].pad_mask = pad_mask;
+  for (std::size_t pad = 0; pad < packet.batches[0].pads.size(); ++pad) {
+    if ((pad_mask & (u8{1} << pad)) != 0)
+      packet.batches[0].pads[pad] = Pad(button);
+  }
+  return packet;
+}
+
+NetPlay::RollbackSIInputPacket AcknowledgingRemotePacket(const u64 batch_id,
+                                                         const u8 pad_mask,
+                                                         const u64 ack) {
+  auto packet = RemotePacket(batch_id, 0, pad_mask);
+  packet.has_contiguous_ack = true;
+  packet.contiguous_ack = ack;
   return packet;
 }
 
@@ -99,12 +112,14 @@ bool TestDelayedSamplingCorrectionAndReplay() {
 
   const auto replay_first = scheduler.BeginReplayBatch(11, 0);
   CHECK(replay_first);
+  CHECK(!replay_first.outgoing_packet);
   CHECK(replay_first.inputs.pads[0].button == PAD_BUTTON_A);
   CHECK(replay_first.inputs.pads[1].button == PAD_BUTTON_B);
   CHECK(replay_first.inputs.predicted_pad_mask == 0);
 
   const auto replay_later = scheduler.BeginReplayBatch(11, 1);
   CHECK(replay_later);
+  CHECK(!replay_later.outgoing_packet);
   CHECK(replay_later.applied.batch_id == 103);
   CHECK(scheduler.BeginReplayBatch(11, 2).status ==
         Scheduler::BatchStatus::ReplayComplete);
@@ -142,11 +157,122 @@ bool TestHardHorizonStallDoesNotResample() {
           .button == PAD_BUTTON_START);
   return true;
 }
+
+bool TestAcknowledgedGapRepairIsBoundedAndAllPeerSafe() {
+  auto config = Config();
+  config.max_prediction_batches = 8;
+  config.pad_authority[2] = Timeline::PadAuthority::Remote;
+  Scheduler scheduler(config);
+  CHECK(scheduler.GetConfigurationStatus() ==
+        Scheduler::ConfigurationStatus::Valid);
+
+  Scheduler::BatchResult outgoing;
+  for (u32 ordinal = 0; ordinal < 4; ++ordinal) {
+    outgoing = scheduler.BeginNormalBatch(30, ordinal, 0b0001,
+                                          LocalPads(PAD_BUTTON_A));
+    CHECK(outgoing);
+  }
+  CHECK(outgoing.outgoing_packet);
+  CHECK(outgoing.outgoing_packet->batch_count == 3);
+  // Batch 102 has fallen outside the ordinary recent-three tail, but remains
+  // in the repair slot because no remote stream has acknowledged it.
+  CHECK(outgoing.outgoing_packet->batches[0].batch_id == 102);
+  CHECK(outgoing.outgoing_packet->batches[1].batch_id == 104);
+  CHECK(outgoing.outgoing_packet->batches[2].batch_id == 105);
+
+  CHECK(scheduler.SubmitRemotePacket(
+            AcknowledgingRemotePacket(102, 0b0010, 102)) ==
+        Scheduler::RemotePacketStatus::Accepted);
+  outgoing = scheduler.BeginNormalBatch(31, 0, 0b0001,
+                                        LocalPads(PAD_BUTTON_B));
+  CHECK(outgoing);
+  CHECK(outgoing.outgoing_packet);
+  // Pad two has not acknowledged yet, so one peer cannot retire data on behalf
+  // of another peer.
+  CHECK(outgoing.outgoing_packet->batches[0].batch_id == 102);
+
+  CHECK(scheduler.SubmitRemotePacket(
+            AcknowledgingRemotePacket(102, 0b0100, 102)) ==
+        Scheduler::RemotePacketStatus::Accepted);
+  outgoing = scheduler.BeginNormalBatch(31, 1, 0b0001,
+                                        LocalPads(PAD_BUTTON_X));
+  CHECK(outgoing);
+  CHECK(outgoing.outgoing_packet);
+  CHECK(outgoing.outgoing_packet->batches[0].batch_id == 103);
+
+  // A peer cannot acknowledge input that this scheduler has not produced. The
+  // rejection happens before the packet's authoritative input is submitted.
+  CHECK(scheduler.SubmitRemotePacket(
+            AcknowledgingRemotePacket(103, 0b0010, 108)) ==
+        Scheduler::RemotePacketStatus::InvalidAcknowledgement);
+  CHECK(scheduler.SubmitRemotePacket(RemotePacket(103, 0, 0b0010)) ==
+        Scheduler::RemotePacketStatus::Accepted);
+  CHECK(scheduler.SubmitRemotePacket(
+            AcknowledgingRemotePacket(103, 0b0010, 101)) ==
+        Scheduler::RemotePacketStatus::DuplicateOrRetired);
+
+  auto invalid_redundancy = config;
+  invalid_redundancy.redundant_batch_count = 1;
+  CHECK(Scheduler(invalid_redundancy).GetConfigurationStatus() ==
+        Scheduler::ConfigurationStatus::InvalidRedundancy);
+  return true;
+}
+
+bool TestDelayedAcknowledgementOutlivesRollbackHistory() {
+  auto config = Config();
+  config.history_capacity = 16;
+  Scheduler scheduler(config);
+  CHECK(scheduler.GetConfigurationStatus() ==
+        Scheduler::ConfigurationStatus::Valid);
+
+  Scheduler::BatchResult outgoing;
+  for (u32 offset = 0; offset < 64; ++offset) {
+    const u64 consumed_batch = 100 + offset;
+    if (consumed_batch >= 102) {
+      CHECK(scheduler.SubmitRemotePacket(RemotePacket(consumed_batch, 0)) ==
+            Scheduler::RemotePacketStatus::Accepted);
+    }
+    outgoing = scheduler.BeginNormalBatch(40 + offset / 4, offset % 4,
+                                          0b0001,
+                                          LocalPads(PAD_BUTTON_A));
+    CHECK(outgoing);
+  }
+
+  CHECK(outgoing.outgoing_packet);
+  CHECK(outgoing.outgoing_packet->batches[0].batch_id == 102);
+  CHECK(outgoing.outgoing_packet->batches[outgoing.outgoing_packet->batch_count - 1]
+            .batch_id == 165);
+
+  // Sixty-four unacknowledged batches exceed both the two-batch prediction
+  // horizon and the 16-entry rollback journal budget. A late ACK can still
+  // retire them because retransmit storage has its own protocol-bounded window.
+  CHECK(scheduler.SubmitRemotePacket(
+            AcknowledgingRemotePacket(164, 0b0010, 165)) ==
+        Scheduler::RemotePacketStatus::Accepted);
+  outgoing = scheduler.BeginNormalBatch(56, 0, 0b0001,
+                                        LocalPads(PAD_BUTTON_B));
+  CHECK(outgoing);
+  CHECK(outgoing.outgoing_packet);
+  CHECK(outgoing.outgoing_packet->batch_count == 1);
+  CHECK(outgoing.outgoing_packet->batches[0].batch_id == 166);
+
+  auto invalid_ack_history = config;
+  invalid_ack_history.unacknowledged_history_capacity = 2;
+  CHECK(Scheduler(invalid_ack_history).GetConfigurationStatus() ==
+        Scheduler::ConfigurationStatus::InvalidAcknowledgementHistory);
+  invalid_ack_history.unacknowledged_history_capacity =
+      NetPlay::ROLLBACK_SI_MAX_UNACKNOWLEDGED_BATCHES + 1;
+  CHECK(Scheduler(invalid_ack_history).GetConfigurationStatus() ==
+        Scheduler::ConfigurationStatus::InvalidAcknowledgementHistory);
+  return true;
+}
 } // namespace
 
 int main() {
   if (!TestDelayedSamplingCorrectionAndReplay() ||
-      !TestHardHorizonStallDoesNotResample())
+      !TestHardHorizonStallDoesNotResample() ||
+      !TestAcknowledgedGapRepairIsBoundedAndAllPeerSafe() ||
+      !TestDelayedAcknowledgementOutlivesRollbackHistory())
     return 1;
   return 0;
 }

@@ -568,6 +568,8 @@ add_library(core
   NetPlay/RollbackSIInputJournal.h
   NetPlay/RollbackSIInputProtocol.cpp
   NetPlay/RollbackSIInputProtocol.h
+  NetPlay/RollbackStateDigestProtocol.cpp
+  NetPlay/RollbackStateDigestProtocol.h
   NetPlay/NetPlayServer.cpp
   NetPlay/NetPlayServer.h
   NetPlay/NetPlayServerChunked.cpp

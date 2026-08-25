@@ -138,8 +138,8 @@ jobs:
             -DBUILD_TESTING=OFF \
             -DMODERNGEKKO_ENABLE_DOLPHIN_TESTS=OFF
 
-      - name: Build Windows runtime and recompiler
-        run: cmake --build "$BUILD_DIR" --target moderngekko-run dolrecomp --parallel "$(nproc)"
+      - name: Build Windows launcher, runtime, helper, and recompiler
+        run: cmake --build "$BUILD_DIR" --target moderngekko-launcher --parallel "$(nproc)"
 
       - name: Show compiler cache statistics
         if: always()

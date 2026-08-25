@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -286,6 +287,73 @@ fs::path SiblingExecutable(const char *argv0, std::string name) {
   return fs::is_regular_file(sibling) ? sibling : fs::path(std::move(name));
 }
 
+fs::path FirstRegularFile(std::initializer_list<fs::path> candidates) {
+  for (const fs::path &candidate : candidates) {
+    if (fs::is_regular_file(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+fs::path FirstDirectory(std::initializer_list<fs::path> candidates) {
+  for (const fs::path &candidate : candidates) {
+    if (fs::is_directory(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+fs::path ExecutableDirectory(const char *argv0) {
+  std::error_code error;
+  const fs::path executable = fs::weakly_canonical(argv0, error);
+  return error ? fs::current_path() : executable.parent_path();
+}
+
+struct ReleaseResources {
+  fs::path module_source;
+  fs::path game_settings;
+};
+
+ReleaseResources ResolveReleaseResources(const fs::path &executable_directory,
+                                         std::string_view disc_id) {
+  ReleaseResources resources;
+  resources.module_source = FirstDirectory({
+      executable_directory / "../share/ringout/module-src",
+      executable_directory / "../module-src",
+      executable_directory / "module-src",
+  });
+  resources.game_settings = FirstRegularFile({
+      executable_directory / "../share/ringout/GRSEAF.ini",
+      executable_directory / "../userdata/GameSettings" /
+          (std::string(disc_id) + ".ini"),
+      executable_directory / "userdata/GameSettings" /
+          (std::string(disc_id) + ".ini"),
+      executable_directory / "resources" /
+          (std::string(disc_id) + ".ini"),
+  });
+  return resources;
+}
+
+int SelfTest(const char *argv0) {
+  const ReleaseResources resources =
+      ResolveReleaseResources(ExecutableDirectory(argv0), "GRSEAF");
+  if (!fs::is_regular_file(resources.module_source / "CMakeLists.txt")) {
+    std::cerr << "RingOut setup self-test could not resolve packaged module "
+                 "sources\n";
+    return 1;
+  }
+  if (!fs::is_regular_file(resources.game_settings)) {
+    std::cerr << "RingOut setup self-test could not resolve packaged game "
+                 "settings\n";
+    return 1;
+  }
+  std::cout << "RingOut setup self-test module_source="
+            << resources.module_source.lexically_normal().string()
+            << " game_settings="
+            << resources.game_settings.lexically_normal().string() << '\n';
+  return 0;
+}
+
 std::string PlatformName(moderngekko::GamePlatform platform) {
   return platform == moderngekko::GamePlatform::Wii ? "Wii (Broadway)"
                                                     : "GameCube (Gekko)";
@@ -355,37 +423,63 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
 #endif
   if (options.output.empty())
     options.output = DefaultOutput();
-  const fs::path source_root = fs::path(MODERNGEKKO_SOURCE_DIR);
-  const fs::path module_source =
-      source_root.parent_path() / "dist/RingOut-1.0-dist/module-src";
+  const fs::path executable_directory = ExecutableDirectory(argv0);
+  const ReleaseResources resources =
+      ResolveReleaseResources(executable_directory, game.disc_id);
+  const fs::path &module_source = resources.module_source;
   const fs::path module_dependencies = module_source / "deps";
   if (!fs::is_regular_file(module_source / "CMakeLists.txt")) {
     std::cerr << "RingOut release module sources are unavailable at "
               << module_source << '\n';
     return std::nullopt;
   }
-  const DolPatchSet patches = LoadDefaultDolPatches(
-      source_root / "vendor/dolphin/Data/Sys/GameSettings" /
-      (game.disc_id + ".ini"));
+  const fs::path &game_settings = resources.game_settings;
+  if (game_settings.empty()) {
+    std::cerr << "RingOut game settings are unavailable beside the setup helper\n";
+    return std::nullopt;
+  }
+  const DolPatchSet patches = LoadDefaultDolPatches(game_settings);
   if (!patches) {
     std::cerr << patches.error << '\n';
     return std::nullopt;
   }
 
+  const fs::path packaged_toolchain = FirstDirectory({
+      executable_directory / "../toolchain",
+      executable_directory / "toolchain",
+  });
   std::string compiler;
+  std::string compiler_kind;
   if (options.toolchain == "auto")
 #if defined(_WIN32)
-    compiler = "cl";
+  {
+    const fs::path bundled_clang =
+        packaged_toolchain / "bin" / "clang.exe";
+    if (fs::is_regular_file(bundled_clang)) {
+      compiler = Quote(bundled_clang);
+      compiler_kind = "clang";
+    } else {
+      compiler = "cl";
+      compiler_kind = "msvc";
+    }
+  }
 #else
+  {
     compiler = ReadCommand("clang --version 2>&1").empty() ? "gcc" : "clang";
+    compiler_kind = compiler;
+  }
 #endif
-  else if (options.toolchain == "clang")
+  else if (options.toolchain == "clang") {
     compiler = "clang";
-  else if (options.toolchain == "gcc")
+    compiler_kind = "clang";
+  } else if (options.toolchain == "gcc") {
     compiler = "gcc";
+    compiler_kind = "gcc";
+  }
   else if (options.toolchain == "msvc") {
 #if defined(_WIN32)
     compiler = "cl";
+    compiler_kind = "msvc";
 #else
     std::cerr << "MSVC modules can only be built on Windows\n";
     return std::nullopt;
@@ -409,14 +503,14 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
   constexpr std::string_view architecture = "unsupported";
 #endif
   std::string flags;
-  if (compiler == "clang") {
+  if (compiler_kind == "clang") {
     flags = "compile:-O2 -flto=thin -fvisibility=hidden -ffp-contract=off "
             "-fno-fast-math "
             "link:-flto=thin";
 #if defined(__linux__)
     flags += " -fuse-ld=lld";
 #endif
-  } else if (compiler == "gcc") {
+  } else if (compiler_kind == "gcc") {
     flags = "compile:-O2 -fvisibility=hidden -ffp-contract=off -fno-fast-math "
             "link:no-lto";
   } else {
@@ -607,8 +701,22 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
 
   const unsigned compile_jobs =
       std::max(1u, std::thread::hardware_concurrency());
+  fs::path cmake_program;
+  fs::path ninja_program;
+  fs::path python_program;
+#if defined(_WIN32)
+  cmake_program = FirstRegularFile(
+      {packaged_toolchain / "bin/cmake.exe"});
+  ninja_program = FirstRegularFile(
+      {packaged_toolchain / "bin/ninja.exe"});
+  python_program = FirstRegularFile(
+      {packaged_toolchain / "python/python.exe"});
+#endif
+  const std::string cmake_command =
+      cmake_program.empty() ? "cmake" : Quote(cmake_program);
   std::string configure =
-      "cmake -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 cmake -S " +
+      cmake_command + " -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 " +
+      cmake_command + " -S " +
       Quote(module_source) + " -B " + Quote(module_build) +
       " -G Ninja -DCMAKE_BUILD_TYPE=Release" +
       " -DCMAKE_C_COMPILER=" + compiler + " -DGAME_ID=" + game.disc_id +
@@ -617,7 +725,11 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
       " -DGXRUNTIME_INC=" + Quote(module_dependencies / "gxruntime-include") +
       " -DCHASSIS_ABI_DIR=" + Quote(module_dependencies / "chassis-abi") +
       " -DMODULE_TEMPLATE=" + Quote(module_dependencies / "module-template");
-  if (compiler != "cl")
+  if (!ninja_program.empty())
+    configure += " -DCMAKE_MAKE_PROGRAM=" + Quote(ninja_program);
+  if (!python_program.empty())
+    configure += " -DPython3_EXECUTABLE=" + Quote(python_program);
+  if (compiler_kind != "msvc")
     configure += " -DCMAKE_C_FLAGS=-march=native";
   if (fs::is_regular_file(module_source / "module.profdata") &&
       compiler_identity.find("clang") != std::string::npos)
@@ -627,7 +739,7 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
   if (!RunCommand(configure))
     return std::nullopt;
   EmitSetupPhase(options, "compile");
-  if (!RunCommand("cmake --build " + Quote(module_build) + " -j" +
+  if (!RunCommand(cmake_command + " --build " + Quote(module_build) + " -j" +
                   std::to_string(compile_jobs)))
     return std::nullopt;
 
@@ -651,6 +763,14 @@ void Usage() {
 int main(int argc, char **argv) {
   std::cout.setf(std::ios::unitbuf);
   std::cerr.setf(std::ios::unitbuf);
+  if (argc == 2 &&
+      (std::string_view(argv[1]) == "--help" ||
+       std::string_view(argv[1]) == "-h")) {
+    Usage();
+    return 0;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--ringout-self-test")
+    return SelfTest(argv[0]);
   if (argc < 3) {
     Usage();
     return 2;
