@@ -495,6 +495,12 @@ When testing a Windows package built from this worktree, use the top-level
    clears readiness.
 4. The host selects **Start game** only after all mapped players show Ready.
 
+**Show in-game network stats** is enabled by default. During a rollback game it
+shows the maximum peer RTT and the actual correction depth in frames. The most
+recent correction peak remains visible for one second, then returns to zero;
+the runtime suppresses the overlay completely in solo and fixed-delay play.
+The preference is stored as `performance_overlay` in `userdata\config.ini`.
+
 For a connection problem, enable **Detailed netplay diagnostics** before
 reproducing it. The launcher captures the session in
 `userdata\Logs\RingOut.log`, moves the preceding run to

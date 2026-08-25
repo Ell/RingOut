@@ -41,6 +41,7 @@ struct ConfigResult {
   std::uint16_t netplay_port = 2626;
   std::string netplay_buffer = "auto";
   NetplayMode netplay_mode = NetplayMode::FixedDelay;
+  bool netplay_performance_overlay = true;
   bool netplay_diagnostic_logging = false;
   std::string error;
 

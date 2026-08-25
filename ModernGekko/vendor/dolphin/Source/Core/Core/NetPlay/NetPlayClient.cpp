@@ -1253,12 +1253,22 @@ void NetPlayClient::DisplayPlayersPing()
   if (!Config::Get(Config::GFX_SHOW_NETPLAY_PING))
     return;
 
-  OSD::AddTypedMessage(OSD::MessageType::NetPlayPing, fmt::format("Ping: {}", GetPlayersMaxPing()),
-                       OSD::Duration::SHORT, OSD::Color::CYAN);
+  const RollbackPerformanceSnapshot rollback =
+      m_rollback_performance_stats.Snapshot(Common::Timer::NowMs());
+  const u32 depth = std::max(rollback.current_depth_frames, rollback.recent_peak_depth_frames);
+  const u32 color = depth >= 4 ? OSD::Color::RED :
+                    depth > 0  ? OSD::Color::YELLOW :
+                                 OSD::Color::CYAN;
+  OSD::AddTypedMessage(OSD::MessageType::NetPlayPing,
+                       fmt::format("Ping: {} ms  |  Rollback: {}f", GetPlayersMaxPing(), depth),
+                       OSD::Duration::SHORT, color);
 }
 
-u32 NetPlayClient::GetPlayersMaxPing() const
+u32 NetPlayClient::GetPlayersMaxPing()
 {
+  std::lock_guard lkp(m_crit.players);
+  if (m_players.empty())
+    return 0;
   return std::ranges::max_element(m_players, {}, [](const auto& kv) { return kv.second.ping; })
       ->second.ping;
 }

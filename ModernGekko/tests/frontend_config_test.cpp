@@ -23,7 +23,7 @@ int main() {
 
   const auto loaded = moderngekko::frontend::LoadConfig(directory, false);
   if (!loaded || loaded.dolphin_scale != 3 || loaded.show_fps_in_title ||
-      loaded.controller != controller) {
+      loaded.controller != controller || !loaded.netplay_performance_overlay) {
     return 2;
   }
 
@@ -36,6 +36,7 @@ int main() {
   netplay_config.netplay_buffer = "auto";
   netplay_config.netplay_mode =
       moderngekko::frontend::NetplayMode::Rollback;
+  netplay_config.netplay_performance_overlay = false;
   netplay_config.netplay_diagnostic_logging = true;
   if (!moderngekko::frontend::SaveConfig(directory, netplay_config, &error))
     return 6;
@@ -47,6 +48,7 @@ int main() {
       netplay_loaded.netplay_address != "192.168.1.50" ||
       netplay_loaded.netplay_port != 34567 ||
       netplay_loaded.netplay_buffer != "auto" ||
+      netplay_loaded.netplay_performance_overlay ||
       !netplay_loaded.netplay_diagnostic_logging ||
       netplay_loaded.netplay_mode !=
           moderngekko::frontend::NetplayMode::Rollback) {

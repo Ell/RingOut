@@ -369,6 +369,7 @@ int RunMain(int argc, char **argv) {
     options.mode = netplay_mode.value_or(frontend_config.netplay_mode);
     options.diagnostic_logging =
         netplay_diagnostics || frontend_config.netplay_diagnostic_logging;
+    options.performance_overlay = frontend_config.netplay_performance_overlay;
     if (!traversal_server.empty())
       options.traversal_server = traversal_server;
     if (traversal_port)

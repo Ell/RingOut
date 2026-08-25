@@ -758,6 +758,7 @@ int main(int argc, char **argv) {
                                                                           : 0;
   int netplay_direct_mode = netplay_mode;
   bool netplay_direct_advanced = false;
+  bool netplay_performance_overlay = config.netplay_performance_overlay;
   bool netplay_diagnostics = config.netplay_diagnostic_logging;
   int resolution_index = 0;
   for (std::size_t i = 0; i < resolutions.size(); ++i) {
@@ -887,6 +888,7 @@ int main(int argc, char **argv) {
     config.netplay_mode =
         netplay_mode == 1 ? moderngekko::frontend::NetplayMode::Rollback
                           : moderngekko::frontend::NetplayMode::FixedDelay;
+    config.netplay_performance_overlay = netplay_performance_overlay;
     config.netplay_diagnostic_logging = netplay_diagnostics;
     config.controllers = configured_controllers;
     if (config.controllers.empty() && !selected_controller.empty())
@@ -1275,6 +1277,12 @@ int main(int argc, char **argv) {
             "IP hiding. Strict NATs may fail and your opponent learns your "
             "IP.");
       }
+      ImGui::PopTextWrapPos();
+      ImGui::Checkbox("Show in-game network stats", &netplay_performance_overlay);
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
+      ImGui::TextDisabled(
+          "During rollback games, shows peer ping and the actual recent "
+          "rollback correction depth. Hidden in solo and fixed-delay play.");
       ImGui::PopTextWrapPos();
       ImGui::Checkbox("Detailed netplay diagnostics", &netplay_diagnostics);
       ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);

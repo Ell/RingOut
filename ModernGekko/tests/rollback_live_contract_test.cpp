@@ -6,6 +6,7 @@
 // can run while the NetPlayClient/NetPlayServer seams are being connected.  The
 // small negotiation function below is a test oracle, not shipped session code.
 
+#include "Core/NetPlay/RollbackPerformanceStats.h"
 #include "Core/NetPlay/RollbackSIInputJournal.h"
 #include "Core/NetPlay/RollbackSIInputProtocol.h"
 
@@ -330,13 +331,45 @@ bool TestMalformedAndEveryTruncatedPacketFailClosed() {
             .status == CodecStatus::OutputTooSmall);
   return true;
 }
+
+bool TestRollbackPerformanceStats() {
+  NetPlay::RollbackPerformanceStats stats;
+  CHECK(stats.Snapshot(100).current_depth_frames == 0);
+  CHECK(stats.Snapshot(100).recent_peak_depth_frames == 0);
+
+  stats.BeginCorrection(137, 137, 100);
+  CHECK(stats.Snapshot(100).current_depth_frames == 1);
+  CHECK(stats.Snapshot(100).recent_peak_depth_frames == 1);
+  stats.EndCorrection();
+  CHECK(stats.Snapshot(1099).current_depth_frames == 0);
+  CHECK(stats.Snapshot(1099).recent_peak_depth_frames == 1);
+
+  stats.BeginCorrection(200, 204, 500);
+  CHECK(stats.Snapshot(500).current_depth_frames == 5);
+  stats.EndCorrection();
+  CHECK(stats.Snapshot(1500).recent_peak_depth_frames == 5);
+  CHECK(stats.Snapshot(1501).recent_peak_depth_frames == 0);
+
+  stats.BeginCorrection(300, 304, 2000);
+  stats.EndCorrection();
+  stats.BeginCorrection(305, 305, 2500);
+  stats.EndCorrection();
+  CHECK(stats.Snapshot(3000).recent_peak_depth_frames == 5);
+  CHECK(stats.Snapshot(3001).recent_peak_depth_frames == 0);
+
+  stats.Reset();
+  CHECK(stats.Snapshot(501).current_depth_frames == 0);
+  CHECK(stats.Snapshot(501).recent_peak_depth_frames == 0);
+  return true;
+}
 } // namespace
 
 int main() {
   if (!TestCapabilityNegotiationContract() ||
       !TestTwoPeerLateAuthoritativeCorrectionAndVariablePolling() ||
       !TestPredictionHorizonForcesFallback() ||
-      !TestMalformedAndEveryTruncatedPacketFailClosed()) {
+      !TestMalformedAndEveryTruncatedPacketFailClosed() ||
+      !TestRollbackPerformanceStats()) {
     return 1;
   }
   return 0;

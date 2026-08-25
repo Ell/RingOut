@@ -45,6 +45,7 @@ void AddMessage(std::string message, u32 ms = Duration::SHORT, u32 argb = Color:
 void AddTypedMessage(MessageType type, std::string message, u32 ms = Duration::SHORT,
                      u32 argb = Color::YELLOW,
                      const VideoCommon::CustomTextureData::ArraySlice::Level* icon = nullptr);
+void RemoveTypedMessage(MessageType type);
 
 // Draw the current messages on the screen. Only call once per frame.
 void DrawMessages();

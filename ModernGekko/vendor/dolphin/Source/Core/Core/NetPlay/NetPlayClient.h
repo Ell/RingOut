@@ -20,6 +20,7 @@
 #include "Common/SPSCQueue.h"
 #include "Common/TraversalClient.h"
 #include "Core/NetPlay/NetPlayProto.h"
+#include "Core/NetPlay/RollbackPerformanceStats.h"
 #include "Core/NetPlay/RollbackSIInputProtocol.h"
 #include "Core/NetPlay/RollbackStateDigestProtocol.h"
 #include "Core/SyncIdentifier.h"
@@ -307,7 +308,7 @@ private:
   void SendGameStatus();
   void ComputeGameDigest(const SyncIdentifier& sync_identifier);
   void DisplayPlayersPing();
-  u32 GetPlayersMaxPing() const;
+  u32 GetPlayersMaxPing();
 
   void OnData(sf::Packet& packet, u8 channel_id);
   void OnPlayerJoin(sf::Packet& packet);
@@ -366,6 +367,7 @@ private:
   // to the CPU-thread-owned LiveRollbackState at the first frame boundary.
   // ResetLiveRollbackImpl owns balanced teardown for both locations.
   std::unique_ptr<LiveRollbackOutputGate> m_pending_live_rollback_output_gate;
+  RollbackPerformanceStats m_rollback_performance_stats;
 
   bool m_is_connected = false;
   ConnectionState m_connection_state = ConnectionState::Failure;

@@ -173,6 +173,13 @@ password, or IP hiding, so use it only with a trusted friend. Strict NATs may
 fail. **Advanced: use Direct IP** preserves the LAN/private-VPN fallback and its
 fixed-delay option.
 
+Rollback games show `Ping: N ms | Rollback: Nf` in the game by default. Ping is
+the highest current peer RTT; Rollback is the actual number of frames in the
+current correction, with the recent peak held for one second so short
+corrections are visible. Yellow means a 1-3 frame correction and red means 4 or
+more. Disable **Show in-game network stats** in the launcher's Netplay page to
+hide it. The overlay is never shown during solo or fixed-delay play.
+
 Enable **Detailed netplay diagnostics** before reproducing a problem to add
 Dolphin transport and handshake events to `userdata/Logs/RingOut.log`. The
 launcher preserves the prior session as `RingOut.previous.log` and can copy the

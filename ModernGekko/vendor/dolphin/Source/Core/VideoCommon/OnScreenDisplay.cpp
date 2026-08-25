@@ -152,6 +152,16 @@ void AddMessage(std::string message, u32 ms, u32 argb,
   s_messages.emplace(MessageType::Typeless, Message(std::move(message), ms, argb, icon));
 }
 
+void RemoveTypedMessage(const MessageType type)
+{
+  std::lock_guard lock{s_messages_mutex};
+  // Defer destruction to DrawMessages just like replacement does: a message
+  // may own a texture whose lifetime belongs to the video thread.
+  const auto range = s_messages.equal_range(type);
+  for (auto it = range.first; it != range.second; ++it)
+    it->second.should_discard = true;
+}
+
 void DrawMessages()
 {
   const bool draw_messages = Config::Get(Config::MAIN_OSD_MESSAGES);

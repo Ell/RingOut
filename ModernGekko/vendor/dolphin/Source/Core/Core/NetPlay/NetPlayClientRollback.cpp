@@ -14,11 +14,13 @@
 #include <string_view>
 
 #include "Common/Hash.h"
+#include "Common/Timer.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/System.h"
 #include "VideoCommon/Fifo.h"
+#include "VideoCommon/OnScreenDisplay.h"
 
 namespace NetPlay
 {
@@ -57,6 +59,7 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
 
   if (!m_live_rollback)
   {
+    m_rollback_performance_stats.Reset();
     auto live = std::make_unique<LiveRollbackState>();
     live->session = session;
 
@@ -299,6 +302,10 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
     }
     live.last_poll_frame.reset();
     live.next_poll_ordinal = 0;
+    m_rollback_performance_stats.BeginCorrection(trigger->restore_before_emulated_frame,
+                                                 trigger->replay_through_emulated_frame,
+                                                 Common::Timer::NowMs());
+    DisplayPlayersPing();
     std::fprintf(stderr,
                  "[rollback live] correction restore_frame=%llu replay_through_frame=%llu "
                  "first_batch=%llu\n",
@@ -312,6 +319,8 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
     live.scheduler->CancelReplay();
     live.last_poll_frame.reset();
     live.next_poll_ordinal = 0;
+    m_rollback_performance_stats.EndCorrection();
+    DisplayPlayersPing();
     std::fprintf(stderr, "[rollback live] correction committed\n");
     std::fflush(stderr);
     return capture_completed_state() && publish_confirmed_states();
@@ -490,6 +499,8 @@ bool NetPlayClient::GetLiveRollbackPads(const int pad_nb, const bool batching,
 
 void NetPlayClient::DeactivateLiveRollbackImpl()
 {
+  m_rollback_performance_stats.Reset();
+  OSD::RemoveTypedMessage(OSD::MessageType::NetPlayPing);
   if (!m_live_rollback)
     return;
 

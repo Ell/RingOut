@@ -13,6 +13,7 @@
 #include "Common/Logging/LogManager.h"
 #include "Common/TraversalClient.h"
 #include "Core/Boot/Boot.h"
+#include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/HW/GCPad.h"
@@ -1132,6 +1133,9 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   Config::SetBase(Config::NETPLAY_STRICT_SETTINGS_SYNC, true);
   Config::SetBase(Config::NETPLAY_NETWORK_MODE, std::string("fixeddelay"));
   Config::SetBase(Config::NETPLAY_USE_INDEX, false);
+  Config::SetBase(Config::GFX_SHOW_NETPLAY_PING,
+                  options.mode == NetplayMode::Rollback &&
+                      options.performance_overlay);
 
   // Stock clock for netplay, on every peer. Dolphin does sync the host's
   // overclock through its settings layer, so this is not strictly required for

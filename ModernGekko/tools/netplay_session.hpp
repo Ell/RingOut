@@ -65,6 +65,9 @@ struct NetplayOptions {
   // Enables Dolphin's detailed NETPLAY category. The launcher captures both
   // ordinary RingOut status and this transport trace in its support log.
   bool diagnostic_logging = false;
+  // Shows peer RTT and the actual recent correction depth in the in-game OSD.
+  // The lobby enables it only for rollback sessions.
+  bool performance_overlay = true;
 };
 
 int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
