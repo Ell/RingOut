@@ -3,6 +3,14 @@
 
 #include "common/types.h"
 
+#if defined(_WIN32)
+#define DOLRECOMP_MODULE_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define DOLRECOMP_MODULE_EXPORT __attribute__((visibility("default")))
+#else
+#define DOLRECOMP_MODULE_EXPORT
+#endif
+
 // New-ABI CPUState (spr[1024] + mem2, no external_pointer). Kept in sync with
 // the chassis runtime header (GXRuntime core/cpu.h) for the module ABI check.
 #define GXRUNTIME_CPU_ABI_VERSION 3u
@@ -124,7 +132,7 @@ void mem_write8_slow(CPUState* cpu, u32 addr, u8 value);
 typedef void (*PPCMemWriteJournal)(u32 offset, u32 size, void* user);
 extern PPCMemWriteJournal g_mem_write_journal;
 extern void* g_mem_write_journal_user;
-void ppc_set_mem_write_journal(PPCMemWriteJournal fn, void* user);
+DOLRECOMP_MODULE_EXPORT void ppc_set_mem_write_journal(PPCMemWriteJournal fn, void* user);
 
 f64 ppc_approx_reciprocal(f64 value);
 f64 ppc_approx_rsqrt(f64 value);

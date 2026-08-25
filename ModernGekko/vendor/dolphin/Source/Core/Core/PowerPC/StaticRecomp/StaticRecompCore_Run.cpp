@@ -636,6 +636,16 @@ void StaticRecompCore::Run()
   // skipping the decode just leaves less idle to skip. Kept for
   // experimentation, off by default.
   static const bool s_fmv_takeover = std::getenv("STATICRECOMP_FMV_TAKEOVER") != nullptr;
+  // Arming FmvPlayer makes CnvFrm consume frames from an external ffmpeg
+  // process.  This used to happen unconditionally at mwPlyStartAfs even though
+  // the takeover was documented as opt-in.  A normal player without ffmpeg on
+  // PATH then skipped the game's own colour conversion and produced a broken
+  // movie path.  Keep every HLE experiment behind an explicit developer flag;
+  // ordinary playback must remain entirely inside the guest.
+  // NOEXEC and DUMPHNDL are takeover modifiers, not independent ways to arm
+  // the external player; requiring TAKEOVER keeps the documented contract
+  // unambiguous and prevents an observation flag from changing video output.
+  static const bool s_fmv_hle = s_fmv_takeover;
   // PC histogram (16KB buckets) while a movie plays, to find the hot decode
   // function. Dumped by OnFmvStartAfs on the next movie / here.
   static const bool s_fmv_hist = std::getenv("STATICRECOMP_FMV_HIST") != nullptr;
@@ -688,10 +698,9 @@ void StaticRecompCore::Run()
           if (s_fmv_hist)
             FmvHistSample(m_guest.pc);
 
-          // Common path (no movie): just the start-detect compare. The frame /
-          // decoder hooks engage only while a movie is active, so normal
-          // gameplay pays almost nothing per dispatch.
-          if (m_guest.pc == 0x8020C1E8u)  // mwPlyStartAfs(r3=handle,r4=patid,r5=fno)
+          // The default path never arms the external player.  Start detection
+          // is only needed by the explicitly requested HLE experiments.
+          if (s_fmv_hle && m_guest.pc == 0x8020C1E8u)  // mwPlyStartAfs(r3=handle,r4=patid,r5=fno)
             OnFmvStartAfs(m_guest.gpr[5], m_guest.gpr[4], m_guest.gpr[3]);
           if (s_fmv.Active())
           {

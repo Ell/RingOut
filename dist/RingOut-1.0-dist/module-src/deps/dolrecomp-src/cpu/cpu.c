@@ -77,10 +77,9 @@ static void* g_gp_user = NULL;
 // than silently dropping entries from the journal.
 static const unsigned char* g_gp_bypass = NULL;
 
-__attribute__((visibility("default"))) void ppc_set_gather_pipe(u8** cursor, u8* const* base,
-                                                                PPCGatherPipeFlush flush,
-                                                                void* user,
-                                                                const unsigned char* bypass) {
+DOLRECOMP_MODULE_EXPORT void ppc_set_gather_pipe(u8** cursor, u8* const* base,
+                                                 PPCGatherPipeFlush flush, void* user,
+                                                 const unsigned char* bypass) {
     g_gp_cursor = cursor;
     g_gp_base = base;
     g_gp_flush = flush;
@@ -130,8 +129,7 @@ static inline int gather_pipe_store(u32 addr, u64 value, u32 size) {
 typedef void (*PPCMemWriteJournal)(u32 offset, u32 size, void* user);
 PPCMemWriteJournal g_mem_write_journal = NULL;
 void* g_mem_write_journal_user = NULL;
-__attribute__((visibility("default"))) void ppc_set_mem_write_journal(PPCMemWriteJournal fn,
-                                                                      void* user) {
+DOLRECOMP_MODULE_EXPORT void ppc_set_mem_write_journal(PPCMemWriteJournal fn, void* user) {
     g_mem_write_journal = fn;
     g_mem_write_journal_user = user;
 }

@@ -45,6 +45,14 @@ developer-only STATICRECOMP_FMV_TAKEOVER mode invokes a program named
 install FFmpeg separately and make ffmpeg.exe available on PATH first. The
 ordinary emulated FMV path does not use this external program.
 
+CPU/GPU THREADING
+-----------------
+
+Offline play uses single-core CPU/GPU scheduling by default because it is the
+known-safe mode for this static-recompilation core. Developers can explicitly
+test the faster dual-core path by setting RINGOUT_DUAL_CORE=1 before launch;
+leave it unset for normal play.
+
 CONTROLS
 --------
 

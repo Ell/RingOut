@@ -41,7 +41,7 @@ Packages are available from the [Releases](../../releases) page:
 | --- | --- | --- |
 | `RingOut-1.2.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
 | `RingOut-1.2.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
-| `RingOut-1.2.1-ell.2-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
+| `RingOut-1.2.1-ell.3-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
 
 The Deck package ships no module: build one on a desktop with the package below,
 then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a

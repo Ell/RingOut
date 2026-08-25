@@ -293,17 +293,12 @@ std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
 
 void ApplyCoreSettings(const GameMetadata &metadata) {
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
-  // Dolphin defaults CPUThread=false (single-core) on desktop, which runs the
-  // GPU synchronously on the CPU thread — every full-screen XFB blit / texture
-  // upload (heavy during FMV) then stalls the recompiled core. Dual-core moves
-  // the GPU to its own thread (matching real GC's async GP), the biggest perf
-  // win for FMV/gameplay. The recomp core drives the FIFO like any CPU core, so
-  // this is orthogonal to StaticRecomp.
-  // ...except when hashing state per frame. Dual-core has the GPU thread
-  // writing guest RAM asynchronously, so RAM read at a CPU frame boundary is
-  // racy by construction and two runs would differ whether or not the core is
-  // deterministic. The determinism harness therefore needs single-core, or it
-  // measures its own noise.
+  // Correctness first: this recomp core has produced live GFX FIFO desyncs in
+  // offline dual-core mode (the resulting alert itself recommends disabling
+  // Dual Core).  Default to Dolphin's desktop single-core setting and keep the
+  // faster split opt-in until it is proven safe across FMV and gameplay.
+  // RINGOUT_DUAL_CORE=1 enables it for explicit testing and also turns on
+  // Dolphin's deterministic GPU-thread mode.
   //
   // RINGOUT_DETERMINISM_DUALCORE=1 lifts that, so the harness can measure the
   // configuration netplay actually ships (dual-core + a deterministic GPU
@@ -314,11 +309,16 @@ void ApplyCoreSettings(const GameMetadata &metadata) {
   const bool determinism_dual_core =
       RecompDeterminism::IsActive() &&
       std::getenv("RINGOUT_DETERMINISM_DUALCORE") != nullptr;
-  Config::SetBase(Config::MAIN_CPU_THREAD,
-                  !RecompDeterminism::IsActive() || determinism_dual_core);
-  if (determinism_dual_core)
-    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE,
-                    std::string("fake-completion"));
+  const bool use_dual_core = RecompDeterminism::IsActive()
+                                 ? determinism_dual_core
+                                 : std::getenv("RINGOUT_DUAL_CORE") != nullptr;
+  Config::SetBase(Config::MAIN_CPU_THREAD, use_dual_core);
+  Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE,
+                  use_dual_core ? std::string("fake-completion")
+                                : std::string("auto"));
+  std::fprintf(stderr, "cpu/gpu threading: %s\n",
+               use_dual_core ? "dual-core (explicit opt-in)"
+                             : "single-core (safe default)");
   if (RecompDeterminism::IsActive()) {
     // Pin the clock the same way NetPlayServer does (NetPlayServer.cpp:2088):
     // the RTC is converted to timebase ticks at boot, so two runs started

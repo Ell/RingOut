@@ -16,7 +16,6 @@
 #include "Core/Config/ConfigManager.h"
 #include "Core/HW/GPFifo.h"
 #include "Core/HW/Memmap.h"
-#include "Core/MemTools.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/RecompDeterminism.h"
 #include "Core/System.h"
@@ -192,14 +191,9 @@ void StaticRecompCore::Init()
   }
   if (m_fallback_jit)
   {
-    // Jit64 emits raw host loads for fastmem and depends on a SIGSEGV handler to
-    // backpatch the ones that miss; it also faults deliberately for the BLR
-    // optimisation. Dolphin installs that handler in Core::CpuThread, which this
-    // runtime does not use -- so without this, every fastmem miss inside JIT code
-    // is a fatal segfault in anonymous executable memory, with no symbols and a
-    // broken frame chain. Whoever constructs the JIT owes it its handler.
-    if (EMM::IsExceptionHandlerSupported())
-      EMM::InstallExceptionHandler();
+    // Core::CpuThread owns the process exception handler and installs it before
+    // entering this core's Run().  Installing another one here asserted on
+    // Windows and left the two shutdown paths fighting over one global handle.
     m_fallback_jit->Init();
   }
 }
@@ -343,8 +337,6 @@ void StaticRecompCore::Shutdown()
   {
     m_fallback_jit->Shutdown();
     m_fallback_jit.reset();
-    if (EMM::IsExceptionHandlerSupported())
-      EMM::UninstallExceptionHandler();
   }
 }
 

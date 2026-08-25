@@ -6,12 +6,9 @@
 # game's software decoder, because the player could only find extracted .sfd
 # files and no package had any. So it measured nothing.
 #
-# Three configurations, all reading movie0 from game/files/movie.afs:
-#   vanilla   HLE off. STATICRECOMP_FMV_DIR at a path with no movies makes
-#             EnsureOpen fail, which sets m_fno=-1 and hands the movie back to
-#             the guest decoder -- the same state as having no HLE at all.
-#   convert   default. The guest still MPEG-decodes; only its YUV->ARGB
-#             conversion is replaced by native frames.
+# Two configurations, both reading movie0 from game/files/movie.afs:
+#   guest     ordinary shipped path. The game performs MPEG decode and colour
+#             conversion; no external player is armed and FFmpeg is not used.
 #   takeover  STATICRECOMP_FMV_TAKEOVER. The MPEG decode is skipped entirely
 #             and frame-ready state is synthesised, paced to 29.97fps.
 #
@@ -42,22 +39,23 @@ cputhread() {
   local p="$1" t
   for t in /proc/$p/task/*/; do
     [ -r "$t/comm" ] || continue
-    if [ "$(cat "$t/comm" 2>/dev/null)" = "CPU thread" ]; then
+    case "$(cat "$t/comm" 2>/dev/null)" in
+    "CPU thread"|"CPU-GPU thread")
       local rest; rest="$(sed 's/.*) //' "$t/stat" 2>/dev/null)" || continue
       echo "$(( $(echo "$rest" | cut -d' ' -f12) + $(echo "$rest" | cut -d' ' -f13) ))"
       return
-    fi
+      ;;
+    esac
   done
   echo ""
 }
 
 HZ="$(getconf CLK_TCK)"
-EMPTY="$W/no-movies-here"
 
 run_one() {
   local tag="$1" rep="$2"
   local d="$W/$tag$rep"
-  rm -rf "$d"; mkdir -p "$d/user/Config" "$d/user/Pipes" "$EMPTY"
+  rm -rf "$d"; mkdir -p "$d/user/Config" "$d/user/Pipes"
 
   # The save file is mandatory: without it the game parks forever on "No
   # previous SOULCALIBUR II data found ... Press START to continue without
@@ -68,8 +66,7 @@ run_one() {
 
   local -a env_extra=()
   case "$tag" in
-    vanilla)  env_extra=(STATICRECOMP_FMV_DIR="$EMPTY") ;;
-    convert)  env_extra=() ;;
+    guest)    env_extra=() ;;
     takeover) env_extra=(STATICRECOMP_FMV_TAKEOVER=1) ;;
   esac
 
@@ -94,16 +91,23 @@ run_one() {
     return 1
   fi
 
-  # Sync on the movie actually starting rather than a fixed sleep.
-  local waited=0
-  while [ $waited -lt 90 ]; do
-    grep -qa "mwPlyStartAfs" "$d/log.txt" 2>/dev/null && break
-    kill -0 "$pid" 2>/dev/null || { echo "$tag$rep: died early"; return; }
-    sleep 2; waited=$((waited + 2))
-  done
-  if ! grep -qa "mwPlyStartAfs" "$d/log.txt" 2>/dev/null; then
-    echo "$tag$rep: no movie after ${waited}s"
-    kill "$pid" 2>/dev/null; return
+  if [ "$tag" = takeover ]; then
+    # The explicit HLE path logs its start, so synchronise precisely there.
+    local waited=0
+    while [ $waited -lt 90 ]; do
+      grep -qa "mwPlyStartAfs" "$d/log.txt" 2>/dev/null && break
+      kill -0 "$pid" 2>/dev/null || { echo "$tag$rep: died early"; return; }
+      sleep 2; waited=$((waited + 2))
+    done
+    if ! grep -qa "mwPlyStartAfs" "$d/log.txt" 2>/dev/null; then
+      echo "$tag$rep: no movie after ${waited}s"
+      kill "$pid" 2>/dev/null; return
+    fi
+  else
+    # Normal playback deliberately has no FMV-HLE log or dispatch hook. The
+    # intro movie starts automatically; keep its boot delay explicit and
+    # configurable instead of pretending an HLE marker exists in this arm.
+    sleep "${GUEST_MOVIE_DELAY:-20}"
   fi
   sleep 5   # let playback settle before sampling
 
@@ -157,7 +161,7 @@ fi
 
 echo "window=${WINDOW}s reps=$REPS HZ=$HZ load=$(cut -d' ' -f1-3 /proc/loadavg)"
 for rep in $(seq 1 "$REPS"); do
-  for tag in vanilla convert takeover; do
+  for tag in guest takeover; do
     run_one "$tag" "$rep"
   done
 done
