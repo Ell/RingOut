@@ -215,10 +215,11 @@ To cross-compile the Windows runtime and recompiler from Linux, install a
 On Ubuntu 24.04, use the explicit POSIX packages
 `gcc-mingw-w64-x86-64-posix` and `g++-mingw-w64-x86-64-posix`. Ubuntu also
 installs Win32-thread variants under the generic compiler names, so add
-`-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix` and
-`-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix` to the configure command
-there, as the release workflow does. Arch's MinGW package exposes the POSIX
-compiler under the unsuffixed names used by the toolchain file.
+`-DCMAKE_C_COMPILER=/usr/bin/x86_64-w64-mingw32-gcc-posix`,
+`-DCMAKE_CXX_COMPILER=/usr/bin/x86_64-w64-mingw32-g++-posix`, and
+`-DCMAKE_RC_COMPILER=/usr/bin/x86_64-w64-mingw32-windres` to the configure
+command there, as the release workflow does. Arch's MinGW package exposes the
+POSIX compiler under the unsuffixed names used by the toolchain file.
 
 ```sh
 cmake -S ModernGekko -B build-windows-cross -G Ninja \

@@ -88,8 +88,9 @@ jobs:
           set -euo pipefail
           cmake -S ModernGekko -B "$BUILD_DIR" -GNinja \
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/toolchains/mingw-x86_64.cmake" \
-            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
-            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix \
+            -DCMAKE_C_COMPILER=/usr/bin/x86_64-w64-mingw32-gcc-posix \
+            -DCMAKE_CXX_COMPILER=/usr/bin/x86_64-w64-mingw32-g++-posix \
+            -DCMAKE_RC_COMPILER=/usr/bin/x86_64-w64-mingw32-windres \
             -DCMAKE_BUILD_TYPE=Release \
             -DUSE_SYSTEM_LIBS=OFF \
             -DENABLE_QT=OFF \
