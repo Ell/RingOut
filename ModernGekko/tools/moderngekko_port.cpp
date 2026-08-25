@@ -20,6 +20,9 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -70,6 +73,35 @@ std::string Quote(const fs::path &value) {
   for (char c : text)
     result += c == '\'' ? "'\\''" : std::string(1, c);
   return result + "'";
+#endif
+}
+
+std::string HostToolEnvironmentPrefix() {
+#if defined(__linux__)
+  const char *const state =
+      std::getenv("RINGOUT_HOST_LD_LIBRARY_PATH_SET");
+  if (!state)
+    return {};
+  if (std::string_view(state) == "0")
+    return "env -u LD_LIBRARY_PATH ";
+  if (std::string_view(state) == "1") {
+    const char *const value =
+        std::getenv("RINGOUT_HOST_LD_LIBRARY_PATH");
+    return "env LD_LIBRARY_PATH=" + Quote(fs::path(value ? value : "")) +
+           " ";
+  }
+#endif
+  return {};
+}
+
+std::string CompilerProbeCommand(const std::string &host_environment,
+                                 const std::string &compiler) {
+#if defined(__linux__)
+  // A broken compiler shim must not leave first-run setup waiting forever.
+  // coreutils timeout is part of the supported Linux host prerequisites.
+  return host_environment + "timeout 5s " + compiler + " --version 2>&1";
+#else
+  return host_environment + compiler + " --version 2>&1";
 #endif
 }
 
@@ -252,7 +284,12 @@ bool PatchDol(const fs::path &input_path, const fs::path &output_path,
   return true;
 }
 
-std::string ReadCommand(const std::string &command) {
+struct CommandOutput {
+  std::string text;
+  bool succeeded = false;
+};
+
+CommandOutput ReadCommand(const std::string &command) {
 #if defined(_WIN32)
   FILE *pipe = _popen(command.c_str(), "r");
 #else
@@ -260,14 +297,16 @@ std::string ReadCommand(const std::string &command) {
 #endif
   if (!pipe)
     return {};
-  std::string output;
+  CommandOutput output;
   char buffer[512];
   while (fgets(buffer, sizeof(buffer), pipe))
-    output += buffer;
+    output.text += buffer;
 #if defined(_WIN32)
-  _pclose(pipe);
+  output.succeeded = _pclose(pipe) == 0;
 #else
-  pclose(pipe);
+  const int status = pclose(pipe);
+  output.succeeded = status != -1 && WIFEXITED(status) &&
+                     WEXITSTATUS(status) == 0;
 #endif
   return output;
 }
@@ -448,6 +487,7 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
       executable_directory / "../toolchain",
       executable_directory / "toolchain",
   });
+  const std::string host_tool_environment = HostToolEnvironmentPrefix();
   std::string compiler;
   std::string compiler_kind;
   if (options.toolchain == "auto")
@@ -465,7 +505,9 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
   }
 #else
   {
-    compiler = ReadCommand("clang --version 2>&1").empty() ? "gcc" : "clang";
+    const CommandOutput clang =
+        ReadCommand(CompilerProbeCommand(host_tool_environment, "clang"));
+    compiler = clang.succeeded && !clang.text.empty() ? "clang" : "gcc";
     compiler_kind = compiler;
   }
 #endif
@@ -489,12 +531,13 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
     return std::nullopt;
   }
 
-  const std::string compiler_identity =
-      ReadCommand(compiler + " --version 2>&1");
-  if (compiler_identity.empty()) {
+  const CommandOutput compiler_probe =
+      ReadCommand(CompilerProbeCommand(host_tool_environment, compiler));
+  if (!compiler_probe.succeeded || compiler_probe.text.empty()) {
     std::cerr << "compiler is unavailable: " << compiler << '\n';
     return std::nullopt;
   }
+  const std::string &compiler_identity = compiler_probe.text;
 #if defined(__x86_64__) || defined(_M_X64)
   constexpr std::string_view architecture = "x86_64";
 #elif defined(__aarch64__) || defined(_M_ARM64)
@@ -715,7 +758,8 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
   const std::string cmake_command =
       cmake_program.empty() ? "cmake" : Quote(cmake_program);
   std::string configure =
-      cmake_command + " -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 " +
+      host_tool_environment + cmake_command +
+      " -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 " +
       cmake_command + " -S " +
       Quote(module_source) + " -B " + Quote(module_build) +
       " -G Ninja -DCMAKE_BUILD_TYPE=Release" +
@@ -739,7 +783,8 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
   if (!RunCommand(configure))
     return std::nullopt;
   EmitSetupPhase(options, "compile");
-  if (!RunCommand(cmake_command + " --build " + Quote(module_build) + " -j" +
+  if (!RunCommand(host_tool_environment + cmake_command + " --build " +
+                  Quote(module_build) + " -j" +
                   std::to_string(compile_jobs)))
     return std::nullopt;
 

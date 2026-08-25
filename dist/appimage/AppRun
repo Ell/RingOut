@@ -9,6 +9,21 @@ umask 077
 APPDIR="${APPDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 PAYLOAD="$APPDIR/usr/share/ringout"
 
+# AppImage-owned binaries need the packaged DSO closure below, but first-run
+# compilation deliberately uses the player's CMake, Ninja, compiler, and
+# Python. Preserve the caller's library environment so moderngekko-port can
+# restore it for those host tools instead of leaking Debian-built libraries
+# into a newer distribution's executables.
+if [[ -z "${RINGOUT_HOST_LD_LIBRARY_PATH_SET+x}" ]]; then
+  if [[ -v LD_LIBRARY_PATH ]]; then
+    export RINGOUT_HOST_LD_LIBRARY_PATH_SET=1
+    export RINGOUT_HOST_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+  else
+    export RINGOUT_HOST_LD_LIBRARY_PATH_SET=0
+    unset RINGOUT_HOST_LD_LIBRARY_PATH
+  fi
+fi
+
 if [[ -n "${RINGOUT_DATA_DIR:-}" ]]; then
   DATA_DIR=$RINGOUT_DATA_DIR
 elif [[ -n "${XDG_DATA_HOME:-}" ]]; then

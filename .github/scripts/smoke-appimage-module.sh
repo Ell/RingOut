@@ -32,7 +32,9 @@ done
 
 mkdir -p "$WORK"
 DOL="$WORK/synthetic-legal.dol"
-python3 - "$DOL" <<'PY'
+GAME="$WORK/game"
+mkdir -p "$GAME/sys" "$GAME/files"
+python3 - "$DOL" "$GAME/sys/boot.bin" <<'PY'
 import struct
 import sys
 
@@ -47,11 +49,77 @@ struct.pack_into(">I", data, 0xE0, 0x80003100)  # entry point
 struct.pack_into(">II", data, 0x100, 0x38600001, 0x4E800020)
 with open(sys.argv[1], "wb") as output:
     output.write(data)
-PY
 
-GENERATED_ROOT="$WORK/generated-root"
-"$APPDIR/usr/bin/dolrecomp" --gamecube "$DOL" "$GENERATED_ROOT"
-GENERATED="$GENERATED_ROOT/generated"
+boot = bytearray(0x60)
+boot[0:6] = b"GRSEAF"
+struct.pack_into(">I", boot, 0x1C, 0xC2339F3D)
+boot[0x20:0x20 + len(b"RingOut synthetic module smoke")] = b"RingOut synthetic module smoke"
+with open(sys.argv[2], "wb") as output:
+    output.write(boot)
+PY
+install -m 600 "$DOL" "$GAME/sys/main.dol"
+
+# The helper itself starts with the AppImage DSO closure, exactly like a real
+# launcher child. Every host tool is wrapped and refuses that contaminated
+# library path; moderngekko-port must restore the caller's original value before
+# compiler discovery, CMake configure, Ninja, compiler, and Python subprocesses.
+HOST_TOOLS="$WORK/host-tools"
+HOST_LIBRARY_PATH="$WORK/host-library-path"
+mkdir -p "$HOST_TOOLS" "$HOST_LIBRARY_PATH"
+export RINGOUT_REAL_CMAKE="$(command -v cmake)"
+export RINGOUT_REAL_NINJA="$(command -v ninja)"
+export RINGOUT_REAL_CLANG="$(command -v clang || true)"
+export RINGOUT_REAL_GCC="$(command -v gcc || true)"
+export RINGOUT_REAL_PYTHON3="$(command -v python3)"
+cat >"$HOST_TOOLS/host-tool-wrapper" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${LD_LIBRARY_PATH+x}:${LD_LIBRARY_PATH-}" != \
+      "x:${RINGOUT_EXPECTED_HOST_LD_LIBRARY_PATH}" ]]; then
+  echo "host tool inherited AppImage LD_LIBRARY_PATH: $(basename "$0")" >&2
+  exit 86
+fi
+case "$(basename "$0")" in
+  cmake) real=$RINGOUT_REAL_CMAKE ;;
+  ninja) real=$RINGOUT_REAL_NINJA ;;
+  clang)
+    if [[ "${RINGOUT_FORCE_BROKEN_CLANG:-0}" == 1 ]]; then
+      echo "synthetic broken clang" >&2
+      exit 89
+    fi
+    real=$RINGOUT_REAL_CLANG
+    ;;
+  gcc) real=$RINGOUT_REAL_GCC ;;
+  python3) real=$RINGOUT_REAL_PYTHON3 ;;
+  *) exit 87 ;;
+esac
+[[ -n "$real" ]] || exit 88
+exec "$real" "$@"
+SH
+chmod 755 "$HOST_TOOLS/host-tool-wrapper"
+for tool in cmake ninja clang gcc python3; do
+  ln -s host-tool-wrapper "$HOST_TOOLS/$tool"
+done
+
+PORT_OUTPUT="$WORK/port-output"
+env \
+  PATH="$HOST_TOOLS:$PATH" \
+  LD_LIBRARY_PATH="$APPDIR/usr/lib" \
+  RINGOUT_HOST_LD_LIBRARY_PATH_SET=1 \
+  RINGOUT_HOST_LD_LIBRARY_PATH="$HOST_LIBRARY_PATH" \
+  RINGOUT_EXPECTED_HOST_LD_LIBRARY_PATH="$HOST_LIBRARY_PATH" \
+  RINGOUT_FORCE_BROKEN_CLANG=1 \
+  "$APPDIR/usr/bin/moderngekko-port" build "$GAME" \
+    --output "$PORT_OUTPUT" --setup-progress
+
+MODULE="$(sed -n '1p' "$PORT_OUTPUT/GRSEAF/active-module.txt")"
+[[ -s "$MODULE" ]] || {
+  echo "module smoke: setup helper did not publish a native module" >&2
+  exit 1
+}
+ARTIFACT="$(dirname "$MODULE")"
+GENERATED="$ARTIFACT/dolrecomp-output/generated"
+MODULE_BUILD="$ARTIFACT/module-build"
 [[ -s "$GENERATED/generated.h" ]] || {
   echo "module smoke: recompiler did not produce generated.h" >&2
   exit 1
@@ -60,32 +128,12 @@ if grep -R -q 'ppc_fallback_instruction' "$GENERATED/chunks"; then
   echo "module smoke: known synthetic instructions reached fallback" >&2
   exit 1
 fi
-install -m 600 /dev/null "$GENERATED/generated_smc.txt"
-install -m 600 "$DOL" "$GENERATED/main.dol"
-
-MODULE_BUILD="$WORK/module-build"
-cmake -S "$PAYLOAD/module-src" -B "$MODULE_BUILD" -GNinja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_FLAGS="-ffile-prefix-map=$WORK=." \
-  -DGAME_ID=TST001 \
-  -DGENERATED_DIR="$GENERATED" \
-  -DDOLRECOMP_SRC="$PAYLOAD/module-src/deps/dolrecomp-src" \
-  -DGXRUNTIME_INC="$PAYLOAD/module-src/deps/gxruntime-include" \
-  -DCHASSIS_ABI_DIR="$PAYLOAD/module-src/deps/chassis-abi" \
-  -DMODULE_TEMPLATE="$PAYLOAD/module-src/deps/module-template"
 grep -Fxq 'MODULE_LTO:BOOL=ON' "$MODULE_BUILD/CMakeCache.txt" || {
   echo "module smoke: shipped default LTO path was not enabled" >&2
   exit 1
 }
-grep -Fq -- '-flto=auto' "$MODULE_BUILD/build.ninja" || {
-  echo "module smoke: Debian GCC default LTO flag was not generated" >&2
-  exit 1
-}
-cmake --build "$MODULE_BUILD" --parallel "$(nproc)"
-
-MODULE="$MODULE_BUILD/gTST001_recomp.so"
-[[ -s "$MODULE" ]] || {
-  echo "module smoke: native module was not produced" >&2
+grep -Eq -- '-flto=(auto|thin)' "$MODULE_BUILD/build.ninja" || {
+  echo "module smoke: default LTO flag was not generated" >&2
   exit 1
 }
 file "$MODULE" | grep -q 'ELF 64-bit.*x86-64' || {
@@ -118,13 +166,13 @@ descriptor = entry().contents
 assert descriptor.abi_version == 3, descriptor.abi_version
 assert descriptor.cpu_abi_version > 0, descriptor.cpu_abi_version
 assert descriptor.cpu_state_size > 0, descriptor.cpu_state_size
-assert descriptor.game_id.rstrip(b"\0") == b"TST001", descriptor.game_id
+assert descriptor.game_id.rstrip(b"\0") == b"GRSEAF", descriptor.game_id
 assert descriptor.entry_point == 0x80003100, hex(descriptor.entry_point)
 PY
 
-"$MODULE_INFO" "$MODULE" TST001 | tee "$WORK/module-info.txt"
+"$MODULE_INFO" "$MODULE" GRSEAF | tee "$WORK/module-info.txt"
 for expected in \
-  'game_id=TST001' \
+  'game_id=GRSEAF' \
   'module_abi=3' \
   'cpu_abi=3' \
   'entry_point=0x80003100' \
