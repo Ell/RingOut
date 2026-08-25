@@ -7,7 +7,7 @@ on:
         description: Release version used for the validation package
         required: true
         type: string
-        default: v1.2.1-ell.4
+        default: v1.2.1-ell.5
   push:
     tags:
       - 'v*-ell.*'
@@ -50,6 +50,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Restore canonical tag ref
+        run: .github/scripts/restore-canonical-tag-ref.sh
+
+      - name: Test release tag provenance helper
+        run: .github/scripts/tests/test-restore-canonical-tag-ref.sh
 
       - name: Resolve and validate version
         id: version

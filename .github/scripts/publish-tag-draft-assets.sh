@@ -3,7 +3,7 @@
 # upload verified assets without ever deleting or replacing an existing asset.
 #
 # Usage:
-#   publish-tag-draft-assets.sh --tag v1.2.1-ell.4 FILE FILE.sha256 [...]
+#   publish-tag-draft-assets.sh --tag v1.2.1-ell.5 FILE FILE.sha256 [...]
 #
 # Every payload must have an adjacent .sha256 file in the argument list. The
 # script is deliberately safe for concurrent platform jobs: equal assets are

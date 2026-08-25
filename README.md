@@ -44,8 +44,8 @@ Packages are available from the [Releases](../../releases) page:
 | --- | --- | --- |
 | `RingOut-1.2.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
 | `RingOut-1.2.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
-| `RingOut-1.2.1-ell.4-linux-x86_64.AppImage` | Linux x86-64 (experimental) | yes — compiles on your machine |
-| `RingOut-1.2.1-ell.4-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
+| `RingOut-1.2.1-ell.5-linux-x86_64.AppImage` | Linux x86-64 (experimental) | yes — compiles on your machine |
+| `RingOut-1.2.1-ell.5-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
 
 The Deck package ships no module: build one on a desktop with the package below,
 then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a
@@ -74,8 +74,8 @@ launcher.
 For the AppImage, make the download executable and run it:
 
 ```sh
-chmod +x RingOut-1.2.1-ell.4-linux-x86_64.AppImage
-./RingOut-1.2.1-ell.4-linux-x86_64.AppImage
+chmod +x RingOut-1.2.1-ell.5-linux-x86_64.AppImage
+./RingOut-1.2.1-ell.5-linux-x86_64.AppImage
 ```
 
 Its read-only image keeps generated files, saves and settings under
@@ -83,7 +83,7 @@ Its read-only image keeps generated files, saves and settings under
 another dedicated writable directory. On a system without FUSE, set
 `APPIMAGE_EXTRACT_AND_RUN=1`, or use `--appimage-extract` and run the extracted
 `AppRun`. Keep the adjacent checksummed
-`RingOut-1.2.1-ell.4-appimage-runtime-sources.tar.zst` release asset available
+`RingOut-1.2.1-ell.5-appimage-runtime-sources.tar.zst` release asset available
 with the AppImage; it contains the exact static-prefix source and libfuse
 relink materials named by the image's `SOURCE.txt`.
 
