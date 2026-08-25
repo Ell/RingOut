@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="v1.2.1-ell.1"
+VERSION="v1.2.1-ell.2"
 BUILD_DIR="$REPO/build-windows-cross"
 OUT_DIR="$REPO/dist/out"
 RUNTIME=""
@@ -23,7 +23,7 @@ usage() {
   cat <<'EOF'
 Usage: package-windows-cross.sh [options]
 
-  --version TAG                 package/release tag (default v1.2.1-ell.1)
+  --version TAG                 package/release tag (default v1.2.1-ell.2)
   --build-dir DIR               cross-build tree
   --out-dir DIR                 output directory (default dist/out)
   --runtime FILE                explicit moderngekko-run.exe
@@ -100,6 +100,10 @@ SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" show -s --format=%ct "$
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "invalid SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"
 ((SOURCE_DATE_EPOCH >= 315532800)) || SOURCE_DATE_EPOCH=315532800
 export SOURCE_DATE_EPOCH
+# ZIP converts filesystem mtimes to timezone-less DOS wall clocks. Pin the
+# producer timezone so identical commits package identically on CI and local
+# hosts, and so the one-day safety offset below is valid for every consumer.
+export TZ=UTC
 
 resolve_project_binary() {
   local label=$1 explicit=$2
@@ -501,7 +505,16 @@ done < <(find "$STAGE" -maxdepth 2 -type f \( -iname '*.exe' -o -iname '*.dll' \
     xargs -0 sha256sum >MANIFEST.sha256
 )
 
-find "$STAGE" -depth -print0 | xargs -0 touch -h -d "@$SOURCE_DATE_EPOCH"
+# ZIP's DOS timestamps carry no timezone. Windows interprets them as local
+# time, so storing a just-created commit's UTC wall clock puts every entry up
+# to 12 hours in the future west of UTC. Ninja then reruns CMake 100 times
+# because the bundled CMake modules are newer than build.ninja. Keep the PE
+# reproducibility epoch above, but date archive entries one full day earlier;
+# setup.ps1 also normalises future build inputs defensively for clock skew and
+# third-party re-zippers.
+ZIP_DATE_EPOCH=$((SOURCE_DATE_EPOCH - 86400))
+((ZIP_DATE_EPOCH >= 315532800)) || ZIP_DATE_EPOCH=315532800
+find "$STAGE" -depth -print0 | xargs -0 touch -h -d "@$ZIP_DATE_EPOCH"
 
 printf '==> deterministic ZIP\n'
 TMP_ZIP="$WORK/$ARTIFACT"
@@ -515,7 +528,13 @@ bad_top="$(unzip -Z1 "$TMP_ZIP" | awk -F/ -v want="$PACKAGE" '$1 != want { print
 
 VERIFY="$WORK/verify"
 mkdir -p "$VERIFY"
-unzip -q "$TMP_ZIP" -d "$VERIFY"
+# Simulate extraction in the westernmost timezone. ZIP stores only a local DOS
+# wall clock after -X removes extra timestamp fields, so this catches an entry
+# that Windows would interpret as future-dated even when the UTC CI runner
+# would not.
+TZ=Etc/GMT+12 unzip -q "$TMP_ZIP" -d "$VERIFY"
+future_entry="$(find "$VERIFY/$PACKAGE" -type f -newermt now -print -quit)"
+[[ -z "$future_entry" ]] || die "ZIP has a future-dated entry in UTC-12: $future_entry"
 (
   cd "$VERIFY/$PACKAGE"
   sha256sum -c MANIFEST.sha256 >/dev/null

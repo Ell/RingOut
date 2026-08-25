@@ -163,7 +163,8 @@ set(MODULE_LINK_CACHE "" CACHE STRING
 # present -- see the -flto=thin note above, which killed the module build on
 # every machine without it. A player who has clang but not lld must get the
 # ordinary linker, not a failed setup.
-if(MODULE_LTO AND MODULE_LLD AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND UNIX AND NOT APPLE)
+if(MODULE_LTO AND MODULE_LLD AND CMAKE_C_COMPILER_ID MATCHES "Clang"
+    AND (UNIX OR WIN32) AND NOT APPLE)
   include(CheckCSourceCompiles)
   set(CMAKE_REQUIRED_LINK_OPTIONS -fuse-ld=lld)
   check_c_source_compiles("int main(void){return 0;}" MODULE_LLD_USABLE)
@@ -172,6 +173,7 @@ endif()
 
 if(MODULE_LLD AND MODULE_LLD_USABLE)
   target_link_options(${MODULE_NAME} PRIVATE -fuse-ld=lld)
+  message(STATUS "module: linking with lld")
 
   # NOT under module-src/. package-dist.sh copies this whole tree into the
   # release stage with `cp -a`, so a cache next to these sources would ship 42 MB

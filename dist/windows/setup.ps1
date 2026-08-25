@@ -186,19 +186,32 @@ Copy-Item (Join-Path $Game 'sys\main.dol') (Join-Path $Work 'out\generated\main.
 # ZIP stores DOS timestamps with no timezone, so files written by CI at 21:49
 # UTC extract as 21:49 LOCAL. Anyone west of UTC therefore ends up with build
 # inputs dated in the future, and ninja can never make build.ninja newer than
-# CMakeLists.txt:
+# CMakeLists.txt or the bundled CMake modules:
 #
 #   ninja: error: manifest 'build.ninja' still dirty after 100 tries,
 #                 perhaps system time is not set
 #
-# The clock is fine; the files are ahead of it. Pull anything future-dated back
-# to now before configuring.
+# The clock is fine; the files are ahead of it. Pull every packaged CMake input
+# that can participate in Ninja's RERUN_CMAKE rule back to a safely past time
+# before configuring. module-src alone is not enough: build.ninja also depends
+# on files below toolchain\share\cmake-*.
 $now = Get-Date
-$future = @(Get-ChildItem (Join-Path $Here 'module-src') -Recurse -File -ErrorAction SilentlyContinue |
-           Where-Object { $_.LastWriteTime -gt $now })
+$safeTime = $now.AddMinutes(-1)
+$timestampRoots = @(
+    (Join-Path $Here 'module-src')
+    (Join-Path $Tools 'share')
+)
+$future = @(
+    foreach ($root in $timestampRoots) {
+        if (Test-Path -LiteralPath $root -PathType Container) {
+            Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $now }
+        }
+    }
+)
 if ($future.Count -gt 0) {
-    Write-Host "    normalising $($future.Count) future-dated file(s) from the archive"
-    foreach ($f in $future) { try { $f.LastWriteTime = $now } catch { } }
+    Write-Host "    normalising $($future.Count) future-dated CMake input file(s) from the archive"
+    foreach ($f in $future) { try { $f.LastWriteTime = $safeTime } catch { } }
 }
 
 Write-Host "==> 3/3  Building the module"
