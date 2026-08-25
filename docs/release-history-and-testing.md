@@ -330,6 +330,45 @@ commit and `.ell.9` tag. The AppImage source marker names the matching
 same-release runtime source/relink archive. None of these package checks proves
 the OSD's rendered appearance or physical/cross-machine gameplay.
 
+Post-publication Linux finding: `.ell.9` must not be recommended to Linux
+players. A real first-run attempt on Arch completed extraction and DolRecomp
+translation, then CMake inherited the image's Debian 12 `LD_LIBRARY_PATH` and
+failed because its host executables require `GLIBCXX_3.4.32` and
+`CXXABI_1.3.15`. This does not invalidate the source-bound artifacts or Windows
+package, but it is a player-blocking AppImage integration defect. The release
+is preserved for provenance and will be marked superseded rather than having
+its immutable source-bound assets silently replaced.
+
+### v1.2.1-ell.10 — Linux replacement candidate
+
+Implementation checkpoint: `b10380d6` (2026-08-25).
+
+The candidate preserves the caller's pre-AppImage library environment and
+restores it only for host build tools. It also requires compiler probes to exit
+successfully, bounds Linux probes to five seconds, and falls back from a broken
+`clang` to GCC. The package smoke now exercises the real packaged setup helper
+under a deliberately contaminated library path and a deliberately failing
+`clang`, rather than invoking DolRecomp and CMake independently.
+
+Local validation on 2026-08-25 passed:
+
+- the exact Debian 12 release build and all 45 CTests;
+- AppImage assembly, policy/privacy/provenance checks, a 2,905-file payload,
+  synthetic DOL translation, forced GCC fallback, native module load/ABI check,
+  and AppImage self-test;
+- a real private GRSEAF first-run build on the affected Arch host while the
+  packaged helper began with the AppImage DSO closure. It translated 132 code
+  chunks, ran CMake with `env -u LD_LIBRARY_PATH`, selected GCC 16.1.1 and
+  Python 3.14.6, linked, and published the same known module digest
+  `e01d1fc7f14d41cf170fb5b036e5c754cb3062b8e5421f147258b627e2931d48`.
+
+The final validation-only candidate was
+`.cache/ell10-host-tool-qa-v3/RingOut-1.2.1-ell.10-linux-x86_64.AppImage`,
+SHA-256
+`be32ed25094307d23fda6d14360815a43819ce23217a319c8de6102f93699082`.
+It is dirty-tree QA evidence, not the release artifact. Publication remains
+conditional on clean tagged Windows and Linux workflow results.
+
 ## What the current release pipeline actually tests
 
 | Layer | `.9` evidence | Important boundary |

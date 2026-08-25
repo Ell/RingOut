@@ -28,8 +28,8 @@ BUILD TOOLS REQUIRED ON FIRST RUN
 
 The AppImage bundles the Ring Out runtime, Dolphin Sys resources, and a static
 DolRecomp executable. It does not bundle a Linux development environment. First
-run still needs CMake, Ninja, Python 3, and a working C compiler plus libc
-development headers:
+run still needs CMake, Ninja, Python 3, GNU coreutils, and a working C compiler
+plus libc development headers:
 
   Arch:          sudo pacman -S --needed base-devel cmake ninja clang python
   Debian/Ubuntu: sudo apt install build-essential cmake ninja-build clang python3
@@ -40,17 +40,24 @@ bundled or replaced by the AppImage. First-run recompilation/build uses all
 logical processors; clang/lld builds retain a bounded ThinLTO cache below
 ${XDG_CACHE_HOME:-$HOME/.cache}/ringout/thinlto for later rebuilds.
 
-MENU, NETPLAY, AND CHEATS
--------------------------
+LAUNCHER, NETPLAY, AND CHEATS
+-----------------------------
 
 Escape opens the settings menu. Arrow keys navigate, Space/Enter activates,
 and Shift+Escape quits. The controller's menu/back button can also open the
 overlay, with its D-pad and face buttons used for navigation.
 
-Netplay is started from the System tab. The host chooses Host and a port; the
-other player chooses Join and enters the host address and the same port. Both
-players need the same Ring Out build and compatible disc/module. Direct
-Internet hosting may require forwarding the selected UDP port.
+Netplay is started from the launcher's Netplay page. The normal beta flow uses
+Host online room / Join online room and an eight-character room code through
+Dolphin's hosted rendezvous, then connects the players directly over UDP. Both
+players need the same Ring Out build and compatible disc/module. This beta has
+no relay, authentication, encryption, room password, or IP hiding; strict NATs
+can fail. Advanced Direct IP remains a troubleshooting fallback.
+
+The launcher can enable detailed netplay diagnostics and opens the folder
+containing setup.log and RingOut.log. Logs can contain endpoint and local-host
+information, so inspect them before sharing. The in-game network OSD shows RTT
+and actual rollback correction depth and can also be disabled in the launcher.
 
 During a match the overlay remains live without pausing only one peer. Speed,
 pause, save/load/reset, controller rebinding, and cheats are locked while the

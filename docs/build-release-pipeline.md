@@ -285,6 +285,56 @@ The packager enforces:
 
 `dist/appimage/AppRun` installs immutable versioned setup assets into a private user data directory, preserves game/settings/private modules across AppImage updates, and supports an extraction-only self-test (`dist/appimage/AppRun:9-52,67-133,154-185`). Users without FUSE can set `APPIMAGE_EXTRACT_AND_RUN=1` (`dist/appimage/README.txt:65-76`).
 
+### AppImage host-tool environment boundary (`b10380d6`, 2026-08-25)
+
+The published `.ell.9` image could start on a newer Linux distribution but
+leaked its Debian 12 `LD_LIBRARY_PATH` into the host's CMake, Ninja, compiler,
+and Python during first-run module compilation. On the tested Arch host this
+made CMake load the image's older `libstdc++.so.6` and fail for missing
+`GLIBCXX_3.4.32` and `CXXABI_1.3.15`. AppImage-owned executables still require
+that bundled DSO closure, so globally clearing the variable is not correct.
+
+`AppRun` now records whether the caller originally had `LD_LIBRARY_PATH` and
+its exact value before installing the AppImage closure. `moderngekko-port`
+restores that original state only around compiler discovery, CMake configure,
+Ninja/compiler/Python execution, and bounds Linux compiler-version probes to
+five seconds. A failed or wedged `clang` probe falls back to GCC
+(`dist/appimage/AppRun:12-26`; `ModernGekko/tools/moderngekko_port.cpp:79-109,`
+`287-310,490-542,761-790`).
+
+The exact-package module smoke now launches the packaged setup helper with a
+deliberately contaminated AppImage library path. Host-tool wrappers reject any
+value other than the recorded caller path, and a deliberately failing `clang`
+must lead to a successful GCC build. The test continues through synthetic DOL
+translation, native module publication, `dlopen`, and ABI inspection
+(`.github/scripts/smoke-appimage-module.sh:53-185`).
+
+Local replacement-candidate reproduction from source commit `b10380d6` plus
+the subsequent version/documentation worktree:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" \
+  --volume "$PWD:/src" --workdir /src \
+  --env CCACHE_DIR=/src/.cache/ccache-appimage \
+  ringout-appimage-build:debian12 \
+  cmake --build build-appimage \
+    --target moderngekko-launcher moderngekko-module-info moderngekko-tests -j8
+
+docker run --rm --user "$(id -u):$(id -g)" \
+  --volume "$PWD:/src" --workdir /src \
+  ringout-appimage-build:debian12 \
+  ctest --test-dir build-appimage --output-on-failure -j8
+```
+
+CTest passed 45/45. The validation-only `.ell.10` AppImage then passed its
+2,905-file package policy, contaminated-environment GCC-fallback module smoke,
+ABI load, and self-test. Extracted on the Arch host and launched with the exact
+AppImage `LD_LIBRARY_PATH`, it translated the real private GRSEAF DOL, selected
+`/usr/bin/gcc` after the host's broken Swiftly `clang` timed out, configured
+with GCC 16.1.1 and Python 3.14.6, compiled all 132 chunks, linked, and published
+the module. The resulting private module SHA-256 was
+`e01d1fc7f14d41cf170fb5b036e5c754cb3062b8e5421f147258b627e2931d48`.
+
 ## 9. Reproduction and verification
 
 ### Confirm source identity before a release
