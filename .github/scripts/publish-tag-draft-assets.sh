@@ -3,11 +3,13 @@
 # upload verified assets without ever deleting or replacing an existing asset.
 #
 # Usage:
-#   publish-tag-draft-assets.sh --tag v1.2.1-ell.5 FILE FILE.sha256 [...]
+#   publish-tag-draft-assets.sh --create-release --tag v1.2.1-ell.6 FILE FILE.sha256 [...]
+#   publish-tag-draft-assets.sh --join-release --tag v1.2.1-ell.6 FILE FILE.sha256 [...]
 #
 # Every payload must have an adjacent .sha256 file in the argument list. The
-# script is deliberately safe for concurrent platform jobs: equal assets are
-# idempotent, while a same-name/different-digest asset is a hard failure.
+# Windows is the only release creator; other platform jobs wait for and join
+# its draft. Equal assets are idempotent, while a same-name/different-digest
+# asset is a hard failure.
 set -euo pipefail
 
 die() {
@@ -16,8 +18,14 @@ die() {
 }
 
 TAG=""
+RELEASE_ROLE=""
 while (($#)); do
   case "$1" in
+    --create-release|--join-release)
+      [[ -z "$RELEASE_ROLE" ]] || die "release role was specified more than once"
+      RELEASE_ROLE=${1#--}
+      shift
+      ;;
     --tag)
       (($# >= 2)) || die "--tag needs a value"
       TAG=$2
@@ -32,6 +40,7 @@ while (($#)); do
   esac
 done
 
+[[ -n "$RELEASE_ROLE" ]] || die "exactly one of --create-release or --join-release is required"
 [[ -n "$TAG" ]] || die "--tag is required"
 [[ "$TAG" =~ ^v[0-9][0-9A-Za-z._+-]*$ ]] || die "invalid release tag: $TAG"
 (($# >= 2)) || die "at least one payload and checksum are required"
@@ -150,29 +159,48 @@ AUTH_HEADERS=(
 REQUEST_NUMBER=0
 HTTP_CODE=""
 HTTP_BODY=""
+CURL_EXIT=0
 
-api_request() {
-  local method=$1 url=$2 data_file=${3:-} content_type=${4:-application/json}
-  local rc
+api_request_impl() {
+  local retry_mode=$1 method=$2 url=$3 data_file=${4:-}
+  local content_type=${5:-application/json}
   REQUEST_NUMBER=$((REQUEST_NUMBER + 1))
   HTTP_BODY="$TMPDIR_RELEASE/response-$REQUEST_NUMBER.json"
   local args=(
+    --disable
     --silent --show-error
-    --retry 5 --retry-all-errors --retry-delay 1 --retry-max-time 90
     --connect-timeout 20
     -o "$HTTP_BODY" -w '%{http_code}'
     "${AUTH_HEADERS[@]}"
     -X "$method"
   )
+  if [[ "$retry_mode" == retry ]]; then
+    args+=(--retry 5 --retry-all-errors --retry-delay 1 --retry-max-time 90)
+  fi
   if [[ -n "$data_file" ]]; then
     args+=(-H "Content-Type: $content_type" --data-binary "@$data_file")
   fi
   set +e
   HTTP_CODE=$(curl "${args[@]}" "$url")
-  rc=$?
+  CURL_EXIT=$?
   set -e
-  ((rc == 0)) || die "GitHub API request failed ($method $url, curl exit $rc)"
-  [[ "$HTTP_CODE" =~ ^[0-9]{3}$ ]] || die "GitHub API returned no HTTP status"
+  [[ "$HTTP_CODE" =~ ^[0-9]{3}$ ]] || HTTP_CODE=000
+  if [[ "$retry_mode" == retry ]]; then
+    ((CURL_EXIT == 0)) ||
+      die "GitHub API request failed ($method $url, curl exit $CURL_EXIT)"
+    [[ "$HTTP_CODE" != 000 ]] || die "GitHub API returned no HTTP status"
+  fi
+}
+
+api_request() {
+  api_request_impl retry "$@"
+}
+
+# Creating a draft is not idempotent: GitHub permits multiple drafts with the
+# same tag_name. Never let curl resend this POST. A transport failure or 5xx is
+# reconciled through authenticated read-only listing instead.
+api_request_once() {
+  api_request_impl once "$@"
 }
 
 api_error() {
@@ -258,29 +286,117 @@ validate_source() {
 
 RELEASE_JSON=""
 get_release() {
-  local encoded_tag
-  encoded_tag=$(urlencode "$TAG")
-  api_request GET "$API/releases/tags/$encoded_tag"
-  case "$HTTP_CODE" in
-    200)
-      RELEASE_JSON=$HTTP_BODY
+  local page=1 count page_json combined match_count selected
+  local matches="$TMPDIR_RELEASE/release-matches.json"
+  RELEASE_JSON=""
+  printf '[]\n' >"$matches" || die "cannot initialize release-listing accumulator"
+  while :; do
+    # GitHub's tag-specific release endpoint does not expose draft releases,
+    # even to an authenticated caller. Enumerate the authenticated release
+    # collection instead and accept only one exact tag_name match.
+    api_request GET "$API/releases?per_page=100&page=$page"
+    [[ "$HTTP_CODE" == 200 ]] ||
+      die "release listing failed with HTTP $HTTP_CODE: $(api_error)"
+    page_json=$HTTP_BODY
+    count=$(python3 - "$page_json" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+    raise SystemExit("release upload: GitHub release listing is not an array of objects")
+print(len(value))
+PY
+) || die "could not parse release listing page $page"
+    combined="$TMPDIR_RELEASE/release-matches-$page.json"
+    python3 - "$matches" "$page_json" "$combined" "$TAG" <<'PY' || die "could not accumulate release listing page $page"
+import json
+import pathlib
+import sys
+
+left = json.loads(pathlib.Path(sys.argv[1]).read_text())
+right = json.loads(pathlib.Path(sys.argv[2]).read_text())
+tag = sys.argv[4]
+for release in right:
+    if release.get("tag_name") != tag:
+        continue
+    release_id = release.get("id")
+    previous = next(
+        (
+            item
+            for item in left
+            if type(release_id) is int
+            and type(item.get("id")) is int
+            and item.get("id") == release_id
+        ),
+        None,
+    )
+    if previous is None:
+        left.append(release)
+        continue
+    critical = (
+        "id",
+        "tag_name",
+        "target_commitish",
+        "draft",
+        "prerelease",
+        "body",
+        "upload_url",
+    )
+    if any(previous.get(key) != release.get(key) for key in critical):
+        raise SystemExit(
+            f"release upload: release id {release_id} changed during paginated listing"
+        )
+pathlib.Path(sys.argv[3]).write_text(
+    json.dumps(left) + "\n"
+)
+PY
+    [[ -s "$combined" ]] || die "could not accumulate release listing page $page"
+    mv -- "$combined" "$matches" || die "could not retain release listing page $page"
+    ((count == 100)) || break
+    page=$((page + 1))
+    ((page <= 100)) || die "repository has too many releases to inspect safely"
+  done
+
+  match_count=$(python3 - "$matches" <<'PY'
+import json
+import pathlib
+import sys
+print(len(json.loads(pathlib.Path(sys.argv[1]).read_text())))
+PY
+) || die "could not count exact-tag release matches"
+  case "$match_count" in
+    0) return 1 ;;
+    1)
+      selected="$TMPDIR_RELEASE/release-selected-$REQUEST_NUMBER.json"
+      python3 - "$matches" "$selected" <<'PY' || die "could not retain the selected draft release"
+import json
+import pathlib
+import sys
+matches = json.loads(pathlib.Path(sys.argv[1]).read_text())
+pathlib.Path(sys.argv[2]).write_text(json.dumps(matches[0]) + "\n")
+PY
+      [[ -s "$selected" ]] || die "could not retain the selected draft release"
+      RELEASE_JSON=$selected
       return 0
       ;;
-    404) return 1 ;;
-    *) die "release lookup failed with HTTP $HTTP_CODE: $(api_error)" ;;
+    *) die "release listing contains $match_count releases for tag $TAG" ;;
   esac
 }
 
 validate_release() {
-  python3 - "$RELEASE_JSON" "$TAG" "$SOURCE_MARKER" <<'PY'
+  python3 - "$RELEASE_JSON" "$TAG" "$SOURCE_MARKER" "$SOURCE_COMMIT" <<'PY' || die "draft release validation failed"
 import json
 import pathlib
 import sys
 
 release = json.loads(pathlib.Path(sys.argv[1]).read_text())
-tag, marker = sys.argv[2:]
+tag, marker, commit = sys.argv[2:]
 if release.get("tag_name") != tag:
     raise SystemExit("release upload: release tag_name does not match the triggering tag")
+if release.get("target_commitish") != commit:
+    raise SystemExit("release upload: release target_commitish does not match the source commit")
 if release.get("draft") is not True:
     raise SystemExit("release upload: refusing to upload unless isDraft is true")
 if release.get("prerelease") is not True:
@@ -291,7 +407,7 @@ if not isinstance(body, str):
 source_lines = [line for line in body.splitlines() if "ringout-release-source:" in line]
 if source_lines != [marker]:
     raise SystemExit("release upload: draft release source marker is absent, different, or duplicated")
-if not isinstance(release.get("id"), int) or release["id"] <= 0:
+if type(release.get("id")) is not int or release["id"] <= 0:
     raise SystemExit("release upload: draft release has no valid id")
 upload_url = release.get("upload_url")
 if not isinstance(upload_url, str) or not upload_url:
@@ -311,13 +427,13 @@ PY
 }
 
 wait_for_release() {
-  local attempt
-  for attempt in {1..15}; do
+  local attempts=$1 delay=$2 attempt
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
     if get_release; then
       validate_release
       return 0
     fi
-    sleep 2
+    sleep "$delay" || die "release visibility wait failed"
   done
   return 1
 }
@@ -326,9 +442,13 @@ validate_source
 
 if get_release; then
   validate_release
+elif [[ "$RELEASE_ROLE" == join-release ]]; then
+  echo "waiting for the Windows release-creator job to expose draft $TAG"
+  wait_for_release 90 10 ||
+    die "source-bound draft release was not visible for the join-release job"
 else
   CREATE_JSON="$TMPDIR_RELEASE/create.json"
-  python3 - "$CREATE_JSON" "$TAG" "$RELEASE_TITLE" "$RELEASE_BODY" "$SOURCE_COMMIT" <<'PY'
+  python3 - "$CREATE_JSON" "$TAG" "$RELEASE_TITLE" "$RELEASE_BODY" "$SOURCE_COMMIT" <<'PY' || die "could not prepare release creation request"
 import json
 import pathlib
 import sys
@@ -343,16 +463,32 @@ pathlib.Path(path).write_text(json.dumps({
     "prerelease": True,
 }) + "\n")
 PY
-  api_request POST "$API/releases" "$CREATE_JSON"
-  if [[ "$HTTP_CODE" == 201 ]]; then
-    echo "created source-bound draft prerelease $TAG"
-  elif [[ "$HTTP_CODE" == 422 ]]; then
-    echo "another job may have won the draft-release creation race; waiting for visibility"
+  # Recheck both source identity and exact-tag absence after preparing the
+  # request, minimizing the remaining non-atomic gap before the sole creator's
+  # one-shot mutation.
+  validate_source
+  if get_release; then
+    validate_release
   else
-    die "release creation failed with HTTP $HTTP_CODE: $(api_error)"
+    api_request_once POST "$API/releases" "$CREATE_JSON"
+    creation_code=$HTTP_CODE
+    creation_curl_exit=$CURL_EXIT
+    if ((creation_curl_exit != 0)); then
+      echo "release creation transport result is ambiguous (curl exit $creation_curl_exit); reconciling without retry"
+    elif [[ "$creation_code" == 201 ]]; then
+      echo "created source-bound draft prerelease $TAG"
+    elif [[ "$creation_code" == 422 ]]; then
+      echo "release creation returned HTTP 422; reconciling the unique source-bound draft"
+    elif [[ "$creation_code" == 5?? ]]; then
+      echo "release creation returned ambiguous HTTP $creation_code; reconciling without retry"
+    elif [[ "$creation_code" == 000 ]]; then
+      echo "release creation returned no HTTP status; reconciling without retry"
+    else
+      die "release creation failed with HTTP $creation_code: $(api_error)"
+    fi
+    wait_for_release 60 2 ||
+      die "draft release was not visible after creation result HTTP $creation_code curl-exit $creation_curl_exit"
   fi
-  wait_for_release ||
-    die "draft release was not visible after creation response HTTP $HTTP_CODE: $(api_error)"
 fi
 
 RELEASE_ID=$(release_value id)
@@ -364,7 +500,7 @@ UPLOAD_URL=${UPLOAD_URL%%\{*}
 ASSETS_JSON="$TMPDIR_RELEASE/assets.json"
 fetch_assets() {
   local page=1 count page_json combined
-  printf '[]\n' >"$ASSETS_JSON"
+  printf '[]\n' >"$ASSETS_JSON" || die "cannot initialize asset-listing accumulator"
   while :; do
     api_request GET "$API/releases/$RELEASE_ID/assets?per_page=100&page=$page"
     [[ "$HTTP_CODE" == 200 ]] ||
@@ -379,9 +515,9 @@ if not isinstance(value, list):
     raise SystemExit("release upload: GitHub asset listing is not an array")
 print(len(value))
 PY
-)
+) || die "could not parse asset listing page $page"
     combined="$TMPDIR_RELEASE/assets-combined-$page.json"
-    python3 - "$ASSETS_JSON" "$page_json" "$combined" <<'PY'
+    python3 - "$ASSETS_JSON" "$page_json" "$combined" <<'PY' || die "could not accumulate asset listing page $page"
 import json
 import pathlib
 import sys
@@ -389,7 +525,8 @@ left = json.loads(pathlib.Path(sys.argv[1]).read_text())
 right = json.loads(pathlib.Path(sys.argv[2]).read_text())
 pathlib.Path(sys.argv[3]).write_text(json.dumps(left + right) + "\n")
 PY
-    mv -- "$combined" "$ASSETS_JSON"
+    [[ -s "$combined" ]] || die "could not accumulate asset listing page $page"
+    mv -- "$combined" "$ASSETS_JSON" || die "could not retain asset listing page $page"
     ((count == 100)) || break
     page=$((page + 1))
     ((page <= 100)) || die "release has too many assets to inspect safely"
@@ -397,7 +534,7 @@ PY
 }
 
 asset_record() {
-  python3 - "$ASSETS_JSON" "$1" <<'PY'
+  python3 - "$ASSETS_JSON" "$1" <<'PY' || die "could not inspect release asset records"
 import json
 import pathlib
 import sys
@@ -419,9 +556,10 @@ ASSET_RESULT=""
 inspect_asset() {
   local name=$1 path=${ASSET_PATHS[$1]} record count id digest size state
   local expected_digest expected_size
-  expected_digest="sha256:$(sha256sum "$path" | awk '{print $1}')"
-  expected_size=$(stat -c '%s' "$path")
-  record=$(asset_record "$name")
+  expected_digest="sha256:$(sha256sum "$path" | awk '{print $1}')" ||
+    die "could not hash local asset $name"
+  expected_size=$(stat -c '%s' "$path") || die "could not size local asset $name"
+  record=$(asset_record "$name") || die "could not inspect release asset $name"
   IFS='|' read -r count id digest size state <<<"$record"
   case "$count" in
     0)
@@ -449,11 +587,11 @@ inspect_asset() {
 
 wait_for_asset() {
   local name=$1 attempt
-  for attempt in {1..15}; do
-    fetch_assets
-    inspect_asset "$name"
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    fetch_assets || die "could not refresh release assets while waiting for $name"
+    inspect_asset "$name" || die "could not inspect release asset while waiting for $name"
     [[ "$ASSET_RESULT" == equal ]] && return 0
-    sleep 2
+    sleep 2 || die "asset visibility wait failed"
   done
   return 1
 }

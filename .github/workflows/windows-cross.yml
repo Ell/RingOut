@@ -7,7 +7,7 @@ on:
         description: Release version used for the validation package
         required: true
         type: string
-        default: v1.2.1-ell.5
+        default: v1.2.1-ell.6
   push:
     tags:
       - 'v*-ell.*'
@@ -54,6 +54,9 @@ jobs:
 
       - name: Test release tag provenance helper
         run: .github/scripts/tests/test-restore-canonical-tag-ref.sh
+
+      - name: Test source-bound draft publisher
+        run: .github/scripts/tests/test-publish-tag-draft-assets.sh
 
       - name: Resolve and validate version
         id: version
@@ -243,6 +246,7 @@ jobs:
           [[ ${#assets[@]} -eq 1 ]] || exit 1
           assets+=("${assets[0]}.sha256")
           .github/scripts/publish-tag-draft-assets.sh \
+            --create-release \
             --tag "$RELEASE_TAG" \
             "${assets[@]}"
 
