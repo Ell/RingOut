@@ -22,6 +22,58 @@ This is still not a final player-ready/release verdict. Full Windows/AppImage
 package validation exists only as CI workflow/smoke logic in this worktree; no
 tagged artifact or physical/cross-machine run validates it.
 
+## In-game performance overlay checkpoint (2026-08-25)
+
+Implementation commit: `58f215e10d7ef477721600509949a03e792b0b1c`.
+
+Rollback games now show the maximum reported peer RTT and the actual correction
+depth in emulated frames through Dolphin's typed OSD. The depth is the inclusive
+restore-through-replay range, so restoring and replaying one frame reports `1f`,
+not zero. The current/recent maximum is held for one second because a successful
+correction commonly commits faster than a player can read it. Zero is cyan,
+1-3 frames are yellow, and 4 or more are red
+(`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/RollbackPerformanceStats.h:14-77`,
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientRollback.cpp:292-326`,
+and `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClient.cpp:1251-1274`).
+
+The launcher persists **Show in-game network stats** as
+`[Netplay] performance_overlay`; the runtime enables Dolphin's ping OSD only
+when both that preference and rollback mode are active. Solo and fixed-delay
+sessions therefore cannot display this rollback-labelled telemetry
+(`ModernGekko/tools/moderngekko_launcher.cpp:1281-1286` and
+`ModernGekko/tools/netplay_session.cpp:1132-1138`). Session activation,
+deactivation, faults, and teardown reset the atomic telemetry, and typed-message
+removal prevents a stale correction from lingering after netplay stops.
+
+The exact Debian 12 release environment rebuilt `moderngekko-run`,
+`moderngekko-launcher`, and the focused contract/config tests, then passed all
+45 configured tests. A post-format incremental rebuild and focused rerun passed
+11/11 rollback, frontend-config, harness, and localhost protocol tests:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" \
+  --volume "$PWD:/src" --workdir /src \
+  --env CCACHE_DIR=/src/.cache/ccache-appimage \
+  --env CCACHE_BASEDIR=/src --env CCACHE_COMPILERCHECK=content \
+  ringout-appimage-build:debian12 \
+  cmake --build build-appimage \
+    --target moderngekko-run moderngekko-launcher \
+      moderngekko_rollback_live_contract_test \
+      moderngekko_frontend_config_test -j8
+
+docker run --rm --user "$(id -u):$(id -g)" \
+  --volume "$PWD:/src" --workdir /src \
+  ringout-appimage-build:debian12 \
+  ctest --test-dir build-appimage --output-on-failure -j8
+
+docker run --rm --user "$(id -u):$(id -g)" \
+  --volume "$PWD:/src" --workdir /src \
+  ringout-appimage-build:debian12 \
+  ctest --test-dir build-appimage \
+    -R 'moderngekko\.(rollback|live_rollback|frontend_config|netplay_protocol)' \
+    --output-on-failure -j8
+```
+
 ## Live integration outcome
 
 The two-process path now exercises the real game and emulator rather than a

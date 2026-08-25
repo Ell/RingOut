@@ -261,6 +261,25 @@ docker run --rm --user "$(id -u):$(id -g)" \
   --output-on-failure -j4
 ```
 
+### v1.2.1-ell.8 rollback-beta candidate
+
+Overlay implementation checkpoint:
+`58f215e10d7ef477721600509949a03e792b0b1c` (2026-08-25).
+
+This candidate adds the player-facing rollback performance OSD on top of the
+`.ell.7` build fixes. It displays the maximum peer RTT plus the real inclusive
+restore/replay correction depth, retains a recent peak for one second, and
+colors 1-3 frame corrections yellow and 4+ red. The launcher preference is on
+by default but user-disableable; fixed-delay and solo sessions force it off.
+
+Before tagging, the exact Debian 12 release environment rebuilt the runner,
+launcher, module inspector, and full test target. CTest passed 45/45. After the
+final formatting-only header/call-site adjustment, the same environment rebuilt
+the affected production targets and passed the 11-test rollback/config/harness/
+localhost-protocol subset. These are source/build gates, not visual proof of the
+rendered OSD or physical two-machine play. Tag workflow runs, artifact hashes,
+source markers, and publication state must be appended only after they exist.
+
 ## What the current release pipeline actually tests
 
 | Layer | `.6` evidence | Important boundary |
