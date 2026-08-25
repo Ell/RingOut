@@ -1,0 +1,198 @@
+# RingOut netplay audit
+
+Status: read-only audit of commit `ff0ad952980f5083afd21c3d3758208a7a093d72`, recorded 2026-08-25.
+
+This is the durable index for the current netplay research. It distinguishes what the release actually ships from experimental rollback groundwork and from proposed work. No production source was changed as part of the audit.
+
+## Documents
+
+- [Lobby architecture and UX](netplay-lobby.md): entry points, LAN discovery, direct connection, player mapping, start synchronization, and lobby defects.
+- [Protocol, security, and reliability](netplay-protocol-security.md): packet flow, trust model, parser and save-transfer risks, compatibility, desync detection, and fail-closed remediation.
+- [Rollback and test roadmap](netplay-rollback-roadmap.md): current fixed-delay algorithm, rollback experiments and measurements, test evidence, performance constraints, and a staged hybrid rollback design.
+
+## Executive verdict
+
+RingOut does **not** ship rollback netcode. It ships symmetric, fixed-delay, deterministic lockstep using Dolphin's stock NetPlay protocol.
+
+The implementation explicitly sets `NETPLAY_NETWORK_MODE` to `fixeddelay` and disables host-input authority so every peer consumes the same delayed inputs (`ModernGekko/tools/netplay_session.cpp:813-824`, `:912-920`). Missing remote input blocks the emulator (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientInput.cpp:105-115`); it is never predicted, corrected, or replayed.
+
+The README is internally inconsistent:
+
+- `README.md:33-35` correctly describes fixed-delay play.
+- `README.md:127` incorrectly advertises rollback.
+
+Practical ratings for the audited revision:
+
+| Area | Rating | Meaning |
+| --- | ---: | --- |
+| Trusted wired LAN or private VPN | 7/10 | Deterministic and usable, with good synchronization work |
+| Lobby UX | 6/10 | Functional roster and discovery, but incomplete lifecycle handling |
+| Internet/WAN responsiveness | 3/10 | Fixed delay, reliable-channel stalls, no adaptation or relay |
+| Security against untrusted peers | 2/10 | Treat rooms as trusted-friend sessions until P0 hardening lands |
+| Shipping rollback implementation | 0/10 | Absent; only offline research hooks exist |
+
+## Current architecture
+
+```text
+local controller poll
+        |
+        +--> local N-sample FIFO ---------------------+
+        |                                             |
+        +--> reliable ENet --> host server --> peers  |
+                                                      v
+each emulator consumes the next sample for every mapped pad
+                                                      |
+                        missing sample --> wait; guest time does not advance
+```
+
+The host is also an ordinary local client connected through loopback. The server validates controller ownership before relaying `PadData` (`NetPlayServer.cpp:682-729`). This avoids a host-only input path and prevents one normal client from claiming another player's controller.
+
+All ordinary NetPlay packets use reliable ENet delivery (`ModernGekko/vendor/dolphin/Source/Core/Common/ENet.cpp:40-63`). Gameplay input has no frame or sequence number. A lost packet therefore delays later input behind retransmission instead of allowing prediction or redundant recovery.
+
+The buffer setting is measured in queued SI input samples, not video frames. Dolphin updates input at a variable SI rate, typically 120 Hz (`Core/HW/SI/SI.cpp:551-557`). The lobby labels the value as 60 Hz frames and computes milliseconds from 60 Hz (`netplay_session.cpp:703-714`), so that display is not authoritative. `auto` does not adapt: it leaves the fixed server default at five samples (`NetPlayServer.cpp:167-173`).
+
+## What is implemented well
+
+- Host and guests share the same client path.
+- The server validates controller-port ownership.
+- Pads are assigned deterministically by player ID, host first (`netplay_session.cpp:248-295`).
+- Host settings, initial RTC, SRAM/save data, and enabled AR/Gecko codes are synchronized before boot.
+- Strict settings synchronization is enabled and CPU/VI clocks plus emulation speed are pinned (`netplay_session.cpp:813-840`).
+- A deterministic GPU mode is used with dual-core emulation, with a single-core diagnostic fallback.
+- Background input is forced for netplay, avoiding silent neutral input when a peer loses window focus (`netplay_session.cpp:842-853`).
+- Netplay overlay input is neutralized before it reaches the game (`NetPlayClientInput.cpp:189-217`).
+- Save/load/reset/speed/rebinding/cheat mutation is locked during netplay.
+- Historical manual tests reached 6,470 synchronized frames and an 8,635-frame VS match with input from both peers (`07de096e`, `e467c92a`).
+
+These are substantial deterministic-lockstep results. They are not evidence of rollback.
+
+## Highest-priority findings
+
+### P0: do not treat direct Internet rooms as hostile-safe
+
+Several packet parsers repeat while `!packet.endOfPacket()` but do not test the packet-valid flag after extraction (`NetPlayServer.cpp:691-713`; `NetPlayClient.cpp:674-694`). SFML marks a failed extraction invalid without necessarily advancing the read cursor (`Externals/SFML/SFML/src/SFML/Network/Packet.cpp:86-95`, `:572-578`). A truncated record can therefore wedge the network thread.
+
+RingOut always enables host save synchronization. A host-provided GCI filename is concatenated without basename/path validation (`NetPlayClientSaves.cpp:111-143`), allowing writes outside the intended card folder. The shared decompressor also trusts a peer-provided `u64` allocation size and uses non-bounds-checking LZO decompression without exact output accounting (`NetPlayCommon.cpp:269-310`). These paths need fail-closed parsing, strict caps, safe decompression, and path containment before sessions with untrusted hosts are encouraged.
+
+The protocol is not authenticated or encrypted. There is no room secret, and the host begins listening before its local client reserves player ID 1. LAN discovery is plaintext and spoofable. Any client can request StopGame or forward the power-button event (`NetPlayServer.cpp:888-933`).
+
+### P0: live compatibility omits the recompilation module
+
+`ModernGekko/tools/netplay_compatibility.cpp:67-96` already computes a useful fingerprint containing the RingOut revision, disc ID and DOL SHA, module/CPU ABI versions, `CPUState` size, module ranges, and chunk hashes. Only `ModernGekko/tests/netplay_protocol_test.cpp:191-198` calls it.
+
+The live handshake checks the SCM revision (`NetPlayClient.cpp:241-250`, `NetPlayServer.cpp:443-464`) and later compares the `main.dol` sync identifier. A swapped, damaged, or differently generated recomp module can still appear ready. The existing fingerprint should be sent and rejected before the peer joins the room.
+
+### P0/P1: built-in desync detection is only a clock check
+
+Every 60 frames, a client sends `GetFakeTimeBase()` (`NetPlayClient.cpp:1623-1640`). The server compares those values (`NetPlayServer.cpp:936-977`). Two peers can retain equal clocks while RAM or another deterministic subsystem has diverged.
+
+The manual scripts optionally hash guest RAM every frame because of this exact limitation (`.github/scripts/netplay-local.sh:89-93`). A production-friendly state digest should be keyed by emulated frame and exchanged periodically, with bounded history and a useful diagnostic on mismatch.
+
+### P1: lobby lifecycle and concurrency need tightening
+
+- There is no Ready protocol. `SameGame` is displayed as `ready`, and an interactive host can start with only itself (`netplay_session.cpp:721-733`).
+- Headless start uses a fixed 500 ms sleep instead of a pad-map acknowledgement (`netplay_session.cpp:1018-1028`).
+- `NetPlayClient::GetPlayers()` returns raw pointers into a mutable map after releasing its lock (`NetPlayClient.cpp:1159-1169`); the network thread can erase one while the lobby renders it.
+- All connection rejections are flattened to `HostUnavailable`, leaving detailed launcher error cases unreachable (`netplay_session.cpp:935-943`).
+- Lobby connection loss and user cancellation both become successful exit code 0 (`netplay_session.cpp:953-963`).
+- The no-window path claims to auto-start, but returns without requesting a start (`netplay_session.cpp:601-605`).
+- The server accepts more peers than the four mapped controller slots and has no explicit spectator model.
+
+### P1/P2: Internet usability is direct-only
+
+RingOut disables traversal and the public index, and constructs `NetPlayServer` without UPnP forwarding (`netplay_session.cpp:823-824`, `:872-884`). LAN scan is custom UDP broadcast; outside one broadcast domain, users need a manually supplied hostname/IP, UDP forwarding, or a VPN.
+
+QWave/DSCP omission in the Windows package is not the architectural blocker. Traffic marking may help congested networks, but it cannot supply missing prediction, sequence numbers, recovery, authentication, or NAT traversal.
+
+## Lobby summary
+
+There are two entry paths:
+
+1. The desktop launcher starts the runner with host/join arguments.
+2. The in-game System menu writes `netplay-request.ini`, safely stops the offline runtime, and lets the runner delete and consume the request before rebuilding a pre-boot netplay session (`RecompMenu.cpp:1714-1737`; `moderngekko_run.cpp:397-478`).
+
+A host binds the selected direct UDP port, normally 2626, and connects its own local client. While the interactive lobby is open it broadcasts `RINGOUT1 <port> <nickname>` once per second on UDP 2627 (`netplay_session.cpp:519-595`). The in-game scanner listens for 2.5 seconds and adopts the sender IP and advertised port (`RecompMenu.cpp:881-977`).
+
+The lobby displays names, ping, assigned pad port, and game comparison. Starting synchronizes saves/codes/settings before delivering boot data. A mapped guest disconnect disables the game for everyone; the peer timeout is 30 seconds. There is no reconnect, resynchronization, host migration, password, kick UI, chat UI, or public matchmaking service.
+
+## Rollback research status
+
+The repository contains useful **offline feasibility tooling**, not live rollback:
+
+- `State::SaveToBuffer` and `LoadFromBuffer` expose synchronous in-memory state (`Core/State.h:128-136`).
+- `RecompDeterminism` can save at one frame, run forward, restore, replay identical scripted input, and compare guest RAM (`Core/RecompDeterminism.cpp:462-518`).
+- Snapshot skip flags can experimentally omit VMEM, MEM1 padding, video, ARAM, and rollback-only JIT invalidation (`Core/State.h:100-125`).
+
+Historical measurements:
+
+| Commit | Result |
+| --- | --- |
+| `619767f0` | Full state 106.57 MiB; warm save 21.17 ms; restore 38.18 ms; 60-frame replay matched |
+| `4a877ca5` | State breakdown: 32 MiB MEM1 arena, 32 MiB unused fake VMEM, 26.23 MiB video, 16.01 MiB ARAM |
+| `2e93f53e` | Narrowed state 24.34 MiB; save 3.06 ms; restore 21.81 ms; replay matched |
+| `1f16b92a` | With rollback-only JIT-clear skip: save 2.95 ms; restore 6.66 ms; replay matched |
+
+The final result is encouraging, but its proof was a 60-frame menu window. It does not establish that omitting video and ARAM is safe during a live match or streaming audio. At 24.34 MiB, an eight-frame uncompressed state ring is about 195 MiB. Saving every frame costs roughly 3 ms, and a misprediction adds restore plus re-simulation. Deck builds currently have little obvious catch-up headroom.
+
+True rollback therefore remains a separate emulator-core project: frame-numbered inputs, prediction, confirmed frames, a snapshot or delta ring, state-hash exchange, restore and fast re-simulation, render suppression, audio reconciliation, side-effect control, and cross-platform/network-impairment tests.
+
+## Evidence and test boundaries
+
+The current `moderngekko_netplay_protocol_test` passed for the audited commit when run with localhost networking available. It verifies:
+
+- invalid-host failure,
+- two local clients and roster exchange,
+- pad-buffer message round trip,
+- pad mapping,
+- disconnecting a peer that sends input for a port it does not own.
+
+It explicitly does **not** boot the core or assert that remote pad data reaches gameplay (`netplay_protocol_test.cpp:260-264`).
+
+The manual scripts provide stronger observational evidence, including full guest-RAM hashes and a two-input VS route, but they currently print failure rather than returning nonzero (`netplay-local.sh:170-193`; `netplay-match.sh:163-175`). Workflows do not invoke them. Linux and Deck run the CTest suite; Windows cross-builds configure tests off and the Wine smoke test only loads the runtime far enough to print `--help` before exercising synthetic recompilation.
+
+Not yet proven for this exact release:
+
+- two physical Windows machines,
+- a Windows/Linux or Windows/Deck live session,
+- induced latency, loss, duplication, and reordering,
+- NAT/firewall behavior,
+- three- or four-player sessions,
+- disconnect/reconnect behavior under load,
+- hostile or fuzzed protocol inputs,
+- narrowed rollback snapshots during a complete match with audio.
+
+## Recommended implementation order
+
+1. **Safety:** fail-closed packet decoding; sanitize and contain save paths; cap all peer-controlled sizes; use safe decompression with exact output accounting.
+2. **Identity:** reserve the local host identity, add a random room token, authenticate the handshake, and restrict host-only operations.
+3. **Compatibility:** put the existing game/module fingerprint into the live handshake and return a precise rejection reason.
+4. **Lobby correctness:** value-based player snapshots, typed cancel/error outcomes, expected-player count, Ready state, four-slot/spectator policy, and explicit mapping/start acknowledgements.
+5. **Current netcode:** frame-stamp inputs, isolate the input channel, send redundant recent samples, measure SI rate/RTT/jitter, and make delay selection genuinely adaptive.
+6. **Detection:** exchange periodic frame-keyed deterministic state hashes and retain bounded diagnostic history.
+7. **Test gates:** make manual scripts fail hard; add packet fuzzing, sanitizers, synthetic boot/input integration, Windows execution, and nightly `netem` impairment tests.
+8. **Connectivity:** add invite strings plus authenticated traversal/relay or, at minimum, UPnP and explicit forwarding diagnostics.
+9. **Rollback prototype:** validate narrowed snapshots in match/audio, measure catch-up speed on every target, then implement a bounded hybrid delay-plus-rollback mode while keeping fixed delay as a fallback.
+
+## Reproduction pointers
+
+Run the protocol test from a configured Linux build with localhost networking enabled:
+
+```bash
+./build-appimage/moderngekko_netplay_protocol_test
+```
+
+Inspect the historical rollback measurements:
+
+```bash
+git show -s --format=fuller 619767f0 4a877ca5 2e93f53e 1f16b92a
+git show -s --format=fuller 07de096e e467c92a
+```
+
+With a prepared package at `dist/RingOut-1.0-deck`, the existing manual harnesses are:
+
+```bash
+HASH=1 .github/scripts/netplay-local.sh /tmp/netplay-local 60 2626
+.github/scripts/netplay-match.sh /tmp/netplay-match 60 2640
+```
+
+These commands are diagnostic until the scripts are changed to return nonzero on every failed assertion.

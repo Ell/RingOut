@@ -3,6 +3,7 @@
 - Date: 2026-08-25
 - Branch: `codex/launcher-experience`
 - Base commit: `ff0ad952980f5083afd21c3d3758208a7a093d72`
+- Implementation commit: `514cd424d11f8a3b9ac05fef07696e7d54bf7f48`
 - Scope: source-built SDL3/Dear ImGui launcher prototype and native-module setup handoff
 
 ## Outcome
@@ -162,7 +163,7 @@ The real-test setup was:
 
 ```bash
 sha256sum \
-  '/mnt/homeserver/Files/Emulation/ROMs/gc/Soulcalibur II (USA).rvz' \
+  '<path-to-legally-obtained-USA-rvz>' \
   'Soulcalibur II (USA).rvz'
 git check-ignore -v 'Soulcalibur II (USA).rvz'
 
