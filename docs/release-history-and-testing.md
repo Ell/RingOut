@@ -226,6 +226,41 @@ pins `target_commitish` to the peeled commit, rejects duplicate release objects,
 and uploads only absent or digest-identical assets. Unit tests for the tag
 restorer and mock-GitHub publisher run before either release build.
 
+### Post-audit v1.2.1-ell.7 — failed rollback-beta release attempt
+
+Source: `a9ce89ec883fe1812e9d6cab8066d9b95c1b9e34`
+
+Annotated tag object: `acd6b5910448e77c745a9a3b770d7de3ededb58e`
+
+Publication: no release and no downloadable assets. The tag remains immutable as
+the record of the failed attempt.
+
+Runs on 2026-08-25:
+
+- Linux tag run [32905381876](https://github.com/Ell/RingOut/actions/runs/32905381876):
+  failed while building the focused rollback tests because their standalone
+  CMake targets included Dolphin headers without declaring Dolphin's `fmt`
+  dependency. The Arch development host had a system `fmt` installation and
+  masked the missing target dependency; the minimal Debian 12 release image did
+  not.
+- Windows tag run [32905381732](https://github.com/Ell/RingOut/actions/runs/32905381732):
+  cancelled after the Linux failure, before package publication, so it could not
+  create a partial `.ell.7` draft.
+
+The replacement candidate declares `fmt::fmt` on every focused rollback test.
+An exact rerun in the digest-pinned Debian 12 release image compiled all eight
+executables. That rerun also exposed GNU awk interval-regex use in the shell
+evidence verifier; replacing `{8}`/`{16}` with explicit length plus character
+checks made the nine-test rollback subset pass in that same image. Reproduction:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" \
+  --volume "$PWD:/src:ro" --volume /tmp/ringout-ell8-debian-build:/build \
+  --workdir /src ringout-appimage-build:debian12 \
+  ctest --test-dir /build -R 'moderngekko\.(rollback|live_rollback)' \
+  --output-on-failure -j4
+```
+
 ## What the current release pipeline actually tests
 
 | Layer | `.6` evidence | Important boundary |

@@ -30,7 +30,7 @@ builds/loads a synthetic recompilation module with its bundled tools. Physical
 Windows setup, menu, gameplay and two-peer netplay QA is still recommended
 before treating an experimental prerelease as stable.
 
-**Netplay**: the `v1.2.1-ell.7` beta adds rollback, an Online Room flow using
+**Netplay**: the `v1.2.1-ell.8` beta adds rollback, an Online Room flow using
 Dolphin's hosted traversal service, and a Ready-gated lobby. Its Linux/source
 implementation has passed end-to-end clean, forced late-input correction,
 prediction-horizon recovery, live desync, and fixed-delay regression routes.
@@ -48,8 +48,8 @@ Packages are available from the [Releases](../../releases) page:
 | --- | --- | --- |
 | `RingOut-1.2.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
 | `RingOut-1.2.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
-| `RingOut-1.2.1-ell.7-linux-x86_64.AppImage` | Linux x86-64 rollback beta | yes — compiles on your machine |
-| `RingOut-1.2.1-ell.7-windows-x86_64.zip` | Windows 10/11 x86-64 rollback beta | no — toolchain bundled |
+| `RingOut-1.2.1-ell.8-linux-x86_64.AppImage` | Linux x86-64 rollback beta | yes — compiles on your machine |
+| `RingOut-1.2.1-ell.8-windows-x86_64.zip` | Windows 10/11 x86-64 rollback beta | no — toolchain bundled |
 
 The Deck package ships no module: build one on a desktop with the package below,
 then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a
@@ -78,8 +78,8 @@ build work, settings, saves, and the private recompiled module under
 For the AppImage, make the download executable and run it:
 
 ```sh
-chmod +x RingOut-1.2.1-ell.7-linux-x86_64.AppImage
-./RingOut-1.2.1-ell.7-linux-x86_64.AppImage
+chmod +x RingOut-1.2.1-ell.8-linux-x86_64.AppImage
+./RingOut-1.2.1-ell.8-linux-x86_64.AppImage
 ```
 
 Its read-only image keeps generated files, saves and settings under
@@ -87,7 +87,7 @@ Its read-only image keeps generated files, saves and settings under
 another dedicated writable directory. On a system without FUSE, set
 `APPIMAGE_EXTRACT_AND_RUN=1`, or use `--appimage-extract` and run the extracted
 `AppRun`. Keep the adjacent checksummed
-`RingOut-1.2.1-ell.7-appimage-runtime-sources.tar.zst` release asset available
+`RingOut-1.2.1-ell.8-appimage-runtime-sources.tar.zst` release asset available
 with the AppImage; it contains the exact static-prefix source and libfuse
 relink materials named by the image's `SOURCE.txt`.
 
@@ -128,7 +128,7 @@ it does not replace the host's graphics drivers.
 - **Optional experimental FMV takeover** via external FFmpeg; it is off by
   default because the ordinary emulated Sofdec path measured faster
 - **23 verified cheat codes** shipped in `GameSettings/GRSEAF.ini`
-- **Netplay** — the `ell.7` beta has live bounded prediction, correction,
+- **Netplay** — the `ell.8` beta has live bounded prediction, correction,
   restore/replay, a Ready-gated lobby, and beta room-code rendezvous; fixed delay
   remains available as an Advanced Direct IP fallback
 - **Its own icon** — the disc banner and the memory-card icon are extracted from
@@ -179,7 +179,7 @@ launcher preserves the prior session as `RingOut.previous.log` and can copy the
 current log path. Review logs before sharing: they can contain nicknames, room
 codes, IP addresses, controller names, and local file paths.
 
-Netplay starts only from the launcher in the `ell.7` beta. The obsolete in-game
+Netplay starts only from the launcher in the `ell.8` beta. The obsolete in-game
 System-tab Host/Join/Scan rows were removed so they cannot lead players into a
 different Direct-IP-only flow. Older released packages may still show those
 rows and fixed-delay mode.
@@ -207,7 +207,7 @@ then matched all eleven confirmed logical-state checkpoints through frame 660
 route also passed (`/tmp/ringout-live-rollback.final-clean.wPXzfTPg`), as did the
 fixed-delay whole-run oracle with 2,958 byte-identical rows
 (`/tmp/ringout-fixed-delay-final-3a7e`). These are
-strong Linux/source results underlying the `ell.7` beta, but not physical or
+strong Linux/source results underlying the `ell.8` beta, but not physical or
 cross-machine acceptance evidence. Hosted room-code rendezvous is implemented and its complete
 control-plane exchange passes against `stun.dolphin-emu.org`; the same-machine
 test did not receive the endpoint-directed punch, so a real two-network match

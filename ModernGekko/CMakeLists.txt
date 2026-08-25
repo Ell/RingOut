@@ -688,6 +688,22 @@ if(BUILD_TESTING)
     add_test(NAME moderngekko.rollback_state_digest
         COMMAND moderngekko_rollback_state_digest_test)
 
+    # These focused targets compile Dolphin headers directly instead of
+    # inheriting Dolphin's `common` target.  Link the declared fmt dependency
+    # so its include directory is present on minimal release builders that do
+    # not happen to have a system-wide fmt installation.
+    foreach(_rollback_test_target IN ITEMS
+            moderngekko_rollback_memory_snapshot_test
+            moderngekko_live_rollback_gate_test
+            moderngekko_rollback_coordinator_test
+            moderngekko_rollback_input_timeline_test
+            moderngekko_rollback_si_input_journal_test
+            moderngekko_rollback_live_contract_test
+            moderngekko_rollback_live_scheduler_test
+            moderngekko_rollback_state_digest_test)
+        target_link_libraries(${_rollback_test_target} PRIVATE fmt::fmt)
+    endforeach()
+
     if(UNIX)
         add_test(NAME moderngekko.rollback_live_harness
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/../.github/scripts/test-rollback-live-real-game-harness.sh")

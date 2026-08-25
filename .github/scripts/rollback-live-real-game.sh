@@ -167,8 +167,9 @@ verify_confirmed_state_logs() {
   canonicalize_confirmed_log() {
     awk '
       NF != 4 || $1 !~ /^[0-9]+$/ || $1 == 0 || $1 % 60 != 0 ||
-      $2 !~ /^[0-9a-f]{8}$/ || $3 !~ /^[0-9a-f]{8}$/ ||
-      $4 !~ /^[0-9a-f]{16}$/ { exit 1 }
+      length($2) != 8 || $2 !~ /^[0-9a-f]+$/ ||
+      length($3) != 8 || $3 !~ /^[0-9a-f]+$/ ||
+      length($4) != 16 || $4 !~ /^[0-9a-f]+$/ { exit 1 }
       { latest[$1] = $0 }
       END { for (frame in latest) print latest[frame] }
     ' "$1" | sort -n -k1,1
