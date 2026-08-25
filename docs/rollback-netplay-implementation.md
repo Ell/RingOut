@@ -1,14 +1,91 @@
 # Rollback netplay implementation handoff
 
-Status: second implementation slice on branch `codex/rollback-netplay`, based on
-commit `a67008ed623598e2833f16303304b075b456bdb3`, recorded 2026-08-25.
+Status: live integration slice on branch `codex/rollback-netplay`, implemented
+in commit `38d69d84`, recorded and reverified 2026-08-25.
 
 This document records branch-local work. It does **not** change the shipped
-verdict: RingOut's live netplay remains fixed-delay lockstep. This slice adds a
-real full-emulator state store, a correction/replay coordinator, a versioned SI
-input codec and journal, and a real-game correction oracle. They are compiled
-into Core but are not connected to the live NetPlay client/server or SI poll
-path. Replay output and irreversible side effects are not suppressed yet.
+verdict: ordinary RingOut netplay remains fixed-delay lockstep. The branch now
+has an end-to-end live rollback path—negotiation, grouped SI prediction,
+checkpoint restore, corrected replay, and atomic journal commit—but it is
+available only to the explicitly acknowledged headless isolated harness.
+Production activation still fails closed because speculative host effects need
+a confirmed-frontier buffer before this can be exposed in the normal lobby.
+The executable contracts, fault grammar, exact commands, and retained live
+evidence are cataloged in [the live rollback test harness](rollback-live-test-harness.md).
+
+## Live integration outcome
+
+The isolated two-process path now exercises the real game and emulator rather
+than a model:
+
+- `NetPlayServer` queries rollback capability, selects an exact all-peer v1
+  session or fixed-delay fallback, assigns a fresh nonzero generation, and
+  relays only bounded RSIB packets whose pad masks belong to the sender.
+- RSIB uses a third ENet channel with unreliable-sequenced delivery. Lobby,
+  control, saves, compatibility, and legacy `PadData` remain reliable.
+- `LiveRollbackInputScheduler` samples local GC pads ahead by the negotiated
+  base delay, sends a three-batch redundant tail, predicts missing remote pads
+  by repeat-last, records the real `(emulated_frame, poll_ordinal)` mapping, and
+  blocks at a conservative batch horizon that cannot outrun the snapshot ring.
+- `NetPlayClientRollback` owns the CPU-thread session. It captures full Dolphin
+  frame-start states, drains authoritative input before each frame boundary,
+  restores the earliest affected checkpoint, replays every recorded SI poll,
+  atomically acknowledges the journal generation, and publishes only after a
+  complete corrected frontier. Corrections arriving between two polls extend
+  through the later poll before the boundary; unbatched `RunBuffer` transfers
+  are independent journal entries. While horizon-blocked it keeps
+  retransmitting the redundant input tail so symmetric stalls recover.
+- The output layer suppresses hidden-replay presentation, frame dumping, DMA
+  and DTK audio pushes, GC rumble, achievements, and timebase messages. Those
+  hooks are useful groundwork, but the production capability matrix remains
+  incomplete because effects already emitted by speculative frames cannot be
+  undone.
+
+The isolated gate requires all of these conditions: headless execution,
+`RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED`, host-side explicit rollback
+configuration, and capability support from every peer. The normal constructors
+and interactive launcher flow do not advertise rollback. The production output
+gate cannot manufacture a complete coverage matrix.
+
+### Current real-game evidence
+
+Correction run:
+
+```text
+evidence:              /tmp/ringout-live-rollback.hEwKT03c
+session:               generation 1, base delay 2 SI batches, horizon 8
+physical hash rows:    676 host / 679 guest retained traces
+result:                two restore/replay/commit cycles, no fault or desync
+runtime SHA-256:       c4bdff2b1e4207850f35c3d5b8bb75492f3623ee0b8bd74ae0089c415672988e
+```
+
+The exact runtime hash and private module/DOL hashes are stored in
+`rollback-result.env`; private game-derived files remain outside Git. The
+distributed correction schedule spans repeated scripted START transitions and
+the harness refuses to pass unless a real prediction mismatch produces a
+`correction restore_frame=...` followed by `correction committed`.
+
+Horizon/recovery run:
+
+```text
+evidence:              /tmp/ringout-live-rollback.t0JzxAlv
+session:               generation 1, base delay 2 SI batches, horizon 1
+physical hash rows:    686 host / 687 guest retained traces
+result:                explicit hard-horizon stall and authoritative-input resume,
+                       followed by restore/replay/commit, no fault or desync
+```
+
+Physical hash rows are not compared line-for-line after rollback because peers
+can execute different numbers of speculative/replay frames. The retained logs,
+live desync detector, explicit restore/commit markers, and earlier offline
+logical-frame convergence oracle have distinct evidence boundaries. A future
+confirmed-logical-frame digest is still required for a single end-to-end state
+convergence assertion.
+
+Rollback-disabled compatibility was rechecked with the same runtime and private
+package at `/tmp/ringout-fixed-regression-20260825`: 2,452 comparable guest-RAM
+rows were byte-identical and the scripted VS route completed. This remains the
+stronger whole-run oracle available to the shipped fixed-delay path.
 
 ## Outcome of this iteration
 
@@ -31,18 +108,17 @@ real-game oracle:
 - `RollbackSIInputJournal` records where each scheduled SI batch was actually
   consumed as `(emulated_frame, poll_ordinal)`, performs repeat-last remote
   prediction, and converts late authoritative corrections into coordinator
-  replay ranges. It deliberately rejects partial/non-batched SI schedules until
-  the live timeline supports a dynamic required-pad mask.
+  replay ranges. Grouped SI updates and unbatched guest transfers both resolve
+  the complete active-pad set; a future dynamic required-pad mask would be
+  needed before partially sampled batches could be represented directly.
 - `.github/scripts/rollback-real-game.sh` runs an authoritative baseline,
   withholds transitions to force a wrong prediction, restores the full emulator
   state, replays corrected input, and requires every corrected game-memory and
   L1 hash to converge to the baseline. The orchestration has an asset-free
   regression test in `.github/scripts/test-rollback-real-game-harness.sh`.
 
-These components are not yet a live rollback mode. `GetNetPads`, the ENet
-protocol, session negotiation, and the main emulation loop still use fixed
-delay. The coordinator intentionally refuses to restore unless a comprehensive
-output/side-effect gate is available.
+The following bullets describe the prior offline slice and remain useful as
+component provenance. They are no longer the complete branch status.
 
 ## Real-game correction result
 
@@ -297,21 +373,21 @@ toolchain workaround, not a netplay code change.
 
 ## Next iteration
 
-1. Implement the comprehensive replay gate: suppress intermediate video and
-   audio, and defer/deduplicate rumble, achievements, movie/replay writes,
-   memory-card writes, and outbound netplay effects.
-2. Replace the four independent pad FIFOs with grouped SI-batch consumption,
-   including deterministic startup seeds and a safe policy for guest-initiated
-   partial `RunSIBuffer` polls.
-3. Add capability/version negotiation, fresh nonzero session generations, and
-   an authenticated/ownership-checked SI batch relay. Keep fixed-delay fallback
-   for peers which do not negotiate the complete rollback feature set.
-4. Exchange the existing full game/module fingerprint before roster admission.
-5. Add real Ready/Not Ready, mapping acknowledgement, capacity enforcement, and
+1. Add confirmed-frontier deferral/buffering for audio, rumble, achievements,
+   movie writes, persistent storage, guest networking, outbound side effects,
+   and corrected video/audio publication. Remove the isolated-only gate only
+   after each capability has a correction test.
+2. Add dynamic required-pad masks and Wiimote support. The current live
+   scheduler handles grouped GC `UpdateDevices` polls and unbatched guest
+   transfers by resolving the complete mapped GC pad set; genuinely partial
+   pad batches are not represented on the wire.
+3. Exchange a full game/module/state-format fingerprint before roster admission
+   and add authenticated/encrypted control and input transport.
+4. Add real Ready/Not Ready, mapping acknowledgement, capacity enforcement, and
    typed lobby outcomes.
-6. Extend the correction oracle across zero/one/multiple SI polls per frame,
+5. Extend the correction oracle across zero/one/multiple SI polls per frame,
    FMV, DMA, audio, EFB, saving, and SMC/JIT correction routes.
-7. Add confirmed-frame component digests and archive the first mismatch with its
+6. Add confirmed-frame component digests and archive the first mismatch with its
    input journal and build fingerprint.
-8. Only after correctness and catch-up gates pass, wire an opt-in two-frame
-   hybrid rollback mode with fixed-delay fallback.
+7. Add reconnect/resume, server ACK consumption, adaptive delay/pacing, and
+   long-duration loss/reorder/netem tests before a lobby-visible opt-in.
