@@ -263,7 +263,10 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
         break;
     }
     if (m_connection_state != ConnectionState::Failure)
+    {
+      INFO_LOG_FMT(NETPLAY, "ENet did not connect after traversal rendezvous.");
       m_dialog->OnConnectionError(_trans("Could not communicate with host."));
+    }
   }
 }
 
@@ -1890,6 +1893,7 @@ void NetPlayClient::OnConnectReady(ENetAddress addr)
 {
   if (m_connection_state == ConnectionState::WaitingForTraversalClientConnectReady)
   {
+    INFO_LOG_FMT(NETPLAY, "Traversal supplied ENet peer {:08x}:{}.", addr.host, addr.port);
     m_connection_state = ConnectionState::Connecting;
     enet_host_connect(m_client, &addr, CHANNEL_COUNT, 0);
   }

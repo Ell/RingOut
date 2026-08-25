@@ -50,6 +50,8 @@ TraversalClient::FailureReason TraversalClient::GetFailureReason() const
 
 void TraversalClient::ReconnectToServer()
 {
+  INFO_LOG_FMT(NETPLAY, "Traversal resolving {}:{} (alternate port {}).", m_Server, m_port,
+               m_portAlt);
   if (enet_address_set_host(&m_ServerAddress, m_Server.c_str()))
   {
     OnFailure(FailureReason::BadHost);
@@ -92,6 +94,7 @@ void TraversalClient::ConnectToClient(std::string_view host)
   TraversalPacket packet = {};
   packet.type = TraversalPacketType::ConnectPlease;
   memcpy(packet.connectPlease.hostId.data(), host.data(), host.size());
+  INFO_LOG_FMT(NETPLAY, "Traversal requesting room {}.", host);
   m_ConnectRequestId = SendTraversalPacket(packet);
   m_PendingConnect = true;
 }
@@ -156,6 +159,7 @@ void TraversalClient::HandleServerPacket(TraversalPacket* packet)
     }
     break;
   case TraversalPacketType::HelloFromServer:
+  {
     if (!IsConnecting())
       break;
     if (!packet->helloFromServer.ok)
@@ -165,17 +169,23 @@ void TraversalClient::HandleServerPacket(TraversalPacket* packet)
     }
     m_HostId = packet->helloFromServer.yourHostId;
     m_external_address = packet->helloFromServer.yourAddress;
+    const ENetAddress external = MakeENetAddress(m_external_address);
+    INFO_LOG_FMT(NETPLAY, "Traversal registered room {} with external endpoint {:08x}:{}.",
+                 std::string(m_HostId.data(), m_HostId.size()), external.host, external.port);
     NewTraversalTest();
     m_State = State::Connected;
     if (m_Client)
       m_Client->OnTraversalStateChanged();
     break;
+  }
   case TraversalPacketType::PleaseSendPacket:
   {
     // security is overrated.
     ENetAddress addr = MakeENetAddress(packet->pleaseSendPacket.address);
     if (addr.port != 0)
     {
+      INFO_LOG_FMT(NETPLAY, "Traversal punching peer {:08x}:{} with TTL {}.", addr.host,
+                   addr.port, m_ttlReady ? m_ttl : 0);
       char message[] = "Hello from Dolphin Netplay...";
       ENetBuffer buf;
       buf.data = message;
@@ -212,9 +222,18 @@ void TraversalClient::HandleServerPacket(TraversalPacket* packet)
       break;
 
     if (packet->type == TraversalPacketType::ConnectReady)
+    {
+      const ENetAddress ready = MakeENetAddress(packet->connectReady.address);
+      INFO_LOG_FMT(NETPLAY, "Traversal rendezvous ready for peer {:08x}:{}.", ready.host,
+                   ready.port);
       m_Client->OnConnectReady(MakeENetAddress(packet->connectReady.address));
+    }
     else
+    {
+      INFO_LOG_FMT(NETPLAY, "Traversal rendezvous failed with reason {}.",
+                   static_cast<int>(packet->connectFailed.reason));
       m_Client->OnConnectFailed(packet->connectFailed.reason);
+    }
     break;
   }
   default:
@@ -238,6 +257,7 @@ void TraversalClient::HandleServerPacket(TraversalPacket* packet)
 
 void TraversalClient::OnFailure(FailureReason reason)
 {
+  ERROR_LOG_FMT(NETPLAY, "Traversal service failure {}.", static_cast<int>(reason));
   m_State = State::Failure;
   m_FailureReason = reason;
 

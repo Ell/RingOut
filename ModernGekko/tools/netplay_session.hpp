@@ -62,6 +62,9 @@ struct NetplayOptions {
   // Seconds to wait for peers and for the start signal. A headless lobby must
   // not block forever; a hung run looks exactly like a slow one to a script.
   unsigned lobby_timeout = 120;
+  // Enables Dolphin's detailed NETPLAY category. The launcher captures both
+  // ordinary RingOut status and this transport trace in its support log.
+  bool diagnostic_logging = false;
 };
 
 int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,

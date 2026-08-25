@@ -41,7 +41,7 @@ void Usage() {
                "[--traversal-alt-port <port>]\n"
                "       [--nickname <name>] [--buffer <auto|1-20>] "
                "[--netplay-mode <fixed-delay|rollback>] "
-               "[--controller <device>]...\n"
+               "[--netplay-diagnostics] [--controller <device>]...\n"
                "       [--netplay-players <n>]   (host: machines to wait for, "
                "default 2)\n"
                "       [--netplay-timeout <s>]   (lobby wait, default 120)\n"
@@ -119,6 +119,7 @@ int RunMain(int argc, char **argv) {
   std::string netplay_nickname;
   std::string netplay_buffer;
   std::optional<moderngekko::frontend::NetplayMode> netplay_mode;
+  bool netplay_diagnostics = false;
   std::vector<std::string> netplay_controllers;
   std::optional<unsigned> netplay_players;
   std::optional<unsigned> netplay_timeout;
@@ -210,8 +211,9 @@ int RunMain(int argc, char **argv) {
         return 2;
       }
       netplay_mode = parsed;
-    }
-    else if (arg == "--controller")
+    } else if (arg == "--netplay-diagnostics") {
+      netplay_diagnostics = true;
+    } else if (arg == "--controller")
       netplay_controllers.emplace_back(value("--controller"));
     else if (arg == "--netplay-players") {
       const std::string players_value = value("--netplay-players");
@@ -365,6 +367,8 @@ int RunMain(int argc, char **argv) {
     options.buffer = netplay_buffer.empty() ? frontend_config.netplay_buffer
                                             : netplay_buffer;
     options.mode = netplay_mode.value_or(frontend_config.netplay_mode);
+    options.diagnostic_logging =
+        netplay_diagnostics || frontend_config.netplay_diagnostic_logging;
     if (!traversal_server.empty())
       options.traversal_server = traversal_server;
     if (traversal_port)

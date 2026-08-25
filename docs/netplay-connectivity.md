@@ -158,14 +158,21 @@ The equivalent runner commands, with package-relative paths shown, are:
 ./bin/moderngekko-run --game ./game --module ./bin/gGRSEAF_recomp.so \
   --user-dir /absolute/path/to/host-user --controller "Standard Controller" \
   --netplay-host --netplay-traversal --netplay-mode rollback \
-  --nickname Host --buffer auto
+  --nickname Host --buffer auto --netplay-diagnostics
 
 # Guest. Replace 0123abcd with the host's code.
 ./bin/moderngekko-run --game ./game --module ./bin/gGRSEAF_recomp.so \
   --user-dir /absolute/path/to/guest-user --controller "Standard Controller" \
   --netplay-join 0123abcd --netplay-traversal --netplay-mode rollback \
-  --nickname Guest --buffer auto
+  --nickname Guest --buffer auto --netplay-diagnostics
 ```
+
+The launcher always captures basic session output in `Logs/RingOut.log` and
+preserves one `RingOut.previous.log`. Its persisted diagnostics checkbox passes
+`--netplay-diagnostics`, which adds Dolphin NETPLAY transport and handshake
+events to the captured console stream and native Dolphin log. The launcher can
+copy the support-log path and warns that these files may contain room codes, IP
+addresses, nicknames, controller names, and local paths.
 
 `--traversal-server`, `--traversal-port`, and `--traversal-alt-port` override
 the defaults for a controlled compatible service. They are advanced diagnostic
@@ -258,16 +265,18 @@ still does **not** prove two-peer hole punching through representative NATs, an
 entire RingOut lobby, or gameplay.
 
 The ISO-backed two-process production rollback harness was also run with
-`RINGOUT_NETPLAY_TRAVERSAL=1`. Dolphin assigned the host a real room code after
-one second, but the guest timed out connecting to the host's public endpoint on
-the same machine. The final rebuilt run assigned code `c97d0e76` and reported
-`Could not communicate with host`; evidence is retained at
-`/tmp/ringout-live-rollback.traversal-hosted-final-20260825`. This result shows
+`RINGOUT_NETPLAY_TRAVERSAL=1`. The final diagnostics-enabled run assigned host
+code `f2a7304d` after one second. Both real game processes registered the same
+public IPv4 endpoint with distinct UDP ports; the host logged the requested
+punch, and the guest logged `ConnectReady`, the supplied ENet endpoint, and then
+`ENet did not connect after traversal rendezvous`. Evidence is retained at
+`/tmp/ringout-two-instance-hosted-diagnostics-final-20260825`. This result shows
 that same-host reachability was absent, without assigning that absence to a
-specific NAT or firewall behavior. The corresponding direct
-localhost regression reached a two-controller VS Battle, activated production
-rollback on both peers, and matched confirmed logical state; its evidence is at
-`/tmp/ringout-live-rollback.direct-regression-20260825`. The correct conclusion
+specific NAT or firewall behavior. The corresponding diagnostics-enabled
+Direct localhost regression reached a two-controller VS Battle, activated
+production rollback on both peers, accepted scripted input from both owners,
+and completed 690 retained physical-frame rows; its evidence is at
+`/tmp/ringout-two-instance-direct-diagnostics-20260825b`. The correct conclusion
 is that rollback/session integration remains healthy and the hosted control
 plane works, while a second independently routed machine is still required for
 the final hosted gameplay acceptance test.

@@ -159,6 +159,14 @@ ConfigResult LoadConfig(const fs::path &user_directory,
     } else if (key == "mode") {
       if (!ParseNetplayMode(value, &config.netplay_mode))
         return {.error = "netplay mode must be fixed-delay or rollback"};
+    } else if (key == "diagnostic_logging") {
+      if (value == "true" || value == "1" || value == "yes" || value == "on")
+        config.netplay_diagnostic_logging = true;
+      else if (value == "false" || value == "0" || value == "no" ||
+               value == "off")
+        config.netplay_diagnostic_logging = false;
+      else
+        return {.error = "netplay diagnostic_logging must be true or false"};
     } else if (key == "buffer") {
       if (value != "auto") {
         unsigned int frames = 0;
@@ -272,7 +280,9 @@ bool SaveConfig(const fs::path &user_directory, const ConfigResult &config,
        << "nickname=" << config.netplay_nickname << '\n'
        << "address=" << config.netplay_address << '\n'
        << "port=" << config.netplay_port << '\n'
-       << "buffer=" << config.netplay_buffer << '\n';
+       << "buffer=" << config.netplay_buffer << '\n'
+       << "diagnostic_logging="
+       << (config.netplay_diagnostic_logging ? "true" : "false") << '\n';
   return true;
 }
 

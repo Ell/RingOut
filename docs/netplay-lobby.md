@@ -80,10 +80,11 @@ messages (`ModernGekko/tools/netplay_session.cpp:212-251,757-796,1276-1304` and
 `ModernGekko/tools/moderngekko_launcher.cpp:1596-1613`). Use it only with a
 trusted friend.
 
-The desktop launcher and direct CLI are implemented. The in-game System-menu
-request/restart flow still records an address and port but no connection-method
-field, so it remains the Direct IP/LAN-scan flow rather than silently opting a
-running game into the hosted beta.
+The desktop launcher and direct CLI are implemented. The in-game System tab no
+longer lists its obsolete Direct-IP Host/Join/Scan controls, so players cannot
+accidentally enter a second flow that lacks Online Room. The dormant one-shot
+request reader remains for compatibility with an already-created request file;
+normal player UI cannot create a new request.
 
 The current source predicate returns true because all eleven audited capability
 bits are set (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:158-178`),
@@ -240,6 +241,13 @@ address/port fields only after selecting Advanced Direct IP
 `--netplay-traversal` for Online Room and preserves the existing direct arguments
 otherwise (`ModernGekko/tools/moderngekko_launcher.cpp:1474-1505`).
 
+The current launcher always captures basic child output in
+`userdata/Logs/RingOut.log`. Its persisted **Detailed netplay diagnostics**
+toggle additionally enables Dolphin's NETPLAY transport/handshake category,
+rotates the prior run to `RingOut.previous.log`, and provides a Copy log path
+button. The privacy notice calls out nicknames, room codes, IP addresses,
+controller names, and local paths before players share a file.
+
 The desktop launcher initializes SDL video and gamepad support, but enables only
 ImGui keyboard navigation (`ModernGekko/tools/moderngekko_launcher.cpp:340-377`).
 Its main screen exposes:
@@ -263,9 +271,13 @@ an address even though the in-game menu has discovery.
 
 ### In-game System menu
 
-This entry point remains Direct IP/LAN scan in the current branch. It does not
-persist a traversal choice or room code. Online Room is available through the
-integrated desktop launcher or explicit runner CLI.
+The current branch removes all Netplay, Scan, address, port, and Start rows from
+the visible System-tab item list. Online Room and Advanced Direct IP are
+available through the integrated desktop launcher; explicit runner CLI remains
+for automation and diagnostics.
+
+The remainder of this subsection records the historical audit-commit behavior,
+not the current visible player flow.
 
 The in-game menu's System tab contains, in order, Netplay mode, Scan, address,
 port, and Start rows
@@ -898,10 +910,11 @@ The current branch extends that script with
 `RINGOUT_NETPLAY_TRAVERSAL=1`: it waits for the host's code, starts the guest
 through the same traversal CLI, and retains the existing armed/match/oracle
 requirements (`.github/scripts/netplay-match.sh:181-234`). The route is
-implemented. A final rebuilt live run received Dolphin code `c97d0e76` after
-one second, then the same-host guest reported `Could not communicate with host`;
-evidence is retained at
-`/tmp/ringout-live-rollback.traversal-hosted-final-20260825`. This demonstrates
+implemented. `RINGOUT_NETPLAY_DIAGNOSTICS=1` passes the same detailed logging
+flag as the launcher. A final rebuilt live run received Dolphin code `f2a7304d`
+after one second. Its two process logs prove host registration, host punch,
+guest `ConnectReady`, and the subsequent ENet timeout; evidence is retained at
+`/tmp/ringout-two-instance-hosted-diagnostics-final-20260825`. This demonstrates
 absent same-host reachability without identifying one specific NAT or firewall
 cause. The separate
 `.github/scripts/test-dolphin-traversal-live.py` smoke completed the hosted
@@ -909,9 +922,27 @@ cause. The separate
 same-host punch. Neither result is a successful cross-network RingOut match.
 
 The ISO-backed Direct regression after these changes did reach a two-controller
-VS Battle, activated production rollback on both peers, and passed the confirmed
-logical-state oracle. Evidence is retained at
-`/tmp/ringout-live-rollback.direct-regression-20260825`.
+VS Battle, activated production rollback on both peers, accepted scripted input
+from both controller owners, and completed 690 retained physical-frame rows.
+Both peer logs contain Dolphin's detailed NETPLAY trace. Evidence is retained at
+`/tmp/ringout-two-instance-direct-diagnostics-20260825b`.
+
+Exact commands for those two controlled-instance runs were:
+
+```bash
+RINGOUT_ROLLBACK_PRODUCTION=1 \
+RINGOUT_NETPLAY_DIAGNOSTICS=1 \
+PKG=/tmp/ringout-traversal-package.KXrClx57 \
+bash .github/scripts/netplay-match.sh \
+  /tmp/ringout-two-instance-direct-diagnostics-20260825b 5 32626
+
+RINGOUT_NETPLAY_TRAVERSAL=1 \
+RINGOUT_ROLLBACK_PRODUCTION=1 \
+RINGOUT_NETPLAY_DIAGNOSTICS=1 \
+PKG=/tmp/ringout-traversal-package.KXrClx57 \
+bash .github/scripts/netplay-match.sh \
+  /tmp/ringout-two-instance-hosted-diagnostics-final-20260825 5 32629
+```
 
 Those scripts are valuable manual integration evidence, but neither is invoked
 by the release workflows at the audited commit. The CTest protocol test is

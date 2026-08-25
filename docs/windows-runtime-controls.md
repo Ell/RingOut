@@ -495,6 +495,13 @@ When testing a Windows package built from this worktree, use the top-level
    clears readiness.
 4. The host selects **Start game** only after all mapped players show Ready.
 
+For a connection problem, enable **Detailed netplay diagnostics** before
+reproducing it. The launcher captures the session in
+`userdata\Logs\RingOut.log`, moves the preceding run to
+`RingOut.previous.log`, and offers **Copy log path**. Review the file before
+sharing because it can contain nicknames, room codes, IP addresses, controller
+names, and local paths.
+
 The launcher forwards explicit traversal/direct selection, `--netplay-mode`,
 room code or address, port, nickname, buffer, and controller values
 (`ModernGekko/tools/moderngekko_launcher.cpp:1197-1324,1474-1515`).
@@ -513,44 +520,14 @@ SD/serial/GBA paths are disallowed
 If rollback is unavailable or incompatible, exit and reconnect after selecting
 Fixed delay on both peers.
 
-### In-game menu path
+### Launcher-only entry point
 
-Host:
-
-1. Press Escape and remain on the System tab.
-2. Change `Netplay` to `HOST`.
-3. Choose the session port; the default is UDP 2626.
-4. Activate `Start Netplay`.
-5. Allow Ring Out on private networks if Windows Firewall asks.
-6. Wait in the lobby for the joiner, verify both show the game as ready and a
-   controller port, then activate `Start game`.
-
-Joiner:
-
-1. Press Escape, remain on System, and change `Netplay` to `JOIN`.
-2. On one LAN, activate `Scan for Hosts` and select the result.
-3. Otherwise select `Join Address`, press Space, use Left/Right to choose an
-   octet and Up/Down to change it, then press Space to finish. Hostnames already
-   saved in `userdata/config.ini` remain usable until octet editing replaces
-   them.
-4. Set the same port and activate `Start Netplay`.
-5. Wait for the host to start the game.
-
-The rows and default port are defined at
-`ModernGekko/vendor/dolphin/Source/Core/VideoCommon/RecompMenu.cpp:146-164`,
-`:197-241`. Start writes `userdata/netplay-request.ini`, safely ends the offline
-runtime, and lets the runner delete and consume the one-shot request before
-opening the lobby (`RecompMenu.cpp:1714-1737`, `:2287-2322`;
-`moderngekko_run.cpp:397-478`). The restart is expected because Dolphin arms
-NetPlay before the new core boots.
-
-LAN discovery sends a small broadcast once per second on UDP 2627 while the
-host is in the lobby; the joiner's scan listens for 2.5 seconds
-(`ModernGekko/tools/netplay_session.cpp:519-595`;
-`RecompMenu.cpp:881-977`). Broadcast does not cross routers. Across the
-Internet, the host usually needs UDP 2626 forwarded, or both peers need a VPN
-such as Tailscale and must enter the VPN address/name. QWave does not provide
-NAT traversal.
+The current branch removes the obsolete Netplay, Scan, address, port, and Start
+rows from the in-game System tab. Players should always create or join a room
+from `RingOut.exe`; Advanced Direct IP is available there when needed. The
+runner retains its one-shot request reader only so an already-created request
+from an older build can be consumed safely. Older published packages may still
+show the historical in-game Direct-IP flow.
 
 The lobby supports keyboard and controller navigation, shows name, ping,
 assigned controller port, and game comparison, and only the host starts the

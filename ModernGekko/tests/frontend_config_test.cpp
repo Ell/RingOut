@@ -36,6 +36,7 @@ int main() {
   netplay_config.netplay_buffer = "auto";
   netplay_config.netplay_mode =
       moderngekko::frontend::NetplayMode::Rollback;
+  netplay_config.netplay_diagnostic_logging = true;
   if (!moderngekko::frontend::SaveConfig(directory, netplay_config, &error))
     return 6;
   const auto netplay_loaded =
@@ -46,6 +47,7 @@ int main() {
       netplay_loaded.netplay_address != "192.168.1.50" ||
       netplay_loaded.netplay_port != 34567 ||
       netplay_loaded.netplay_buffer != "auto" ||
+      !netplay_loaded.netplay_diagnostic_logging ||
       netplay_loaded.netplay_mode !=
           moderngekko::frontend::NetplayMode::Rollback) {
     return 7;

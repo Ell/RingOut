@@ -10,6 +10,7 @@
 #include "netplay_session.hpp"
 #include "netplay_compatibility.hpp"
 
+#include "Common/Logging/LogManager.h"
 #include "Common/TraversalClient.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
@@ -39,6 +40,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -1049,9 +1051,31 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   }
 
   Log("initializing Dolphin services");
+  if (options.diagnostic_logging) {
+    std::error_code log_directory_error;
+    std::filesystem::create_directories(runtime_config.user_directory / "Logs",
+                                        log_directory_error);
+    if (log_directory_error)
+      Log("could not create the detailed log directory: " +
+          log_directory_error.message());
+  }
   UICommon::SetUserDirectory(runtime_config.user_directory.string());
   UICommon::Init();
   detail::SetExternalUICommon(true);
+  if (Common::Log::LogManager *log_manager =
+          Common::Log::LogManager::GetInstance()) {
+    log_manager->SetEnable(Common::Log::LogType::NETPLAY,
+                           options.diagnostic_logging);
+    log_manager->EnableListener(Common::Log::LogListener::FILE_LISTENER,
+                                options.diagnostic_logging);
+    if (options.diagnostic_logging) {
+      log_manager->SetConfigLogLevel(Common::Log::LogLevel::LINFO);
+      log_manager->EnableListener(Common::Log::LogListener::CONSOLE_LISTENER,
+                                  true);
+      Log("detailed diagnostics enabled; logs can contain nicknames, room "
+          "codes, endpoints, and local file paths");
+    }
+  }
 
   // Netplay used to force single-core, reasoning that a dual-core split lets
   // the CPU and GPU threads interleave differently on each peer. Dolphin's own

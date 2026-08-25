@@ -175,9 +175,16 @@ password, or IP hiding, so use it only with a trusted friend. Strict NATs may
 fail. **Advanced: use Direct IP** preserves the LAN/private-VPN fallback and its
 fixed-delay option.
 
-The in-game System-tab Host/Join path remains available and restarts the runtime
-into the same pre-boot lobby, which is expected. Older released packages may
-show only this path and fixed-delay mode.
+Enable **Detailed netplay diagnostics** before reproducing a problem to add
+Dolphin transport and handshake events to `userdata/Logs/RingOut.log`. The
+launcher preserves the prior session as `RingOut.previous.log` and can copy the
+current log path. Review logs before sharing: they can contain nicknames, room
+codes, IP addresses, controller names, and local file paths.
+
+Netplay starts only from the launcher on this branch. The obsolete in-game
+System-tab Host/Join/Scan rows were removed so they cannot lead players into a
+different Direct-IP-only flow. Older released packages may still show those
+rows and fixed-delay mode.
 
 On the rollback branch, save data may be synchronized into the session, but
 rollback forcibly disables copying memory-card changes back to the user's save

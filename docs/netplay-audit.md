@@ -64,6 +64,13 @@ gate. Authenticated ICE/TURN rooms remain proposed. See
 [the implementation handoff](rollback-netplay-implementation.md) and
 [live harness](rollback-live-test-harness.md) for current evidence.
 
+The same later branch snapshot makes the desktop launcher the only visible
+player entry point: the obsolete Direct-IP Host/Join/Scan rows are no longer in
+the in-game System tab. A persisted detailed-diagnostics toggle enables
+Dolphin's NETPLAY trace; the launcher captures it in `Logs/RingOut.log`, rotates
+one `RingOut.previous.log`, exposes a Copy log path action, and warns that logs
+can contain endpoint and local-machine information.
+
 ## Documents
 
 - [Lobby architecture and UX](netplay-lobby.md): entry points, LAN discovery, direct connection, player mapping, start synchronization, and lobby defects.

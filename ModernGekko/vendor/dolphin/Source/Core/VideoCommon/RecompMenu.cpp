@@ -156,11 +156,8 @@ const std::vector<Item>& TabItems(Tab tab)
   static const std::vector<Item> system = {Item::Speed,        Item::Overclock,
                                            Item::StateSlot,
                                            Item::SaveState,    Item::LoadState,
-                                           Item::AutoResume,   Item::NetplayMode,
-                                           Item::NetplayScan,
-                                           Item::NetplayAddress,
-                                           Item::NetplayPort,  Item::NetplayStart,
-                                           Item::Apply,        Item::Reset,
+                                           Item::AutoResume,   Item::Apply,
+                                           Item::Reset,
                                            Item::Quit};
   static const std::vector<Item> none = {};
 

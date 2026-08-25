@@ -758,6 +758,7 @@ int main(int argc, char **argv) {
                                                                           : 0;
   int netplay_direct_mode = netplay_mode;
   bool netplay_direct_advanced = false;
+  bool netplay_diagnostics = config.netplay_diagnostic_logging;
   int resolution_index = 0;
   for (std::size_t i = 0; i < resolutions.size(); ++i) {
     if (config.resolution == resolutions[i].text)
@@ -886,6 +887,7 @@ int main(int argc, char **argv) {
     config.netplay_mode =
         netplay_mode == 1 ? moderngekko::frontend::NetplayMode::Rollback
                           : moderngekko::frontend::NetplayMode::FixedDelay;
+    config.netplay_diagnostic_logging = netplay_diagnostics;
     config.controllers = configured_controllers;
     if (config.controllers.empty() && !selected_controller.empty())
       config.controllers.push_back(selected_controller);
@@ -1274,6 +1276,19 @@ int main(int argc, char **argv) {
             "IP.");
       }
       ImGui::PopTextWrapPos();
+      ImGui::Checkbox("Detailed netplay diagnostics", &netplay_diagnostics);
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
+      ImGui::TextDisabled(
+          "Adds transport and handshake details to Logs/RingOut.log. The "
+          "previous session is kept as RingOut.previous.log. Logs can contain "
+          "nicknames, room codes, IP addresses, controller names, and local "
+          "file paths.");
+      ImGui::PopTextWrapPos();
+      if (ImGui::Button("Copy log path")) {
+        const std::string log_path =
+            (user_directory / "Logs" / "RingOut.log").string();
+        ImGui::SetClipboardText(log_path.c_str());
+      }
       ImGui::Checkbox(netplay_mode == 1 ? "Use recommended base delay"
                                         : "Use default input delay",
                       &automatic_buffer);
@@ -1500,6 +1515,8 @@ int main(int argc, char **argv) {
         argument_storage.emplace_back(std::string(
             moderngekko::frontend::NetplayModeConfigValue(
                 config.netplay_mode)));
+        if (config.netplay_diagnostic_logging)
+          argument_storage.emplace_back("--netplay-diagnostics");
         for (const std::string &controller : config.controllers) {
           argument_storage.emplace_back("--controller");
           argument_storage.emplace_back(controller);
@@ -1514,8 +1531,19 @@ int main(int argc, char **argv) {
       arguments.push_back(nullptr);
       const std::filesystem::path log_path =
           user_directory / "Logs" / "RingOut.log";
+      const std::filesystem::path previous_log_path =
+          user_directory / "Logs" / "RingOut.previous.log";
       std::error_code log_error;
       std::filesystem::create_directories(log_path.parent_path(), log_error);
+      if (!log_error) {
+        std::error_code rotate_error;
+        if (std::filesystem::is_regular_file(log_path, rotate_error)) {
+          rotate_error.clear();
+          std::filesystem::remove(previous_log_path, rotate_error);
+          rotate_error.clear();
+          std::filesystem::rename(log_path, previous_log_path, rotate_error);
+        }
+      }
       SDL_IOStream *log_stream =
           log_error ? nullptr : SDL_IOFromFile(log_path.string().c_str(), "w");
       SDL_Process *process = nullptr;

@@ -117,7 +117,10 @@ launch() {
   local -a rollback_test_env=()
   local -a rollback_mode_args=()
   local -a rollback_oracle_env=()
+  local -a diagnostic_args=()
   [ "${WINDOWED:-0}" = "1" ] && mode=()
+  [ "${RINGOUT_NETPLAY_DIAGNOSTICS:-0}" = "1" ] &&
+    diagnostic_args=(--netplay-diagnostics)
   if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ] ||
      [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||
      [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
@@ -167,7 +170,8 @@ launch() {
       "${rollback_test_env[@]}" \
       ./bin/moderngekko-run "${mode[@]}" --user-dir "$d/user" --game ./game \
       --module ./bin/gGRSEAF_recomp.so --controller "Standard Controller" \
-      "${rollback_mode_args[@]}" "$@" ) > "$d/log.txt" 2>&1 &
+      "${rollback_mode_args[@]}" "${diagnostic_args[@]}" "$@" ) \
+      > "$d/log.txt" 2>&1 &
   echo $! > "$d/pid"
 }
 
