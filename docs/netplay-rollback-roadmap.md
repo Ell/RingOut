@@ -31,6 +31,11 @@ Recommended product wording until the staged plan is complete:
 > Fixed-delay netplay for trusted peers. Rollback is experimental research and is
 > not available in releases.
 
+That wording is the historical recommendation for the audited commit. Public
+prerelease `v1.2.1-ell.9` now exposes the implemented rollback path as a beta;
+the remaining physical/cross-platform and adverse-network gaps below still
+apply.
+
 ## Branch implementation progress after the audit (2026-08-25)
 
 The “ships today” and staged sections below are intentionally preserved as the

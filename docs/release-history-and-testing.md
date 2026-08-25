@@ -15,7 +15,7 @@ build instructions in `README.md` or the two release workflows.
 
 ## Executive verdict
 
-- `v1.2.1-ell.1`, `.2`, `.3`, and `.6` are public prereleases.
+- `v1.2.1-ell.1`, `.2`, `.3`, `.6`, and `.9` are public prereleases.
 - `v1.2.1-ell.4`, `.5`, `.7`, and `.8` are real, immutable annotated tags, but
   are not public releases. `.4` and `.5` failed at draft publication, `.7`
   failed its minimal Linux build, and `.8` failed AppImage assembly after its
@@ -279,12 +279,19 @@ reached the launcher identity gate, where `set -o pipefail` turned the expected
 early exit from `grep -q` into a pipeline failure when `strings` received
 SIGPIPE. This was a packaging-check race, not an emulator build or test failure.
 
-### v1.2.1-ell.9 rollback-beta candidate
+### v1.2.1-ell.9 — published rollback beta
+
+Source: `94cd55df6ab53b974a41c9d27c124cd0b99e68f2`
+
+Annotated tag object: `c092e9f6ab81338aa038f1ff077d300d647e1c13`.
+
+Public prerelease: [v1.2.1-ell.9](https://github.com/Ell/RingOut/releases/tag/v1.2.1-ell.9),
+published 2026-08-25 23:12:44 UTC.
 
 Overlay implementation checkpoint:
 `58f215e10d7ef477721600509949a03e792b0b1c` (2026-08-25).
 
-This candidate adds the player-facing rollback performance OSD on top of the
+This release adds the player-facing rollback performance OSD on top of the
 `.ell.7` build fixes. It displays the maximum peer RTT plus the real inclusive
 restore/replay correction depth, retains a recent peak for one second, and
 colors 1-3 frame corrections yellow and 4+ red. The launcher preference is on
@@ -295,8 +302,7 @@ launcher, module inspector, and full test target. CTest passed 45/45. After the
 final formatting-only header/call-site adjustment, the same environment rebuilt
 the affected production targets and passed the 11-test rollback/config/harness/
 localhost-protocol subset. These are source/build gates, not visual proof of the
-rendered OSD or physical two-machine play. Tag workflow runs, artifact hashes,
-source markers, and publication state must be appended only after they exist.
+rendered OSD or physical two-machine play.
 
 After `.ell.8` exposed the AppImage-only pipe race, both platform packagers were
 changed to search the binary directly with `grep -aFq`, eliminating the
@@ -306,13 +312,29 @@ AppImage construction, synthetic DOL translation/native module load, and the
 AppImage self-test. It produced a 2,905-file payload at
 `.cache/ell9-package-qa/RingOut-1.2.1-ell.9-linux-x86_64.AppImage`; this local QA
 artifact is not a published release artifact and its digest is not a substitute
-for the upcoming tag-workflow result.
+for the tag-workflow result.
+
+Both source-bound tag runs completed successfully:
+
+- Windows [32909109214](https://github.com/Ell/RingOut/actions/runs/32909109214)
+  built the portable package, validated its import/privacy/provenance policy,
+  and passed the complete packaged first-run toolchain smoke under Wine.
+- Linux [32909109237](https://github.com/Ell/RingOut/actions/runs/32909109237)
+  passed 45/45 runtime tests, the static DolRecomp suite, AppImage assembly,
+  synthetic DOL-to-native-module loading, and the network-disabled clean Ubuntu
+  24.04 no-FUSE self-test.
+
+The downloaded public payloads matched their `.sha256` sidecars and GitHub
+asset digests. Windows and AppImage `SOURCE.txt` both name the exact source
+commit and `.ell.9` tag. The AppImage source marker names the matching
+same-release runtime source/relink archive. None of these package checks proves
+the OSD's rendered appearance or physical/cross-machine gameplay.
 
 ## What the current release pipeline actually tests
 
-| Layer | `.6` evidence | Important boundary |
+| Layer | `.9` evidence | Important boundary |
 | --- | --- | --- |
-| Linux runtime build/tests | Debian 12 container builds runtime, module inspector, and tests; `ctest` reports 36/36. | This is host-side unit/integration coverage, not a real game session. |
+| Linux runtime build/tests | Debian 12 container builds runtime, module inspector, and tests; `ctest` reports 45/45. | This is host-side unit/integration coverage, not a real game session. |
 | Static DolRecomp | Separately configured static executable; 14/14 tests pass and `readelf` rejects an ELF interpreter. | Uses project-authored fixtures/synthetic input, not distributed game data. |
 | Windows cross-build | MinGW Release runtime and DolRecomp compile; tests are explicitly off. | Successful PE compilation is not native Windows execution. |
 | Windows whole-package smoke | Exact ZIP is extracted into a fresh Wine prefix; its bundled Python creates a synthetic DOL, bundled DolRecomp translates it, bundled CMake/Ninja/Clang/`lld` builds a ThinLTO DLL, and Windows Python loads/checks the ABI and gather-pipe export. | The smoke exits before real game data or a graphics device; it does not cover GPU/audio/controller behavior. |
@@ -320,7 +342,7 @@ for the upcoming tag-workflow result.
 | AppImage clean-host smoke | Exact AppImage runs `--ringout-self-test` as uid 65534 in a digest-pinned Ubuntu 24.04 container with no network, no capabilities, no FUSE, and `no-new-privileges`. | Proves extraction/startup self-test, not desktop integration, rendering, sound, or input. |
 | Package policy | Both packages validate manifests, exact source/provenance, licence payload, privacy, and absence of disc/save/generated-module data. Windows also validates PE import closure and ZIP timestamps; AppImage validates DSO/source closure and glibc floor. | Policy checks cannot prove runtime correctness. |
 | Netplay protocol test | `moderngekko.netplay_protocol` is one test in the 36-test Linux runtime tree. | It is localhost/protocol coverage, not Internet traversal, adverse-network simulation, cross-platform interoperability, or two physical peers. |
-| Release publication | Publisher tests simulate tag/source checks, draft creation/joining, races, and immutable digest comparisons. Public `.6` API metadata and sidecars match. | Publication integrity does not add gameplay evidence. |
+| Release publication | Publisher tests simulate tag/source checks, draft creation/joining, races, and immutable digest comparisons. Public `.9` API metadata and sidecars match. | Publication integrity does not add gameplay evidence. |
 
 Source anchors for those claims:
 
@@ -355,6 +377,9 @@ downloaded `.sha256` sidecars on 2026-08-25.
 | `RingOut-1.2.1-ell.6-windows-x86_64.zip` | 210,129,296 | `5d1be65d23ec8378cd1fa0512b6d2ae6a71ddcfd058509d7b1ab9419bf4b0425` |
 | `RingOut-1.2.1-ell.6-linux-x86_64.AppImage` | 24,168,952 | `21cd643d4781cf047afc364f3de962f61dde060a247ef86b842f5300f66c6aae` |
 | `RingOut-1.2.1-ell.6-appimage-runtime-sources.tar.zst` | 4,741,122 | `53ccfab30cf3a5acf1c313099ec71af442f3097f9de37f7efa2509af2b8a062f` |
+| `RingOut-1.2.1-ell.9-windows-x86_64.zip` | 221,073,074 | `d1b360fffd1d1d4c077db441399656c769e746557dde5f248e56f15857e88e30` |
+| `RingOut-1.2.1-ell.9-linux-x86_64.AppImage` | 34,163,192 | `4039cc29eef1decde221e21a41d08fa920e8a1a0f7380fa40ba456d5c052d5db` |
+| `RingOut-1.2.1-ell.9-appimage-runtime-sources.tar.zst` | 4,741,097 | `e0de41d231475521e3c82d1a6692137637f96c09e2cdf7d5a096581256320111` |
 
 The checkout retains byte-identical local copies of the published `.1`, `.2`,
 and `.3` ZIPs under `dist/out/`; their hashes and internal `SOURCE.txt` commits

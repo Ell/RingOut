@@ -4,9 +4,10 @@ Status: live branch integration on `codex/rollback-netplay`, originating at
 commit `38d69d84` and finalized at implementation commit `6518db52` on
 2026-08-25.
 
-This document records branch-local work. It does **not** change the published
-release verdict: published RingOut netplay remains fixed-delay lockstep. The
-branch now has an end-to-end live rollback path—normal launcher selection,
+This document originated as a branch-local handoff. Public prerelease
+`v1.2.1-ell.9`, source commit
+`94cd55df6ab53b974a41c9d27c124cd0b99e68f2`, now contains this end-to-end live
+rollback path—normal launcher selection,
 strict fingerprint/mode negotiation, Ready-gated start, grouped SI prediction,
 checkpoint restore, corrected replay, output quarantine, atomic journal commit,
 and a local confirmed logical-state convergence oracle. The executable
@@ -18,9 +19,9 @@ The production capability predicate is currently enabled and the ordinary
 without the isolated test acknowledgement. The later memory-card snapshot,
 fault/cancel/destructor output-quiescence, and corrected-frontier hard-fault
 changes have all landed, and the post-fix production correction rerun passed.
-This is still not a final player-ready/release verdict. Full Windows/AppImage
-package validation exists only as CI workflow/smoke logic in this worktree; no
-tagged artifact or physical/cross-machine run validates it.
+This is now a player-facing beta, not proof of production maturity. The tagged
+Windows and AppImage packages passed their full CI build, policy, and smoke
+gates, but no retained physical/cross-machine run validates the release.
 
 ## In-game performance overlay checkpoint (2026-08-25)
 
@@ -623,9 +624,8 @@ toolchain workaround, not a netplay code change.
 
 ## Next iteration
 
-1. Build and smoke complete Windows/AppImage candidates through the workflows,
-   then test two physical machines and mixed OS/CPU peers. No current tag
-   artifact contains this branch.
+1. Test the published `.ell.9` packages on two physical machines and mixed
+   OS/CPU peers, including visual confirmation of the performance OSD.
 2. Add dynamic required-pad masks and Wiimote support. The current live
    scheduler handles grouped GC `UpdateDevices` polls and unbatched guest
    transfers by resolving the complete mapped GC pad set; genuinely partial

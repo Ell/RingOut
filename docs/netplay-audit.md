@@ -51,9 +51,12 @@ regression retained at `/tmp/ringout-fixed-delay-final-3a7e` produced 2,958
 byte-identical rows
 with trim SHA-256
 `bd76b76faa049e7e9e9dee0a3bf1ae3be9173b9ea15ed2f532204b5596fa3cb3`.
-Complete Windows/AppImage packages still have workflow and smoke-gate
-integration only; no tag artifact or physical/cross-machine run has validated
-this branch.
+Public prerelease `v1.2.1-ell.9` now contains this path. Its Windows and
+AppImage workflows passed their complete build, package-policy, Wine/AppImage,
+and clean-host smoke gates at source commit
+`94cd55df6ab53b974a41c9d27c124cd0b99e68f2`. This supersedes the package/tag
+gap recorded above, but no retained physical/cross-machine run validates the
+release.
 
 The later branch snapshot adds an Online Room beta through Dolphin's hosted
 eight-character-code rendezvous, while retaining Direct IP under Advanced. The
