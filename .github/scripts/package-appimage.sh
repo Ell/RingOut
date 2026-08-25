@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="v1.2.1-ell.8"
+VERSION="v1.2.1-ell.9"
 BUILD_DIR="$REPO/build-appimage"
 DOLRECOMP_BUILD_DIR="$REPO/build-dolrecomp-appimage"
 OUT_DIR="$REPO/dist/out"
@@ -25,7 +25,7 @@ usage() {
   cat <<'EOF'
 Usage: package-appimage.sh [options]
 
-  --version TAG             package/release tag (default v1.2.1-ell.8)
+  --version TAG             package/release tag (default v1.2.1-ell.9)
   --build-dir DIR           ModernGekko build tree (default build-appimage)
   --dolrecomp-build-dir DIR DolRecomp build tree
   --out-dir DIR             output directory (default dist/out)
@@ -261,8 +261,7 @@ install -m 755 "$LAUNCHER" "$APPDIR/usr/bin/RingOut"
 install -m 755 "$RUNTIME" "$APPDIR/usr/bin/moderngekko-run"
 install -m 755 "$PORT" "$APPDIR/usr/bin/moderngekko-port"
 install -m 755 "$DOLRECOMP" "$APPDIR/usr/bin/dolrecomp"
-strings -a "$APPDIR/usr/bin/RingOut" | grep -Fq \
-  'RingOut C++ launcher self-test' || \
+grep -aFq 'RingOut C++ launcher self-test' "$APPDIR/usr/bin/RingOut" || \
   die "AppImage top-level entry is not the integrated C++ launcher"
 [[ -s "$(dirname "$LAUNCHER")/fonts/DroidSans.ttf" ]] || \
   die "C++ launcher font payload is missing beside $LAUNCHER"

@@ -3,8 +3,8 @@
 # upload verified assets without ever deleting or replacing an existing asset.
 #
 # Usage:
-#   publish-tag-draft-assets.sh --create-release --tag v1.2.1-ell.8 FILE FILE.sha256 [...]
-#   publish-tag-draft-assets.sh --join-release --tag v1.2.1-ell.8 FILE FILE.sha256 [...]
+#   publish-tag-draft-assets.sh --create-release --tag v1.2.1-ell.9 FILE FILE.sha256 [...]
+#   publish-tag-draft-assets.sh --join-release --tag v1.2.1-ell.9 FILE FILE.sha256 [...]
 #
 # Every payload must have an adjacent .sha256 file in the argument list. The
 # Windows is the only release creator; other platform jobs wait for and join

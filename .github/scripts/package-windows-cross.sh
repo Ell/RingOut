@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="v1.2.1-ell.8"
+VERSION="v1.2.1-ell.9"
 BUILD_DIR="$REPO/build-windows-cross"
 OUT_DIR="$REPO/dist/out"
 RUNTIME=""
@@ -25,7 +25,7 @@ usage() {
   cat <<'EOF'
 Usage: package-windows-cross.sh [options]
 
-  --version TAG                 package/release tag (default v1.2.1-ell.8)
+  --version TAG                 package/release tag (default v1.2.1-ell.9)
   --build-dir DIR               cross-build tree
   --out-dir DIR                 output directory (default dist/out)
   --runtime FILE                explicit moderngekko-run.exe
@@ -479,7 +479,7 @@ printf '==> privacy and package-structure validation\n'
 [[ -s "$STAGE/bin/moderngekko-run.exe" ]] || die "runtime was not staged"
 [[ -s "$STAGE/tools/moderngekko-port.exe" ]] || die "portable setup helper was not staged"
 [[ -s "$STAGE/tools/dolrecomp.exe" ]] || die "dolrecomp was not staged"
-strings -a "$STAGE/RingOut.exe" | grep -Fq 'RingOut C++ launcher self-test' || \
+grep -aFq 'RingOut C++ launcher self-test' "$STAGE/RingOut.exe" || \
   die "top-level RingOut.exe is not the integrated C++ launcher"
 [[ -d "$STAGE/bin/Sys/GC" ]] || die "Sys must be staged specifically as bin/Sys"
 [[ -s "$STAGE/module-src/CMakeLists.txt" ]] || die "module sources missing"

@@ -16,9 +16,10 @@ build instructions in `README.md` or the two release workflows.
 ## Executive verdict
 
 - `v1.2.1-ell.1`, `.2`, `.3`, and `.6` are public prereleases.
-- `v1.2.1-ell.4` and `.5` are real, immutable annotated tags, but their tag
-  workflows failed at the final draft-release publication step. There is no
-  public release or public download for either tag as of this audit.
+- `v1.2.1-ell.4`, `.5`, `.7`, and `.8` are real, immutable annotated tags, but
+  are not public releases. `.4` and `.5` failed at draft publication, `.7`
+  failed its minimal Linux build, and `.8` failed AppImage assembly after its
+  Linux build/tests passed.
 - The `.4` and `.5` Windows and Linux jobs completed their builds, package
   validators, Wine/AppImage smokes, and summaries before publication failed.
   A green manual dispatch was never expected to retain a package: both
@@ -261,7 +262,24 @@ docker run --rm --user "$(id -u):$(id -g)" \
   --output-on-failure -j4
 ```
 
-### v1.2.1-ell.8 rollback-beta candidate
+### v1.2.1-ell.8 — failed AppImage packaging attempt
+
+Source: `3881ef28aaff9e380994503c7e9667ff46a0f685`
+
+Annotated tag object: `587b056fce3e98080c1eff02b4ffc8c5acdefbb9`.
+
+Publication: no public release and no public downloads. Windows run
+[32908238001](https://github.com/Ell/RingOut/actions/runs/32908238001) completed
+its build, package validation, whole-package Wine smoke, and upload to an
+unpublished source-bound draft. The immutable tag records a candidate whose
+complete Debian 12 build and 45-test suite also passed, but whose Linux package
+job failed during AppImage assembly. Linux run
+[32908237997](https://github.com/Ell/RingOut/actions/runs/32908237997)
+reached the launcher identity gate, where `set -o pipefail` turned the expected
+early exit from `grep -q` into a pipeline failure when `strings` received
+SIGPIPE. This was a packaging-check race, not an emulator build or test failure.
+
+### v1.2.1-ell.9 rollback-beta candidate
 
 Overlay implementation checkpoint:
 `58f215e10d7ef477721600509949a03e792b0b1c` (2026-08-25).
@@ -279,6 +297,16 @@ the affected production targets and passed the 11-test rollback/config/harness/
 localhost-protocol subset. These are source/build gates, not visual proof of the
 rendered OSD or physical two-machine play. Tag workflow runs, artifact hashes,
 source markers, and publication state must be appended only after they exist.
+
+After `.ell.8` exposed the AppImage-only pipe race, both platform packagers were
+changed to search the binary directly with `grep -aFq`, eliminating the
+`strings` producer and SIGPIPE ambiguity. Before tagging `.ell.9`, the exact
+Debian 12 packager completed locally through privacy/provenance checks,
+AppImage construction, synthetic DOL translation/native module load, and the
+AppImage self-test. It produced a 2,905-file payload at
+`.cache/ell9-package-qa/RingOut-1.2.1-ell.9-linux-x86_64.AppImage`; this local QA
+artifact is not a published release artifact and its digest is not a substitute
+for the upcoming tag-workflow result.
 
 ## What the current release pipeline actually tests
 
