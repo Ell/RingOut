@@ -8,6 +8,25 @@ This document separates what the audited commit does from suggestions that have 
 
 ## Executive answers
 
+> Rollback-branch entry-point update (2026-08-25): the C++ launcher now owns the
+> player-facing fixed-delay/Experimental rollback selector and is built by both
+> release workflows. The Windows ZIP stages it as `RingOut.exe`; AppImage's
+> `AppRun` executes `usr/bin/RingOut`. `moderngekko-port` resolves shipped
+> module sources, game settings, and the bundled Windows toolchain relative to
+> its executable instead of embedding a checkout path. Package and Wine/AppRun
+> smoke gates verify the C++ launcher, fonts, runner, dependency closure, and
+> the helper's exact module-source/game-settings resolution. This is
+> implementation evidence in scripts/workflows, not a completed package run for
+> this branch. Windows still configures `BUILD_TESTING=OFF` while Linux builds
+> and runs the CTest target set (`.github/workflows/windows-cross.yml:118-142`;
+> `.github/workflows/linux-appimage.yml:117-164`). No complete Windows ZIP or
+> AppImage from the rollback worktree has been retained from a manual job,
+> published by a tag, or tested on physical/cross-machine peers. Manual workflow
+> dispatch is validation-only and intentionally retains no package
+> (`.github/workflows/windows-cross.yml:214-238` and
+> `.github/workflows/linux-appimage.yml:311-358`). Treat full-package rollback
+> coverage as CI-only and still pending, not as a shipped artifact claim.
+
 | Question | Current answer at the audited commit |
 | --- | --- |
 | How is Windows built? | The runtime and `dolrecomp.exe` are cross-compiled directly on `ubuntu-24.04` with distro MinGW-w64 GCC, GNU binutils, CMake, and Ninja. The Windows workflow does not use Docker. See `.github/workflows/windows-cross.yml:78-96,118-142` and `cmake/toolchains/mingw-x86_64.cmake:1-45`. |
@@ -34,7 +53,11 @@ The workflow installs Ubuntu's POSIX-threaded MinGW-w64 GCC/G++, GNU PE binutils
 - Release mode, bundled dependencies, Qt/tests/analytics/updater disabled; and
 - ccache as the C and C++ compiler launcher.
 
-The exact configure command is at `.github/workflows/windows-cross.yml:118-139`. The only requested build targets are `moderngekko-run` and `dolrecomp`, built with all runner CPUs at lines 141-142. `ModernGekko/CMakeLists.txt:134-162` shows that the live sibling `DolRecomp` tree is the one added to this build.
+The exact configure command is at `.github/workflows/windows-cross.yml:118-139`.
+The workflow requests `moderngekko-launcher` with all runner CPUs at lines
+141-142; its dependency graph builds the launcher, `moderngekko-port`,
+`moderngekko-run`, and `dolrecomp`. `ModernGekko/CMakeLists.txt:134-162` shows
+that the live sibling `DolRecomp` tree is the one added to this build.
 
 The cross-toolchain file also handles two Linux-host-specific hazards:
 
@@ -254,6 +277,9 @@ The packager enforces:
 - clean/tag-matching source for publishable packages, while manual validation is explicitly marked non-publishable (`.github/scripts/package-appimage.sh:173-185,483-511`);
 - an allowlisted payload with no disc/save/generated module/profile (`.github/scripts/package-appimage.sh:556-622`);
 - a normalized type-2 AppImage with a pinned runtime and manifest-verifying re-extraction (`.github/scripts/package-appimage.sh:639-720`);
+- explicit extracted-payload checks plus a setup-helper self-test that resolve
+  `usr/share/ringout/module-src` and `GRSEAF.ini` through the same search path
+  first-run compilation uses;
 - a synthetic DOL to native `.so` build and ABI load (`.github/scripts/package-appimage.sh:721-722`; `.github/scripts/smoke-appimage-module.sh:33-140`); and
 - a clean Ubuntu 24.04, no-network, no-FUSE self-test of the exact artifact (`.github/workflows/linux-appimage.yml:290-309`).
 
@@ -299,7 +325,8 @@ cmake -S ModernGekko -B build-windows-cross -GNinja \
   -DENABLE_AUTOUPDATE=OFF -DBUILD_TESTING=OFF \
   -DMODERNGEKKO_ENABLE_DOLPHIN_TESTS=OFF
 cmake --build build-windows-cross \
-  --target moderngekko-run dolrecomp --parallel "$(nproc)"
+  --target moderngekko-launcher moderngekko-port moderngekko-run dolrecomp \
+  --parallel "$(nproc)"
 ```
 
 For a release-equivalent ZIP, use the four pinned archives and exact packaging invocation at `.github/workflows/windows-cross.yml:158-203`; do not substitute unverified latest downloads.

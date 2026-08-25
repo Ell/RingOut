@@ -22,13 +22,18 @@ divergence, or hash mismatch.
 
 This proves that the snapshot/restore path can replace an incorrect predicted
 input window and converge to the on-time baseline for one scripted real-game
-window. For a full snapshot, the correction run exercises
+window. With no experimental `--skip` mask, the correction run exercises
 `DolphinRollbackStateStore`, `RollbackCoordinator`, and the journal's atomic
 acknowledge-and-publish path at the CPU-thread frame boundary intended for live
-integration. The journal token is synthetic because this oracle's
-input is frame-keyed rather than SI-poll-keyed. It does not exercise packet
+integration. Its rollback-only memory representation omits only inaccessible
+MEM1 padding and an exactly all-zero fake-VMEM payload; any non-zero fake VMEM,
+plus video state, ARAM, and normal JIT load handling, remains serialized. The
+journal token is synthetic because this oracle's input is frame-keyed rather
+than SI-poll-keyed. It does not exercise packet
 transport, production `GetNetPads` replay, resimulation output suppression, or
-audio reconciliation. Current release netplay remains fixed-delay lockstep.
+audio reconciliation. Published `ell.6` netplay remains fixed-delay lockstep;
+implementation commit `6518db52` has the separate live rollback path documented
+in `rollback-live-test-harness.md`.
 
 The coordinator uses a harness-only output gate. It is acceptable solely
 because the run is headless, uses an isolated disposable user directory, and
@@ -64,11 +69,12 @@ converted image to the repository.
 - Enough time for two deterministic real-game runs and enough free space for
   isolated user directories and logs. The default route reaches a match before
   the snapshot, so it is much stronger and slower than a boot-menu probe.
-- The full snapshot is the default. Narrow-state experiments must be explicit
-  through `--skip` and retain their exact skip list in `result.env`. The
-  production state store deliberately rejects skipped sections, so `--skip`
-  retains the historical direct-buffer oracle path and is not evidence for the
-  production rollback core.
+- The production-safe rollback representation is the default. Unsafe
+  narrow-state experiments must be explicit through `--skip` and retain their
+  exact skip list in `result.env`. The production state store deliberately
+  rejects those skipped sections, so `--skip` retains the historical
+  direct-buffer oracle path and is not evidence for the production rollback
+  core.
 
 ## Exact commands
 
@@ -78,8 +84,8 @@ First test the orchestration without private assets:
 .github/scripts/test-rollback-real-game-harness.sh
 ```
 
-Then run the full-state real-game oracle. Keep the private package path in a
-local environment variable rather than recording it in shell history:
+Then run the production-safe real-game oracle. Keep the private package path in
+a local environment variable rather than recording it in shell history:
 
 ```bash
 read -r -p "Private prepared package: " RINGOUT_PRIVATE_PACKAGE
@@ -93,7 +99,8 @@ RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
 unset RINGOUT_PRIVATE_PACKAGE
 ```
 
-Only after the full snapshot passes, test the historical narrowed snapshot:
+Only after the production-safe snapshot passes, test the historical unsafe
+skip-mask snapshot if comparison data is specifically needed:
 
 ```bash
 read -r -p "Private prepared package: " RINGOUT_PRIVATE_PACKAGE

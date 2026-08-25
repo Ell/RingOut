@@ -8,8 +8,9 @@ Scope: shipped input scheduling and transport, existing rollback feasibility hoo
 historical measurements, and a staged implementation/test plan. Source paths and
 line numbers are relative to the repository root and refer to the audited commit.
 
-This report is intentionally blunt about terminology: **RingOut currently ships
-fixed-delay deterministic lockstep. It does not ship rollback netcode.** The
+This report is intentionally blunt about the audited baseline: **At
+`ff0ad952`, RingOut shipped fixed-delay deterministic lockstep and did not ship
+rollback netcode.** The
 repository has useful save/restore/replay experiments, but none is connected to
 the live NetPlay input path. The user-facing feature list saying “rollback” is
 incorrect (`README.md:127`); the earlier description saying fixed delay is the
@@ -29,6 +30,56 @@ Recommended product wording until the staged plan is complete:
 
 > Fixed-delay netplay for trusted peers. Rollback is experimental research and is
 > not available in releases.
+
+## Branch implementation progress after the audit (2026-08-25)
+
+The “ships today” and staged sections below are intentionally preserved as the
+historical `ff0ad952` baseline. The `codex/rollback-netplay` worktree based on
+`6518db52` has since implemented the core of Stages 1, 3, 4, 5, and 6:
+versioned/generation-keyed SI batches, per-pad ACK repair, bounded repeat-last
+prediction, a broad Dolphin checkpoint ring, late-input restore/replay, hidden
+replay output handling, explicit Ready, exact connect fingerprint/mode, and a
+hard horizon. The later worktree also snapshots guest-visible memory-card
+protocol/content state, holds output quarantine through fault/cancel/destructor
+quiescence, and treats a failed corrected-frontier barrier as a hard rollback
+fault. Current source anchors are
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayConnectProtocol.h:17-95`,
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:995-1045,1630-1741`,
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientRollback.cpp:35-270`,
+and `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:130-188,212-338`.
+
+The branch also implements a local, opt-in Stage-2-style confirmed logical-state
+oracle. It logs real MEM1, locked L1, and emulated timebase every 60 completed
+logical frames only after incoming input is drained, the frame is authoritative,
+no correction is pending, and replay is committed; GPU work is synchronized
+before the read. The harness compares the last canonical row for matching
+frames after both local processes exit. Ordinary players neither write nor
+transmit this evidence
+(`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientRollback.cpp:171-228`).
+
+The post-fix production-path run retained at
+`/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
+runtime/module/DOL SHA-256 values
+`3a7e27d7420ac9ae49eca997e0301a972f3a3799997dcff9a2920f098b1351ee`,
+`e01d1fc7f14d41cf170fb5b036e5c754cb3062b8e5421f147258b627e2931d48`,
+and `0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5`.
+It captured 48,213,190 host bytes and 48,213,199 guest bytes (45.98 MiB each).
+The host-only impairment delayed the host's changed input, and the guest
+corrected restore/replay ranges 25/27 from batch 21 and 137/137 from batch 133.
+The peers matched all eleven confirmed logical checkpoints from frame 60
+through 660.
+The matching confirmed files hash to
+`4969a73790008801a05a27522d2508a7ffceb32d181a55be1b2f5d14caec9795`.
+
+That rerun closes the three previously recorded fault-path blockers for the
+tested Linux/source route. Clean production, isolated one-frame horizon
+stall/resume, isolated frame-60 mismatch/stop, and a 2,958-row fixed-delay
+regression also passed; see the live harness document for exact directories,
+commands, and hashes. Stage 7 is still incomplete because complete tagged
+Windows/AppImage artifacts and physical/cross-machine impairment testing remain
+release gates. Direct UDP is still unauthenticated/unencrypted and is limited
+to trusted LAN or private-VPN peers; the proposed room/traversal/relay system is
+not implemented.
 
 ## What ships today
 

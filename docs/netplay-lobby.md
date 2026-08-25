@@ -11,6 +11,94 @@ repository root and refer to that commit.
 
 ## Executive assessment
 
+### Rollback branch player-flow update (2026-08-25)
+
+The `codex/rollback-netplay` worktree now has a bounded player-facing network
+mode seam on top of the launcher prototype. `config.ini` persists an explicit
+`mode=fixed-delay|rollback`, the launcher passes the same choice through
+`--netplay-mode`, and the in-game restart path reuses that persisted choice.
+Rollback is labelled Experimental and is selectable only when the runtime's
+authoritative `NetPlay::IsLiveRollbackProductionReady()` predicate reports
+that the audited output matrix and production gate factory are available.
+There is no environment-variable path from the normal launcher; the isolated
+headless acknowledgement remains test infrastructure.
+
+The branch also corrects the buffer unit to SI samples, maps a manual rollback
+value to the negotiated rollback base delay, exposes a two-player side swap,
+and requires the exact expected roster plus a mapped pad for every player
+before host Start is enabled. A requested rollback match is blocked when any
+peer lacks the capability and a guest refuses to boot if the host selects a
+disabled rollback session; it never silently presents fixed-delay play as
+rollback.
+
+The branch now implements the deliberate Ready flow through authoritative
+`Ready`/`NotReady` protocol messages. Each roster row separates game and
+controller setup from the player's explicit Ready state. Mapping or host delay
+changes clear all Ready flags, and the server refuses Start until every mapped
+player is Ready. Headless automation waits for both Same Game and its
+controller mapping, then auto-readies through the same protocol rather than
+bypassing the gate.
+
+The release entry-point audit originally found these controls were source-tree
+only. The rollback branch now removes the helper's compiled checkout path,
+resolves module templates, game settings, and the Windows toolchain relative to
+the shipped helper, builds `moderngekko-launcher` in both release workflows,
+and makes it the top-level Windows and AppImage entry point. Existing wrapper
+setup assets remain in each artifact for recovery. Package gates require the
+C++ launcher, helper, fonts, runner, and their import/library closures; Windows
+Wine and AppImage self-tests execute the top-level launcher and verify that the
+helper resolves the exact packaged module-source and game-settings paths.
+Tagged artifact and physical
+platform validation are still required before calling a release shipped.
+
+The current source predicate returns true because all eleven audited capability
+bits are set (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:158-178`),
+so the branch launcher exposes Experimental rollback. The memory-card snapshot,
+teardown-latched suppression, and corrected-frontier hard-fault fixes identified
+by the earlier review are now implemented, and the final ordinary production
+correction run at `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` passed with matching
+confirmed logical states. This validates the current Linux/source launcher path;
+it is not a final packaged-player approval because tagged Windows/AppImage and
+physical/cross-machine validation remain absent.
+
+### Ordinary integrated-launcher flow on this branch
+
+This flow applies to a package built from the rollback worktree, not to the
+published `ell.6` packages:
+
+1. Both players complete Game files setup from the same RingOut source,
+   compatible `GRSEAF` disc/DOL, and generated module. Open **Netplay**.
+2. Both select the exact same mode. **Fixed delay (stable)** is the compatibility
+   path. **Experimental rollback** requires every peer to request and support
+   rollback; a mismatch is rejected rather than silently downgraded
+   (`ModernGekko/tools/moderngekko_launcher.cpp:1197-1215,1433-1447` and
+   `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:473-499`).
+3. Set nicknames and the same UDP port. The host selects **Host**; the other
+   player enters the host's LAN/private-VPN address and selects **Join**. Direct
+   UDP is unauthenticated and unencrypted, so do not use an untrusted host or
+   expose the session publicly (`ModernGekko/tools/moderngekko_launcher.cpp:1222-1234`).
+4. In the lobby, verify **Same game**, one controller assignment per player, and
+   the displayed requested mode. Each player selects **Ready**. A mapping,
+   delay/mode, game, join, or disconnect change clears Ready
+   (`ModernGekko/tools/netplay_session.cpp:716-834` and
+   `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:708-716,1607-1624`).
+5. After every mapped player is Ready, the host selects **Start game**. The
+   server checks readiness again at request and launch
+   (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:1501-1513,1720-1741`).
+
+If rollback compatibility or capability fails, leave the lobby, select **Fixed
+delay** on both launchers, and reconnect. “Fallback” means that deliberate new
+session; an already requested rollback session is never relabelled fixed delay.
+
+Rollback currently quarantines persistence: synchronized memory-card contents
+remain guest-visible for play, but `savedata_write` and writable SD are forced
+off, serial ports are disabled, and production start requires safe memory-card
+slot/device policy (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClient.cpp:1127-1146,1644-1697`;
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:143-188`).
+Players should expect rollback-session save progress not to persist.
+
+### Historical audit assessment at `ff0ad952`
+
 Ring Out has a useful direct-connect lobby, not a central matchmaking service.
 It is reasonably good for two trusted players on one LAN or a VPN: it can find a
 local host, display a live roster and ping, verify the selected `main.dol`, assign
@@ -401,6 +489,10 @@ reject a fifth active player with the already-defined `RoomFull` result.
 
 ## Readiness, delay buffer, and start
 
+The following subsection records the state at the audit commit. It is
+superseded on `codex/rollback-netplay` by the branch update above: that branch
+has authoritative Ready/NotReady state and an exact-roster start gate.
+
 There is no player Ready/Not Ready state. The code comments explicitly say that
 the upstream API lacks the private fork's ready protocol
 (`ModernGekko/tools/netplay_session.hpp:35-40` and
@@ -590,10 +682,10 @@ made.
 
 ### P1: complete the friend-to-friend lobby
 
-5. **Add Ready/Not Ready.** Separate `game compatible` from `player ready` in the
-   table. Disable Start until the configured number of active players is
-   connected, compatible, mapped, and ready. Reset Ready when mappings or
-   synchronized options change.
+5. **Completed on the rollback branch: add Ready/Not Ready.** The table separates
+   `game compatible` from player Ready, Start requires the exact configured
+   roster to be compatible, mapped, and ready, and mapping/delay mutations
+   invalidate Ready.
 6. **Define capacity explicitly.** Reject a fifth active player with RoomFull, or
    add an explicit spectator role with no controller and clear start semantics.
 7. **Make buffer behavior honest.** Rename the current option to `5 SI samples

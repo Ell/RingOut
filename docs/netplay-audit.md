@@ -4,13 +4,73 @@ Status: read-only audit of commit `ff0ad952980f5083afd21c3d3758208a7a093d72`, re
 
 This is the durable index for the current netplay research. It distinguishes what the release actually ships from experimental rollback groundwork and from proposed work. No production source was changed as part of the audit.
 
+## Later branch implementation checkpoint (2026-08-25)
+
+The executive verdict below remains the historical result for audited commit
+`ff0ad952`. It must not be read as a description of the current
+`codex/rollback-netplay` worktree. At implementation commit `6518db52` on
+2026-08-25, the branch has a normal-launcher-selectable
+Experimental rollback path: an exact mode/fingerprint connect extension,
+Ready-gated start, bounded SI input prediction and repair, broad Dolphin
+checkpoints including guest-visible memory-card protocol/content state,
+restore/replay, fault-latched output quarantine, and mandatory confirmed-state
+comparison. The exact current
+anchors are `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayConnectProtocol.h:17-95`,
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:1057-1110,1812-1850`,
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientRollback.cpp:198-317`,
+and
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:212-338`.
+
+A production-path two-process run retained at
+`/tmp/ringout-live-rollback.final-correction.OHN0EzDz` negotiated generation 1 with two SI
+samples of base delay and an eight-frame horizon. Each peer captured a
+frame-one checkpoint: 48,213,190 host bytes and 48,213,199 guest bytes (45.98
+MiB each). The host's fault schedule impaired the direction in which the host
+changed input; the guest corrected and
+committed `restore_frame=25, replay_through_frame=27, first_batch=21`, then
+`restore_frame=137, replay_through_frame=137, first_batch=133`. Both peers
+produced identical confirmed logical-state rows at every 60-frame checkpoint
+from 60 through 660; the complete files share SHA-256
+`4969a73790008801a05a27522d2508a7ffceb32d181a55be1b2f5d14caec9795`.
+Runtime, module, and DOL SHA-256 values were respectively
+`3a7e27d7420ac9ae49eca997e0301a972f3a3799997dcff9a2920f098b1351ee`,
+`e01d1fc7f14d41cf170fb5b036e5c754cb3062b8e5421f147258b627e2931d48`,
+and `0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5`.
+
+That post-fix run passed the ordinary production gate and closes the three
+previously recorded memory-card, teardown-output, and corrected-frontier fault
+blockers for this tested path. A clean production route retained at
+`/tmp/ringout-live-rollback.final-clean.wPXzfTPg` produced 673 host / 674 guest
+physical trace rows and 11 matching confirmed states. An isolated one-frame-
+horizon run retained at `/tmp/ringout-live-rollback.final-horizon.QGQ1Cu8O`
+stalled after a bounded 64-action drop schedule, resumed, and finished with 641
+equal physical rows and 10 matching confirmed states. An isolated
+report-only fault at logical frame 60 made both peers report `DESYNC` and stop
+(`/tmp/ringout-live-rollback.final-digest.iay4Pxu8`). The fixed-delay final
+regression retained at `/tmp/ringout-fixed-delay-final-3a7e` produced 2,958
+byte-identical rows
+with trim SHA-256
+`bd76b76faa049e7e9e9dee0a3bf1ae3be9173b9ea15ed2f532204b5596fa3cb3`.
+Complete Windows/AppImage packages still have workflow and smoke-gate
+integration only; no tag artifact or physical/cross-machine run has validated
+this branch.
+
+The transport remains unauthenticated, unencrypted direct UDP. This
+implementation is for mutually trusted peers on a LAN or private VPN, not
+public Internet rooms; the room-code/traversal/relay architecture is proposed,
+not implemented. See
+[the implementation handoff](rollback-netplay-implementation.md) and
+[live harness](rollback-live-test-harness.md) for current evidence.
+
 ## Documents
 
 - [Lobby architecture and UX](netplay-lobby.md): entry points, LAN discovery, direct connection, player mapping, start synchronization, and lobby defects.
 - [Protocol, security, and reliability](netplay-protocol-security.md): packet flow, trust model, parser and save-transfer risks, compatibility, desync detection, and fail-closed remediation.
 - [Rollback and test roadmap](netplay-rollback-roadmap.md): current fixed-delay algorithm, rollback experiments and measurements, test evidence, performance constraints, and a staged hybrid rollback design.
+- [Rollback implementation handoff](rollback-netplay-implementation.md): the later branch-local live implementation, safety policy, evidence, and blockers.
+- [Live rollback test harness](rollback-live-test-harness.md): exact real-game commands and confirmed logical-state comparison.
 
-## Executive verdict
+## Historical executive verdict at `ff0ad952`
 
 RingOut does **not** ship rollback netcode. It ships symmetric, fixed-delay, deterministic lockstep using Dolphin's stock NetPlay protocol.
 

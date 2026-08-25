@@ -16,6 +16,15 @@ The netplay implementation discussed here is **fixed-delay lockstep, not
 rollback**. See [the netplay audit](netplay-audit.md) for the protocol verdict
 and [the lobby audit](netplay-lobby.md) for the broader lobby lifecycle.
 
+That sentence is the pinned `ff0ad952`/`ell.6` release verdict. The later
+`codex/rollback-netplay` worktree integrates the C++ launcher and an
+Experimental rollback selector into Windows package scripts, but no complete
+ZIP from that worktree has been tag-published or physically tested. Its latest
+Linux/source production-path correction evidence passed after the memory-card,
+output-teardown, and corrected-frontier fault fixes. That does not validate the
+Windows artifact path. Do not apply the branch instructions below to the
+published `ell.6` ZIP.
+
 ## Executive answers
 
 | Question | Answer at the audited commit |
@@ -284,8 +293,10 @@ Consequences:
   import it. The Wine package smoke explicitly checks the no-QWave runtime path
   (`.github/scripts/smoke-windows-package.sh:95-105`).
 
-The current netplay limitations—fixed delay, direct connection, no relay, and
-no hostile-peer hardening—matter much more than the absent traffic marker.
+At audited release `ell.6`, fixed delay, direct connection, no relay, and no
+hostile-peer hardening matter much more than the absent traffic marker. The
+later rollback branch changes the scheduling mode but not those connectivity or
+trust limitations.
 
 ### FFmpeg, FMVs, and paths with spaces
 
@@ -467,6 +478,37 @@ once the netplay game has started.
 Both peers should use the same Ring Out release, compatible disc revision, and
 freshly generated module. This lobby is direct-connect fixed-delay netplay; it
 has no central matchmaking, relay, password, or public room browser.
+
+### Integrated launcher path on the rollback worktree
+
+When testing a Windows package built from this worktree, use the top-level
+`RingOut.exe` launcher:
+
+1. Both players open **Netplay** and select the same mode. Use **Fixed delay
+   (stable)** unless explicitly testing rollback. Experimental rollback requires
+   the exact compatible rollback build on every peer and does not silently
+   downgrade.
+2. Enter nicknames and the same UDP port. The host selects **Host**. The joiner
+   enters the host's trusted LAN/private-VPN address and selects **Join**.
+3. In the lobby, confirm Same game and a controller assignment, then each player
+   selects **Ready**. Any mapping, delay/mode, game, roster, or disconnect change
+   clears readiness.
+4. The host selects **Start game** only after all mapped players show Ready.
+
+The launcher forwards `--netplay-mode`, address, port, nickname, buffer, and
+controller values (`ModernGekko/tools/moderngekko_launcher.cpp:1197-1272,1425-1447`).
+The connect extension requires an exact mode and compatibility fingerprint
+before player allocation
+(`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:463-503`).
+Direct UDP remains unauthenticated and unencrypted; use only trusted friends on
+a LAN or private VPN. There is no relay or NAT traversal.
+
+Rollback sessions quarantine save writes: synchronized memory-card data can be
+used in-game, but progress is not copied back to the user's save and writable
+SD/serial/GBA paths are disallowed
+(`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClient.cpp:1127-1146,1644-1697`).
+If rollback is unavailable or incompatible, exit and reconnect after selecting
+Fixed delay on both peers.
 
 ### In-game menu path
 

@@ -67,6 +67,57 @@ nl -ba ModernGekko/vendor/dolphin/Source/Core/Core/HW/SI/SI.cpp | sed -n '551,55
 The commands locate the evidence but do not constitute dynamic exploit tests. The
 verification plan at the end of this document defines the missing executable proof.
 
+## Later rollback-branch protocol update (2026-08-25)
+
+Everything below this section remains the historical `ff0ad952` security audit.
+The current `codex/rollback-netplay` worktree has closed two compatibility/mode
+gaps for RingOut peers, but it has not changed the trusted-network threat model.
+
+- RingOut adds a strict version-2 connect extension containing explicit
+  rollback-capable/requested bits and a bounded compatibility fingerprint. A
+  RingOut server requires the extension in both modes, compares the complete
+  fingerprint and requested mode before allocating a player ID, and rejects a
+  rollback capability/mode mismatch
+  (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayConnectProtocol.h:17-95`;
+  `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:463-503`).
+  The fingerprint is computed from the inspected game/runtime/module identity
+  at `ModernGekko/tools/netplay_session.cpp:1040-1051`. It is compatibility
+  evidence only: plaintext, self-asserted data is not peer authentication.
+- Rollback input is a separately bounded/versioned SI-batch format on its own
+  unreliable-sequenced ENet channel. The server rejects invalid size,
+  generation, session, or pad ownership before relay
+  (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:1010-1045`).
+  Lobby, save, code, and other controls remain on the existing reliable path.
+- Rollback protocol v2 requires a compact confirmed-state report every 60
+  logical frames. A client reports only after the frame's final SI dependency
+  is covered by its authoritative frontier and no correction/replay is pending.
+  The server groups by session generation, frame, and expected player; rejects
+  malformed, duplicate, stale, future, wrong-session, and unexpected-player
+  reports; and retains at most eight incomplete frames. A mismatch stops every
+  peer through the existing desync route
+  (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/RollbackStateDigestProtocol.h:20-157`;
+  `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientRollback.cpp:198-317`;
+  `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayServer.cpp:1057-1110,1812-1850`).
+  The values cover real MEM1 CRC32, locked-L1 CRC32, and emulated timebase. They
+  are an error detector, not authentication, confidentiality, or a full-state
+  serialization.
+- A requested rollback session refuses a silent fixed-delay downgrade in both
+  interactive and headless start paths
+  (`ModernGekko/tools/netplay_session.cpp:668-683,1296-1306,1348-1357`). Fixed
+  delay remains available only by having all players select it and reconnect.
+- Rollback start forces persistent save writes and writable SD off and requires
+  a GameCube-only, safe EXI/GBA production policy
+  (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClient.cpp:1127-1146,1644-1697`;
+  `ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:143-188`).
+  This prevents rollback speculation from being copied to the user's save; it
+  does not retroactively prove hostile save-transfer parsing safe.
+
+No room secret, authenticated identity, AEAD, relay, or NAT-traversal service
+has been added. Use both fixed-delay and rollback only with mutually trusted
+peers on a LAN or private VPN. The historical parser/save-transfer findings
+below remain blockers for public Internet rooms unless separately closed and
+retested.
+
 ## Executive summary
 
 RingOut's shipping netplay is fixed-delay deterministic lockstep, not rollback.

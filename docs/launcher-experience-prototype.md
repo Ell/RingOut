@@ -63,8 +63,15 @@ decompilation. The implementation is static recompilation.
   readable in the 900x600 minimum window.
 - User-facing copy is factual. The launcher does not use taglines, arcade-style
   terminology, implementation jargon, or speculative mod features.
-- Netplay is labeled fixed-delay lockstep. This launcher does not describe it
-  as rollback.
+- Netplay defaults to fixed-delay and labels rollback Experimental. The
+  rollback choice is driven by the runtime's authoritative production-readiness
+  predicate and passes an explicit mode to the runner once available. The
+  current rollback worktree's predicate exposes the choice. The memory-card-
+  state rewind, teardown-latched output suppression, and corrected-frontier
+  barrier fault changes identified in review are implemented, and the final
+  Linux/source production rerun passed. Complete packaged and physical-machine
+  validation is still required before calling the launcher path shipped.
+  Manual delay values are SI samples, not frames.
 - The Mods surface is intentionally informational and exposes no install
   action. RingOut does not yet have a versioned runtime mod contract,
   compatibility rules, deterministic load order, failure containment, or a
@@ -92,34 +99,40 @@ the rule that mod UI must follow a real runtime contract:
 The visual treatment and setup status list are RingOut-specific rather than a
 copy of Dusklight.
 
-## Important boundary: not packaged behavior
+## Release integration update
 
-This is a source-tree prototype, not a release integration.
+The rollback branch integrates this launcher into both release entry points.
 
-`moderngekko-port` currently compiles an absolute `MODERNGEKKO_SOURCE_DIR`. It
-now invokes the same `dist/RingOut-1.0-dist/module-src` recipe and pinned
-dependency snapshot as the current release setup script, including
-`--idle-pc 0x80185DEC`, but that source-tree relationship is not relocatable.
-The Windows ZIP and Linux AppImage still launch their existing wrapper/script
-setup paths, and current release workflows do not build or package this C++
-launcher and helper pair. Their platform-specific probes, compiler acquisition,
-and packaging behavior are not replaced by this prototype.
+`moderngekko-port` no longer compiles an absolute source-tree path. A local
+build copies the release module template and GRSEAF settings beside the helper;
+packaged builds resolve them from the Windows package root or AppImage payload.
+On Windows the helper also resolves packaged Clang, CMake, Ninja, and Python.
+Both workflows build `moderngekko-launcher`; the ZIP stages it as the top-level
+`RingOut.exe`, and AppImage `AppRun` executes it with the private data directory
+explicitly selected. Existing setup scripts/assets remain packaged as recovery
+material.
 
-Do not call this shipped until all of the following are complete:
+The package gates now assert the launcher/helper/font/runtime closure and run a
+non-graphical launcher resolution self-test. Do not call this shipped until the
+remaining validation is complete:
 
-- move setup orchestration behind a relocatable, versioned helper shared by
-  the GUI and compatibility scripts;
 - use a staging directory for the entire module build; final module, manifest,
   and active-pointer publication are staged, but intermediate compilation is
   not yet a recoverable transaction;
 - add structured JSON Lines progress, recovery checkpoints, and safe
   process-tree cancellation;
-- package `RingOut` and its helper/runtime dependency closure on Windows and
-  Linux;
-- update the ZIP and AppImage entry points and smoke tests;
 - add launcher/setup fixtures for missing helpers, failed phases, incomplete
   output, and successful postcondition verification; and
 - run physical Windows and Linux first-run tests with a supported disc.
+
+For the rollback worktree specifically, both package workflows build and stage
+the launcher and their smokes exercise its top-level self-test, but no complete
+rollback-branch ZIP/AppImage has been retained or tag-published. Windows
+cross-build tests remain disabled and neither workflow boots a real two-peer
+game. The integrated package path is therefore CI-only implementation until the
+exact workflows complete and physical/cross-machine rollback QA follows
+(`.github/workflows/windows-cross.yml:118-142,190-238`;
+`.github/workflows/linux-appimage.yml:117-164,264-309`).
 
 ## Reproduction and validation
 

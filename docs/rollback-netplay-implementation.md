@@ -1,33 +1,70 @@
 # Rollback netplay implementation handoff
 
-Status: live integration slice on branch `codex/rollback-netplay`, implemented
-in commit `38d69d84`, recorded and reverified 2026-08-25.
+Status: live branch integration on `codex/rollback-netplay`, originating at
+commit `38d69d84` and finalized at implementation commit `6518db52` on
+2026-08-25.
 
-This document records branch-local work. It does **not** change the shipped
-verdict: ordinary RingOut netplay remains fixed-delay lockstep. The branch now
-has an end-to-end live rollback path—negotiation, grouped SI prediction,
-checkpoint restore, corrected replay, and atomic journal commit—but it is
-available only to the explicitly acknowledged headless isolated harness.
-Production activation still fails closed because speculative host effects need
-a confirmed-frontier buffer before this can be exposed in the normal lobby.
-The executable contracts, fault grammar, exact commands, and retained live
-evidence are cataloged in [the live rollback test harness](rollback-live-test-harness.md).
+This document records branch-local work. It does **not** change the published
+release verdict: published RingOut netplay remains fixed-delay lockstep. The
+branch now has an end-to-end live rollback path—normal launcher selection,
+strict fingerprint/mode negotiation, Ready-gated start, grouped SI prediction,
+checkpoint restore, corrected replay, output quarantine, atomic journal commit,
+and a local confirmed logical-state convergence oracle. The executable
+contracts, fault grammar, exact commands, and retained live evidence are
+cataloged in [the live rollback test harness](rollback-live-test-harness.md).
+
+The production capability predicate is currently enabled and the ordinary
+`--netplay-mode rollback` path has completed a real two-process correction run
+without the isolated test acknowledgement. The later memory-card snapshot,
+fault/cancel/destructor output-quiescence, and corrected-frontier hard-fault
+changes have all landed, and the post-fix production correction rerun passed.
+This is still not a final player-ready/release verdict. Full Windows/AppImage
+package validation exists only as CI workflow/smoke logic in this worktree; no
+tagged artifact or physical/cross-machine run validates it.
 
 ## Live integration outcome
 
-The isolated two-process path now exercises the real game and emulator rather
-than a model:
+The two-process path now exercises the real game and emulator rather than a
+model:
 
 - `NetPlayServer` queries rollback capability, selects an exact all-peer v1
   session or fixed-delay fallback, assigns a fresh nonzero generation, and
   relays only bounded RSIB packets whose pad masks belong to the sender.
+- RingOut now carries its existing game/DOL/recomp-module compatibility
+  fingerprint in a bounded, versioned extension to the initial NetPlay hello.
+  The server validates the complete extension before allocating a player ID.
+  Matching modern peers are admitted; malformed or mismatched identities are
+  rejected with distinct connection errors, and the launcher maps an actual
+  `CompatibilityMismatch` to its existing player-facing diagnosis. Legacy
+  extension-less peers remain possible only for generic Dolphin servers which
+  do not provide RingOut's identity; RingOut servers require the exact extension
+  in fixed-delay and rollback modes. A requested-mode mismatch is rejected at
+  connect time instead of silently downgrading. This is compatibility
+  validation, not authentication;
+  the plaintext fingerprint is still self-asserted by the remote process.
+- RingOut lobbies opt in to an authoritative Ready/NotReady relay using the
+  existing protocol IDs. Headless peers become Ready only after their own game
+  status and controller mapping have landed; interactive peers use the same
+  state through a lobby toggle. Start is rejected unless every mapped player is
+  Ready. Game, controller mapping, input-delay/mode changes, roster joins, and
+  disconnects clear prior readiness. The gate is disabled by default for
+  external legacy Dolphin callers.
 - RSIB uses a third ENet channel with unreliable-sequenced delivery. Lobby,
   control, saves, compatibility, and legacy `PadData` remain reliable.
 - `LiveRollbackInputScheduler` samples local GC pads ahead by the negotiated
-  base delay, sends a three-batch redundant tail, predicts missing remote pads
-  by repeat-last, records the real `(emulated_frame, poll_ordinal)` mapping, and
-  blocks at a conservative batch horizon that cannot outrun the snapshot ring.
-- `NetPlayClientRollback` owns the CPU-thread session. It captures full Dolphin
+  base delay, predicts missing remote pads by repeat-last, records the real
+  `(emulated_frame, poll_ordinal)` mapping, and blocks at a conservative batch
+  horizon that cannot outrun the snapshot ring. Its RSIB sender now consumes
+  contiguous ACKs independently for every remote pad stream. Until all streams
+  acknowledge a batch, the sender retains it in a separate protocol-bounded
+  512-batch history (about 4.3 seconds at the typical 120 Hz SI rate) and
+  transmits the oldest unacknowledged gap alongside the newest two-batch tail.
+  The retransmit window is deliberately independent of the much shorter rollback
+  journal/snapshot horizon. This closes the case where every ordinary copy of one
+  batch is lost but newer actual input keeps prediction moving forever.
+  Stale/reordered ACKs are ignored; ACKs beyond locally produced input and
+  ambiguous mixed-owner packet masks fail closed.
+- `NetPlayClientRollback` owns the CPU-thread session. It captures broad Dolphin
   frame-start states, drains authoritative input before each frame boundary,
   restores the earliest affected checkpoint, replays every recorded SI poll,
   atomically acknowledges the journal generation, and publishes only after a
@@ -35,19 +72,90 @@ than a model:
   through the later poll before the boundary; unbatched `RunBuffer` transfers
   are independent journal entries. While horizon-blocked it keeps
   retransmitting the redundant input tail so symmetric stalls recover.
-- The output layer suppresses hidden-replay presentation, frame dumping, DMA
-  and DTK audio pushes, GC rumble, achievements, and timebase messages. Those
-  hooks are useful groundwork, but the production capability matrix remains
-  incomplete because effects already emitted by speculative frames cannot be
-  undone.
+- The output layer suppresses hidden-replay presentation and frame dumping,
+  resets/silences replay audio, suppresses rumble, achievements, movie/log
+  output, persistent writes, guest-network output, and replay-derived netplay
+  traffic, and uses a GPU barrier when publishing the corrected frontier. A
+  session quarantine prevents speculative persistent/host effects. Fault,
+  cancellation, and destruction retain that quarantine until the core/output
+  producers quiesce; a failed corrected-frontier barrier faults the coordinator
+  and journal rather than returning Ready.
 
-The isolated gate requires all of these conditions: headless execution,
-`RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED`, host-side explicit rollback
-configuration, and capability support from every peer. The normal constructors
-and interactive launcher flow do not advertise rollback. The production output
-gate cannot manufacture a complete coverage matrix.
+The isolated test gate still requires headless execution and
+`RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED`. The production gate is separate:
+the launcher exposes rollback only when
+`NetPlay::IsLiveRollbackProductionReady()` is true, production start verifies a
+GameCube-only read-only/safe-device policy, and every peer must request and
+support the exact mode. No environment variable enables the ordinary player
+path (`ModernGekko/tools/moderngekko_launcher.cpp:1197-1215,1253-1272`;
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClient.cpp:1644-1697`).
 
 ### Current real-game evidence
+
+Ordinary production activation and bounded correction:
+
+```text
+evidence:                 /tmp/ringout-live-rollback.final-correction.OHN0EzDz
+session:                  generation 1, base delay 2 SI samples, horizon 8 frames
+checkpoint host/guest:    48,213,190 / 48,213,199 bytes (45.98 MiB each)
+correction 1:             restore 25, replay through 27, first batch 21, committed
+correction 2:             restore 137, replay through 137, first batch 133, committed
+physical trace rows:      717 host / 723 guest (717 canonical rows each)
+confirmed logical frames: every 60 frames from 60 through 660; all equal
+confirmed-file SHA-256:   4969a73790008801a05a27522d2508a7ffceb32d181a55be1b2f5d14caec9795
+runtime SHA-256:          3a7e27d7420ac9ae49eca997e0301a972f3a3799997dcff9a2920f098b1351ee
+module SHA-256:           e01d1fc7f14d41cf170fb5b036e5c754cb3062b8e5421f147258b627e2931d48
+DOL SHA-256:              0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5
+```
+
+Exact command:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-rollback-private.mGbUYiaf/package \
+  --fault-script .github/input-scripts/rollback-fault-correction.txt \
+  --work /tmp/ringout-live-rollback.final-correction.OHN0EzDz \
+  --play-seconds 18 --port 28841 --production
+```
+
+The CPU-thread logger drains late input before the boundary, logs only a
+completed authoritative logical frame with the coordinator Ready and no replay,
+and synchronizes the GPU before computing real-MEM1, locked-L1, and timebase
+values (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientRollback.cpp:198-317`).
+The logs are opt-in local files. Rollback protocol v2 separately sends the same
+compact confirmed-state report every 60 logical frames so the server can stop a
+live mismatch; it never serializes full emulator state. The shell harness
+canonicalizes matching logical frame IDs and fails divergent, malformed, empty,
+or short evidence.
+
+The fault schedule applies only to the host. The host changes input first; its
+late authoritative values make the guest perform both corrections. This
+retained run proves that the post-fix ordinary player activation path reached
+live rollback and converged after two late-authoritative corrections.
+The private evidence/package are not distributable artifacts.
+
+The same runtime/module/DOL identity also passed:
+
+- clean ordinary production activation at
+  `/tmp/ringout-live-rollback.final-clean.wPXzfTPg`, with 673 host / 674 guest
+  physical rows, eleven matching confirmed checkpoints, and confirmed-log
+  SHA-256
+  `c46aa3945276228a7d1f5ff592487413b6bad53a2c2e42770ad110091c8a9e91`;
+- isolated one-frame-horizon stall/resume at
+  `/tmp/ringout-live-rollback.final-horizon.QGQ1Cu8O`, with 641 identical
+  physical rows, ten matching confirmed checkpoints, confirmed-log SHA-256
+  `5b71411c759c0441d42f4ccf0c022bb11697d0095afd040d80a2cce7bfdcecb2`, and
+  fault-schedule SHA-256
+  `fb5440b5b91778871e3d5e103b8475969489cecc3977ee1f87ddc422dea70ac3`;
+- isolated confirmed-report-only corruption at frame 60 at
+  `/tmp/ringout-live-rollback.final-digest.iay4Pxu8`; both peers reported `DESYNC at frame
+  60` and stopped, while guest RAM was never modified; and
+- fixed-delay regression at `/tmp/ringout-fixed-delay-final-3a7e`, with 2,958
+  byte-identical rows and common trim SHA-256
+  `bd76b76faa049e7e9e9dee0a3bf1ae3be9173b9ea15ed2f532204b5596fa3cb3`.
+
+The following correction and horizon runs are earlier isolated-gate evidence:
 
 Correction run:
 
@@ -77,25 +185,51 @@ result:                explicit hard-horizon stall and authoritative-input resum
 
 Physical hash rows are not compared line-for-line after rollback because peers
 can execute different numbers of speculative/replay frames. The retained logs,
-live desync detector, explicit restore/commit markers, and earlier offline
-logical-frame convergence oracle have distinct evidence boundaries. A future
-confirmed-logical-frame digest is still required for a single end-to-end state
-convergence assertion.
+live desync detector, explicit restore/commit markers, and current confirmed
+logical-frame oracle have distinct evidence boundaries. The latter now supplies
+an end-to-end real-MEM1/L1/timebase convergence assertion at authoritative
+checkpoints; it is not a complete serialization of every emulator subsystem.
 
 Rollback-disabled compatibility was rechecked with the same runtime and private
-package at `/tmp/ringout-fixed-regression-20260825`: 2,452 comparable guest-RAM
-rows were byte-identical and the scripted VS route completed. This remains the
-stronger whole-run oracle available to the shipped fixed-delay path.
+package at `/tmp/ringout-fixed-delay-final-3a7e`: 2,958 comparable guest-RAM rows
+were byte-identical and the scripted VS route completed. The common trim hash is
+`bd76b76faa049e7e9e9dee0a3bf1ae3be9173b9ea15ed2f532204b5596fa3cb3`;
+this remains the stronger whole-run oracle available to the shipped fixed-delay
+path.
+
+### Production save/persistence policy
+
+Rollback can load and synchronize the starting memory-card view, but it must not
+commit speculative state to user storage. When the negotiated rollback session
+settings arrive, the client forces `savedata_write=false` and
+`allow_sd_writes=false`, disables SP1/SP2, and accepts only the production
+policy's safe GameCube memory-card/device set
+(`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClient.cpp:1127-1146,1644-1697`;
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp:130-188`).
+Achievements, recordings/logging, and guest/outbound effects are likewise
+quarantined. Players must treat rollback-session save progress as temporary.
+
+The snapshot now includes guest-visible memory-card command/protocol/content
+state so a correction rewinds the emulated device even though rollback-session
+changes are never copied back to disk. The write quarantine and rewind coverage
+are distinct safeguards.
 
 ## Outcome of this iteration
 
 The branch now crosses the save/restore/resimulation boundary in an offline
 real-game oracle:
 
-- `DolphinRollbackStateStore` keeps a bounded ring of full frame-start states
-  using Dolphin's real `State::SaveToBuffer` and `State::LoadFromBuffer`. It is
-  CPU-thread-only and fails closed for zero capacity or experimental snapshot
-  skip masks.
+- `DolphinRollbackStateStore` keeps a bounded ring of broad frame-start states
+  using Dolphin's real `State::SaveToBuffer` and
+  `State::LoadFromBuffer`. It is CPU-thread-only and fails closed for zero
+  capacity or experimental snapshot skip masks. A rollback-only scope excludes
+  inaccessible MEM1 allocator padding and uses a tagged, lossless fake-VMEM
+  representation: an observed all-zero window has no payload, while any
+  non-zero byte selects a full copy for that checkpoint. Restoring the narrow
+  MEM1 form explicitly zeroes its excluded padding. Video state, ARAM, and JIT
+  invalidation are not skipped, and ordinary user savestates keep their prior
+  byte format. The rollback scope now also serializes the guest-visible memory-
+  card protocol/content state omitted by the earlier evidence run.
 - `RollbackCoordinator` validates SI-batch-to-emulator-frame replay mappings,
   restores before the first affected emulated frame, enforces a bounded replay
   horizon and strict replay order, supports chained corrections, and requires
@@ -157,6 +291,23 @@ The runtime SHA-256 was
 `11841e3dfda8e43a0ed4637e21319446e983dbea0dec9b2295f2fe82f6d1ec4f`.
 The correction log marked save, restore, and completion with `[rollback core]`.
 
+The 106.57 MiB result above predates the rollback-scoped safe memory encoding.
+At the 2026-08-25 branch integration finalized at `6518db52`, the focused format
+test verifies the one-byte all-zero representation, lossless non-zero fallback,
+fail-closed invalid tag handling, and deterministic MEM1-padding reconstruction:
+
+```bash
+cmake --build /tmp/ringout-rollback-integration-build2 \
+  --target moderngekko_rollback_memory_snapshot_test --parallel 8
+ctest --test-dir /tmp/ringout-rollback-integration-build2 --output-on-failure \
+  -R '^moderngekko\.rollback_memory_snapshot$'
+```
+
+Result: `1/1` passed. The final live run above records exact 45.98 MiB checkpoint
+sizes and correction behavior. It does not record a new capture/restore timing
+budget, so the old timing numbers remain historical rather than current
+performance evidence.
+
 This is executable evidence that a deliberately wrong speculative input path
 can be corrected through `DolphinRollbackStateStore`, `RollbackCoordinator`,
 and the journal's atomic acknowledge-and-publish path for this real match
@@ -199,8 +350,9 @@ view:
   desync, hash divergence, empty/short hash evidence, or surviving emulator
   processes. The match route still needs an automatic visual/game-state progress
   assertion; identical hashes alone cannot prove it reached a match.
-- The user-facing feature list now calls current netplay fixed-delay and labels
-  rollback as groundwork.
+- At that earlier slice, the user-facing feature list called netplay fixed-delay
+  and labelled rollback as groundwork; the final branch implementation
+  supersedes that historical UI state.
 
 ## Research decision
 
@@ -259,10 +411,14 @@ timeline.
 
 ### State and replay
 
-Do not promote the historical 24.34 MiB narrowed snapshot yet. Its 2.95 ms save
-and 6.66 ms restore were measured in one 60-frame menu window, while omitted
-video, ARAM, and JIT-clear behavior remains unproven. First run complete-match,
-FMV, audio, DMA, EFB, save, and SMC/JIT correction oracles with full state.
+Do not promote the historical 24.34 MiB skip-mask snapshot. Its 2.95 ms save and
+6.66 ms restore were measured in one 60-frame menu window while omitting video,
+ARAM, and JIT-clear behavior that remains unproven. The integrated rollback-only
+memory encoding is a narrower claim: inaccessible MEM1 padding is reconstructed
+as zero, and fake VMEM is omitted only when that exact checkpoint observes every
+byte as zero. Any non-zero fake VMEM is preserved in full. Complete-match, FMV,
+audio, DMA, EFB, save, and SMC/JIT correction oracles are still required with
+video, ARAM, and normal JIT invalidation included.
 
 Then compare a preallocated snapshot ring with confirmed-base plus speculative
 checkpoints and dirty-page/preimage deltas. Every correction must suppress
@@ -299,7 +455,23 @@ host-ID race, authority matrix, and authentication findings in
 
 ## Verification performed
 
-The current integration suite passed all focused rollback and protocol tests:
+The final current-worktree integration run passed these focused tests:
+
+```bash
+ctest --test-dir /tmp/ringout-rollback-integration-build2 \
+  --output-on-failure \
+  -R '^moderngekko\.(rollback_memory_snapshot|live_rollback_gate|rollback_coordinator|rollback_input_timeline|rollback_si_input_journal|rollback_live_contract|rollback_live_scheduler|rollback_state_digest|rollback_live_harness|frontend_config)$'
+
+ctest --test-dir /tmp/ringout-rollback-integration-build2 \
+  --output-on-failure -R '^moderngekko\.netplay_protocol$'
+```
+
+Result: the focused set passed 10/10 in 0.26 seconds; the separate localhost
+protocol route passed 1/1 in 20.54 seconds; and
+`.github/scripts/test-rollback-live-real-game-harness.sh` passed without private
+assets. The earlier incremental checks below remain useful provenance.
+
+The original integration slice used:
 
 ```bash
 cmake --build /tmp/ringout-rollback-integration-build2 \
@@ -311,10 +483,36 @@ ctest --test-dir /tmp/ringout-rollback-integration-build2 --output-on-failure \
   -R '^moderngekko\.(rollback_input_timeline|rollback_si_input_journal|rollback_coordinator|netplay_protocol)$'
 ```
 
-Result: `4/4` passed. The asset-free real-game harness regression, shell syntax
+Result at that earlier slice: `4/4` passed. The asset-free real-game harness regression, shell syntax
 checks, and `git diff --check` also passed. The coordinator, SI journal, and
 codec were additionally compiled with `-Wall -Wextra -Wpedantic -Werror
 -fno-exceptions -fno-rtti`.
+
+The ACK-driven gap-repair update was verified from a runtime-free build during
+the branch integration with:
+
+```bash
+cmake -S ModernGekko -B /tmp/ringout-rollback-ack-build \
+  -DMODERNGEKKO_ENABLE_DOLPHIN_RUNTIME=OFF -DBUILD_TESTING=ON \
+  -DCMAKE_BUILD_TYPE=Debug
+cmake --build /tmp/ringout-rollback-ack-build \
+  --target moderngekko_rollback_live_scheduler_test \
+  moderngekko_rollback_live_contract_test \
+  moderngekko_rollback_si_input_journal_test -j4
+ctest --test-dir /tmp/ringout-rollback-ack-build --output-on-failure \
+  -R '^moderngekko\.(rollback_live_scheduler|rollback_live_contract|rollback_si_input_journal)$'
+```
+
+Result: `3/3` passed on 2026-08-25. The scheduler regression forces a local
+batch outside the ordinary recent tail, proves it remains in the repair slot,
+a delayed ACK remains recoverable for 64 batches despite a 16-entry rollback
+journal and two-batch prediction horizon, proves the ACK then retires the TX
+window, validates the explicit 512-batch bound, proves one remote pad stream
+cannot retire it for another, proves all-stream ACK advancement retires it,
+rejects a future ACK before input mutation, and accepts a reordered stale ACK
+without regressing the watermark. The production
+`LiveRollbackInputScheduler.cpp` and `NetPlayClientRollback.cpp` objects also
+rebuilt successfully in `/tmp/ringout-rollback-build`.
 
 The standalone rollback target was configured without the Dolphin runtime and
 passed:
@@ -373,21 +571,22 @@ toolchain workaround, not a netplay code change.
 
 ## Next iteration
 
-1. Add confirmed-frontier deferral/buffering for audio, rumble, achievements,
-   movie writes, persistent storage, guest networking, outbound side effects,
-   and corrected video/audio publication. Remove the isolated-only gate only
-   after each capability has a correction test.
+1. Build and smoke complete Windows/AppImage candidates through the workflows,
+   then test two physical machines and mixed OS/CPU peers. No current tag
+   artifact contains this branch.
 2. Add dynamic required-pad masks and Wiimote support. The current live
    scheduler handles grouped GC `UpdateDevices` polls and unbatched guest
    transfers by resolving the complete mapped GC pad set; genuinely partial
    pad batches are not represented on the wire.
-3. Exchange a full game/module/state-format fingerprint before roster admission
-   and add authenticated/encrypted control and input transport.
-4. Add real Ready/Not Ready, mapping acknowledgement, capacity enforcement, and
-   typed lobby outcomes.
-5. Extend the correction oracle across zero/one/multiple SI polls per frame,
+3. Add authenticated/encrypted room membership, traversal/relay, mapping
+   acknowledgement, capacity enforcement, and typed lobby outcomes. The exact
+   compatibility fingerprint and Ready protocol exist; they are not identity or
+   transport security.
+4. Extend the correction oracle across zero/one/multiple SI polls per frame,
    FMV, DMA, audio, EFB, saving, and SMC/JIT correction routes.
-6. Add confirmed-frame component digests and archive the first mismatch with its
-   input journal and build fingerprint.
-7. Add reconnect/resume, server ACK consumption, adaptive delay/pacing, and
-   long-duration loss/reorder/netem tests before a lobby-visible opt-in.
+5. Expand the confirmed logical-state report beyond MEM1/L1/timebase and
+   archive the first mismatch with its input journal and build fingerprint. Do
+   not add full-state exchange without an explicit player-consent and trust
+   design.
+6. Add authenticated reconnect/resume, adaptive delay/pacing, and long-duration
+   loss/reorder/netem tests for ACK-driven repair before a lobby-visible opt-in.

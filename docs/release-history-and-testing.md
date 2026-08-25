@@ -300,6 +300,19 @@ Those files are useful historical QA evidence only. None is the tag-built
 
 ## Claim boundaries and known limitations
 
+The numbered list is the `ff0ad952`/`ell.6` release record. A later
+`codex/rollback-netplay` worktree has live rollback and integrated-launcher
+implementation evidence, including a production-path two-process correction,
+but it has no tagged Windows/AppImage artifact. Its final Linux/source rerun
+includes the previously required memory-card/output/fault-path fixes and passed
+clean, correction, horizon, desync-negative, and fixed-delay regression routes.
+Nothing in the branch changes the release lineage or makes a published package
+rollback-ready.
+The workflows now describe package assembly/smoke integration, but manual
+dispatch retains no full package and no physical/cross-machine rollback run has
+been completed (`.github/workflows/windows-cross.yml:214-238`;
+`.github/workflows/linux-appimage.yml:311-358`).
+
 1. **Physical Windows:** an earlier prerelease produced the user reports that
    drove `.3`, proving some physical-Windows startup and game execution. The
    exact `.6` ZIP has not completed the documented fresh-folder, real-disc,
@@ -308,8 +321,9 @@ Those files are useful historical QA evidence only. None is the tag-built
    Windows-to-Windows, or Linux-to-Linux play between two physical machines.
    No adverse latency, jitter, loss, disconnect/reconnect, NAT, or port-forward
    matrix is part of release CI.
-3. **Rollback:** current netplay is fixed-delay lockstep, not production
-   rollback. The protocol test cannot support a rollback claim; see
+3. **Rollback:** published `ell.6` netplay is fixed-delay lockstep. The later
+   source worktree has branch-local live rollback evidence, but no published
+   package or physical/cross-platform proof; see
    [`netplay-audit.md`](netplay-audit.md) and
    [`netplay-rollback-roadmap.md`](netplay-rollback-roadmap.md).
 4. **Real game data:** release automation intentionally never receives or

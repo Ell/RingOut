@@ -8,16 +8,16 @@ are recorded in SOURCE.txt.
 NO NINTENDO OR GAME DATA IS INCLUDED. You must provide a GameCube disc image
 that you made and are entitled to use. Setup accepts a plain .iso or .wbfs
 image. It extracts and recompiles that image locally; keep the resulting game/,
-work/, and bin/g<ID>_recomp.dll files private.
+work/, and recompiled module files private. The C++ launcher stores those under
+%LOCALAPPDATA%\RingOut, not inside this package.
 
 QUICK START
 -----------
 
-  1. Extract the entire ZIP to a writable folder. Do not run it from inside the
-     ZIP, and do not put it under Program Files: setup writes beside RingOut.exe.
+  1. Extract the entire ZIP. Do not run it from inside the ZIP.
   2. Double-click RingOut.exe.
-  3. Select your plain GameCube .iso or .wbfs image when prompted.
-  4. Leave the setup console open while extraction and compilation run.
+  3. On Game files, choose your plain GameCube .iso or .wbfs image.
+  4. Keep the launcher open while its progress panel extracts and compiles.
 
 The first setup needs roughly 1.5 GB of free space and may take several
 minutes. Later launches start directly. The package includes the compiler,
@@ -74,16 +74,19 @@ NETPLAY
 -------
 
 Both players need this same Ring Out release and the same GameCube disc
-revision. Open the settings menu, stay on the SYSTEM tab, then:
+revision. Complete Game files and Controller setup, then open Netplay in the
+launcher. Choose the same network mode on both players:
 
-  Host: set Netplay Mode to Host, choose the port (default 2626), and activate
-        Start Netplay. Allow RingOut through Windows Firewall on private
-        networks if prompted. The lobby waits for the other player.
+  Host: choose Host, set the UDP port (default 2626), nickname, and Fixed delay
+        or Experimental rollback. Allow RingOut through Windows Firewall on
+        private networks if prompted.
 
-  Join: set Netplay Mode to Join. On the same LAN, activate Scan for Hosts and
-        select the result. For a direct address, select Netplay Address, press
-        Space, edit its four octets with the arrows, press Space again, set the
-        matching port, then activate Start Netplay.
+  Join: enter the host name or IPv4 address and matching port, choose the same
+        network mode, then choose Join.
+
+The current player flow is direct UDP. Use a trusted LAN or private VPN; an
+Internet host normally needs UDP forwarding. Room codes, automatic NAT
+traversal, and relay fallback are not included in this build.
 
 Starting netplay restarts the runtime into its lobby; this is expected. The
 host's enabled AR/Gecko codes are synchronized to the guest before boot. Choose
@@ -108,6 +111,7 @@ PACKAGE CONTENTS
   bin/moderngekko-run.exe                  Windows runtime
   bin/Sys/                                 required Dolphin resources
   tools/dolrecomp.exe                      GameCube static recompiler
+  tools/moderngekko-port.exe               setup/build helper
   toolchain/                               Windows-native first-run tools
   module-src/                              source used to build your module
   shaders/                                 optional post-processing filters

@@ -30,9 +30,13 @@ builds/loads a synthetic recompilation module with its bundled tools. Physical
 Windows setup, menu, gameplay and two-peer netplay QA is still recommended
 before treating an experimental prerelease as stable.
 
-**Netplay**: working. Fixed-delay play over a deterministic dual-core setup, with a lobby
-showing live ping and per-player game status; two peers stayed byte-identical
-over 6,470 frames.
+**Netplay**: released builds use fixed-delay play over a deterministic dual-core
+setup. The `codex/rollback-netplay` source branch adds an Experimental rollback
+mode and a Ready-gated lobby. Its current Linux/source worktree has passed
+end-to-end clean, late-input correction, prediction-horizon recovery, live
+desync, and fixed-delay regression routes. It is not a published player-ready
+release yet: complete Windows/AppImage artifacts and physical two-machine,
+cross-platform, and impaired-network validation remain outstanding.
 
 ---
 
@@ -67,9 +71,9 @@ straight away. You can also pass the image directly:
 
 On Windows, extract the entire ZIP to a writable folder and double-click
 `RingOut.exe`. Select a plain GameCube `.iso` or `.wbfs` image when prompted.
-Do not run it from inside the ZIP or install it under `Program Files`: first-run
-setup creates `game/`, `work/`, and the private recompiled module beside the
-launcher.
+Do not run it from inside the ZIP. The launcher keeps extracted game data,
+build work, settings, saves, and the private recompiled module under
+`%LOCALAPPDATA%\RingOut`; the release folder itself remains read-only.
 
 For the AppImage, make the download executable and run it:
 
@@ -124,8 +128,9 @@ it does not replace the host's graphics drivers.
 - **Optional experimental FMV takeover** via external FFmpeg; it is off by
   default because the ordinary emulated Sofdec path measured faster
 - **23 verified cheat codes** shipped in `GameSettings/GRSEAF.ini`
-- **Netplay** — fixed-delay lockstep, with experimental rollback groundwork and a lobby
-  showing live ping and per-player game status
+- **Netplay** — fixed-delay lockstep in current releases; the rollback branch has
+  live bounded prediction, correction, restore/replay, and a Ready-gated lobby,
+  with branch-local Linux/source evidence and the release boundaries below
 - **Its own icon** — the disc banner and the memory-card icon are extracted from
   your disc and saves on your machine, and a desktop entry is written for you.
   None of that artwork ships; it is the publisher's.
@@ -149,10 +154,60 @@ Free camera (enable in the Video tab): `Shift+WASD` move, `Shift+Q/E` down/up,
 
 ### Netplay and cheats
 
-Open the settings menu and use the System tab to host or join. Both players need
-the same Ring Out release and compatible disc revision/module. The default port
-is UDP 2626; direct Internet hosting may require forwarding the selected port.
-Starting netplay restarts the runtime into its lobby, which is expected.
+In a package containing the integrated C++ launcher, open **Netplay** and:
+
+1. Have both players choose the same network mode. Use **Fixed delay (stable)**
+   for the release-compatible path. Experimental rollback requires the exact
+   rollback-capable build on every peer; it never silently becomes fixed delay.
+2. Enter a nickname and the same UDP port (2626 by default). The host selects
+   **Host**. The joiner enters the host's LAN/private-VPN address and selects
+   **Join**.
+3. In the lobby, verify the requested mode, **Same game**, and one controller
+   assignment per player. Each player selects **Ready**. Mapping, delay/mode,
+   roster, or game changes clear readiness.
+4. When every mapped player is Ready, the host selects **Start game**.
+
+Both players must have the same Ring Out code, compatible disc/DOL, generated
+module, rollback protocol, and CPU-state ABI identity. A mismatch is refused
+before lobby admission.
+The transport is direct UDP without authentication or encryption: use it only
+with trusted friends on a LAN or private VPN. There is no public matchmaking,
+relay, room password, or NAT traversal. Do not expose the port to untrusted
+peers.
+
+The in-game System-tab Host/Join path remains available and restarts the runtime
+into the same pre-boot lobby, which is expected. Older released packages may
+show only this path and fixed-delay mode.
+
+On the rollback branch, save data may be synchronized into the session, but
+rollback forcibly disables copying memory-card changes back to the user's save
+and disables writable SD/serial/GBA routes. Treat rollback-session progress as
+temporary. Fixed-delay remains the supported fallback: leave the lobby, switch
+**both** players to Fixed delay, and reconnect.
+
+Rollback peers also submit a compact confirmed-state report every 60 logical
+frames after input is authoritative and replay has committed. If those reports
+differ, every peer stops with `DESYNC` instead of continuing a divergent match.
+This detects errors; it does not authenticate or encrypt the direct connection.
+
+The 2026-08-25 implementation commit `6518db52` production run passed after memory-card
+protocol/content state was added to rollback snapshots, speculative output was
+kept quarantined through fault/cancel/destruction quiescence, and corrected-
+frontier publication failures were made hard coordinator/journal faults. With
+runtime SHA-256
+`3a7e27d7420ac9ae49eca997e0301a972f3a3799997dcff9a2920f098b1351ee`,
+the guest committed corrections at restore/replay frames 25/27 and 137/137,
+then matched all eleven confirmed logical-state checkpoints through frame 660
+(`/tmp/ringout-live-rollback.final-correction.OHN0EzDz`). A clean production
+route also passed (`/tmp/ringout-live-rollback.final-clean.wPXzfTPg`), as did the
+fixed-delay whole-run oracle with 2,958 byte-identical rows
+(`/tmp/ringout-fixed-delay-final-3a7e`). These are
+strong branch-local Linux/source results, not distributable artifacts. Do not
+call the feature shipped until complete tagged packages and physical/cross-
+machine tests pass. Connectivity is still direct trusted LAN/private-VPN UDP;
+room codes, traversal, and relay are proposed in
+[the connectivity plan](docs/netplay-connectivity.md), not implemented.
+
 During a match the overlay stays live without pausing either peer. Core-state
 controls (speed, pause, save/load/reset), controller rebinding, and cheats are
 locked; menu navigation is suppressed from the game while the overlay is open.
@@ -271,7 +326,9 @@ cmake -S ModernGekko -B build-windows-cross -G Ninja \
   -DUSE_SYSTEM_LIBS=OFF -DBUILD_TESTING=OFF \
   -DENABLE_QT=OFF -DENABLE_TESTS=OFF \
   -DENABLE_ANALYTICS=OFF -DENABLE_AUTOUPDATE=OFF
-cmake --build build-windows-cross --target moderngekko-run dolrecomp --parallel
+cmake --build build-windows-cross \
+  --target moderngekko-launcher moderngekko-port moderngekko-run dolrecomp \
+  --parallel
 ```
 
 This cross-build deliberately excludes Windows backends that require the
