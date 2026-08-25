@@ -10,7 +10,7 @@ struct GCPadStatus;
 namespace Core
 {
 class System;
-}
+}  // namespace Core
 
 // Per-frame state hashing, used to answer whether the statically recompiled
 // core is deterministic -- the question netplay depends on entirely. Two runs
@@ -46,6 +46,9 @@ u32 WatchSize();
 void ReportWatchWrite(u32 block_pc, u32 lr, u32 size, u32 old_value, u64 timebase);
 
 // Scripted controller input, keyed on the emulated frame (RINGOUT_DETERMINISM_INPUT).
+// RINGOUT_DETERMINISM_CORRECTED_INPUT optionally supplies the authoritative
+// script used only after a rollback restore, allowing the harness to prove that
+// a wrong speculative input path converges to an on-time baseline.
 //
 // The harness has always run with no input at all, which makes its determinism
 // claim much weaker than it looks: netplay desyncs on gameplay, not on a title
@@ -77,4 +80,4 @@ bool ScriptedPad(int device_number, ::GCPadStatus* status);
 // while one seen after a dispatch came from that block's MMIO side effects.
 // Callers filter on their own cached copy first, so this is off the hot path.
 void PollWatch(const char* site, u32 pc, u32 value);
-}
+}  // namespace RecompDeterminism

@@ -5,10 +5,14 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdio>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <limits>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -17,6 +21,8 @@
 #include "Common/Hash.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
+#include "Core/NetPlay/DolphinRollbackStateStore.h"
+#include "Core/NetPlay/RollbackCoordinator.h"
 #include "Core/State.h"
 #include "Core/System.h"
 #include "VideoCommon/Fifo.h"
@@ -32,6 +38,27 @@ namespace
 // and the RTC / time base the IPL seeds at boot. Everything above it is the
 // game's own state.
 constexpr u32 kOSGlobalsSize = 0x3100;
+
+// This gate is valid only for the opt-in offline oracle: the process is
+// headless, uses an isolated disposable user directory, and explicitly does
+// not claim presentation/audio/host-side-effect correctness. It intentionally
+// performs no production suppression. Live netplay must never instantiate it.
+class HarnessRollbackOutputGate final : public NetPlay::RollbackOutputGate
+{
+public:
+  bool BeginHiddenReplay(u64, u64) override
+  {
+    if (m_active)
+      return false;
+    m_active = true;
+    return true;
+  }
+
+  void EndHiddenReplay(bool) override { m_active = false; }
+
+private:
+  bool m_active = false;
+};
 
 struct Config
 {
@@ -80,6 +107,13 @@ struct Config
   static constexpr int kPorts = 4;
   std::array<std::vector<PadFrame>, kPorts> input;
   std::array<std::size_t, kPorts> input_cursor{};
+  // Optional authoritative input used only after the rollback restore. The
+  // first pass continues to consume |input| as the predicted history, making
+  // the probe exercise a real correction instead of replaying identical input.
+  std::array<std::vector<PadFrame>, kPorts> corrected_input;
+  std::array<std::size_t, kPorts> corrected_input_cursor{};
+  bool rb_corrected_replay = false;
+  bool rb_core_requested = false;
 
   // Rollback probe. Save at frame `rb_at`, run `rb_len` frames, restore, replay
   // the same `rb_len` frames, and require the state to come out identical --
@@ -89,10 +123,85 @@ struct Config
   bool rb_on = false;
   Common::UniqueBuffer<u8> rb_buffer;
   std::size_t rb_size = 0;
-  u32 rb_hash = 0;       // game-memory hash at the end of the first pass
+  u32 rb_hash = 0;  // game-memory hash at the end of the first pass
   bool rb_replaying = false;
   u64 rb_input_offset = 0;  // frames to subtract so the replay sees the same input
+  bool rb_use_coordinator = false;
+  HarnessRollbackOutputGate rb_output_gate;
+  std::unique_ptr<NetPlay::DolphinRollbackStateStore> rb_state_store;
+  std::unique_ptr<NetPlay::RollbackSIInputJournal> rb_journal;
+  std::unique_ptr<NetPlay::RollbackCoordinator> rb_coordinator;
+  std::optional<NetPlay::RollbackCoordinator::ReplayRequest> rb_request;
 };
+
+NetPlay::RollbackCoordinator::ReplayRequest MakeHarnessReplayRequest(const Config& config)
+{
+  // The determinism probe applies one frame-keyed scripted input state, rather
+  // than replaying the production SI journal. Synthetic batch IDs therefore
+  // equal logical frames. Journal/coordinator integration is tested separately.
+  const u64 first_frame = config.rb_at + 1;
+  const u64 replay_through = config.rb_at + config.rb_len;
+  constexpr u64 generation = 1;
+  return {.timeline_request = {.first_incorrect_frame = first_frame,
+                               .replay_through_frame = replay_through,
+                               .generation = generation},
+          .emulated_frame_request = {.first_incorrect_frame = first_frame,
+                                     .replay_through_frame = replay_through,
+                                     .generation = generation},
+          .restore_before_emulated_frame = first_frame,
+          .first_replay_batch_id = first_frame,
+          .first_incorrect_batch_id = first_frame,
+          .replay_through_batch_id = replay_through,
+          .replay_through_emulated_frame = replay_through};
+}
+
+bool PrepareHarnessJournal(Config& config)
+{
+  using Journal = NetPlay::RollbackSIInputJournal;
+  using Timeline = NetPlay::RollbackInputTimeline;
+  if (config.rb_len > std::numeric_limits<std::size_t>::max())
+    return false;
+
+  const u64 first_frame = config.rb_at + 1;
+  const u64 replay_through = config.rb_at + config.rb_len;
+  config.rb_journal = std::make_unique<Journal>(Journal::Config{
+      .session_generation = 1,
+      .first_batch_id = first_frame,
+      .history_capacity = static_cast<std::size_t>(config.rb_len),
+      .max_prediction_batches = config.rb_len,
+      .max_polls_per_frame = 1,
+      .pad_authority = {Timeline::PadAuthority::Remote, Timeline::PadAuthority::Inactive,
+                        Timeline::PadAuthority::Inactive, Timeline::PadAuthority::Inactive}});
+  if (config.rb_journal->GetConfigurationStatus() != Journal::ConfigurationStatus::Valid)
+    return false;
+
+  for (u64 frame = first_frame;; ++frame)
+  {
+    const Journal::AppliedBatch applied{.batch_id = frame,
+                                        .emulated_frame = frame,
+                                        .poll_ordinal = 0,
+                                        .requested_pad_mask = 0b0001};
+    if (config.rb_journal->ObserveAppliedBatch(1, 1, applied) != Journal::ObserveStatus::Accepted ||
+        !config.rb_journal->ResolveBatch(frame))
+    {
+      return false;
+    }
+    if (frame == replay_through)
+      break;
+  }
+
+  NetPlay::RollbackSIInputBatch correction{.batch_id = first_frame, .pad_mask = 0b0001};
+  correction.pads[0].button = PAD_BUTTON_A;
+  correction.pads[0].isConnected = true;
+  if (config.rb_journal->SubmitInputBatch(1, 1, Journal::InputSource::Remote, correction) !=
+      Journal::SubmitStatus::CorrectedPrediction)
+  {
+    return false;
+  }
+
+  config.rb_request = config.rb_journal->GetReplayTrigger();
+  return config.rb_request && *config.rb_request == MakeHarnessReplayRequest(config);
+}
 
 // Button names as they appear in a script, matched case-insensitively.
 struct PadName
@@ -101,12 +210,10 @@ struct PadName
   u16 bit;
 };
 constexpr PadName kPadNames[] = {
-    {"A", PAD_BUTTON_A},         {"B", PAD_BUTTON_B},
-    {"X", PAD_BUTTON_X},         {"Y", PAD_BUTTON_Y},
-    {"Z", PAD_TRIGGER_Z},        {"START", PAD_BUTTON_START},
-    {"L", PAD_TRIGGER_L},        {"R", PAD_TRIGGER_R},
-    {"UP", PAD_BUTTON_UP},       {"DOWN", PAD_BUTTON_DOWN},
-    {"LEFT", PAD_BUTTON_LEFT},   {"RIGHT", PAD_BUTTON_RIGHT},
+    {"A", PAD_BUTTON_A},       {"B", PAD_BUTTON_B},       {"X", PAD_BUTTON_X},
+    {"Y", PAD_BUTTON_Y},       {"Z", PAD_TRIGGER_Z},      {"START", PAD_BUTTON_START},
+    {"L", PAD_TRIGGER_L},      {"R", PAD_TRIGGER_R},      {"UP", PAD_BUTTON_UP},
+    {"DOWN", PAD_BUTTON_DOWN}, {"LEFT", PAD_BUTTON_LEFT}, {"RIGHT", PAD_BUTTON_RIGHT},
 };
 
 // One line: "[P<n>] <frame> <buttons|-> [stick_x stick_y [substick_x substick_y [l r]]]".
@@ -168,20 +275,62 @@ bool ParseInputLine(const std::string& line, Config::PadFrame* out, int* pad)
       // Pipe backend's "D_DOWN", and that one difference is easy to carry over.
       if (!matched)
       {
-        std::fprintf(stderr, "[input] unknown button '%s' in: %s\n", name.c_str(),
-                     line.c_str());
+        std::fprintf(stderr, "[input] unknown button '%s' in: %s\n", name.c_str(), line.c_str());
       }
     }
   }
 
   int value = 0;
-  if (stream >> value) out->stick_x = static_cast<u8>(value);
-  if (stream >> value) out->stick_y = static_cast<u8>(value);
-  if (stream >> value) out->substick_x = static_cast<u8>(value);
-  if (stream >> value) out->substick_y = static_cast<u8>(value);
-  if (stream >> value) out->trigger_l = static_cast<u8>(value);
-  if (stream >> value) out->trigger_r = static_cast<u8>(value);
+  if (stream >> value)
+    out->stick_x = static_cast<u8>(value);
+  if (stream >> value)
+    out->stick_y = static_cast<u8>(value);
+  if (stream >> value)
+    out->substick_x = static_cast<u8>(value);
+  if (stream >> value)
+    out->substick_y = static_cast<u8>(value);
+  if (stream >> value)
+    out->trigger_l = static_cast<u8>(value);
+  if (stream >> value)
+    out->trigger_r = static_cast<u8>(value);
   return true;
+}
+
+bool LoadInputScript(const char* const path,
+                     std::array<std::vector<Config::PadFrame>, Config::kPorts>* const scripts,
+                     const char* const label)
+{
+  std::ifstream file(path);
+  if (!file)
+  {
+    std::fprintf(stderr, "[input] cannot open %s; %s input unavailable\n", path, label);
+    return false;
+  }
+
+  std::string line;
+  while (std::getline(file, line))
+  {
+    Config::PadFrame entry;
+    int pad = 0;
+    if (ParseInputLine(line, &entry, &pad))
+      (*scripts)[pad].push_back(entry);
+  }
+
+  bool any = false;
+  for (int port = 0; port < Config::kPorts; ++port)
+  {
+    auto& script = (*scripts)[port];
+    std::stable_sort(
+        script.begin(), script.end(),
+        [](const Config::PadFrame& a, const Config::PadFrame& b) { return a.frame < b.frame; });
+    if (!script.empty())
+    {
+      any = true;
+      std::fprintf(stderr, "[input] P%d: %zu %s pad state(s) from %s\n", port + 1, script.size(),
+                   label, path);
+    }
+  }
+  return any;
 }
 
 // Configured from the environment rather than the command line on purpose:
@@ -229,36 +378,7 @@ Config& GetConfig()
     }
 
     if (const char* const input = std::getenv("RINGOUT_DETERMINISM_INPUT"))
-    {
-      std::ifstream file(input);
-      if (!file)
-      {
-        std::fprintf(stderr, "[input] cannot open %s; running with no input\n", input);
-      }
-      else
-      {
-        std::string line;
-        while (std::getline(file, line))
-        {
-          Config::PadFrame entry;
-          int pad = 0;
-          if (ParseInputLine(line, &entry, &pad))
-            result.input[pad].push_back(entry);
-        }
-        for (int port = 0; port < Config::kPorts; ++port)
-        {
-          std::stable_sort(result.input[port].begin(), result.input[port].end(),
-                           [](const Config::PadFrame& a, const Config::PadFrame& b) {
-                             return a.frame < b.frame;
-                           });
-          if (!result.input[port].empty())
-          {
-            std::fprintf(stderr, "[input] P%d: %zu scripted pad state(s) from %s\n", port + 1,
-                         result.input[port].size(), input);
-          }
-        }
-      }
-    }
+      LoadInputScript(input, &result.input, "predicted");
 
     if (const char* const at = std::getenv("RINGOUT_DETERMINISM_ROLLBACK_AT"))
     {
@@ -266,7 +386,40 @@ Config& GetConfig()
       result.rb_len = 60;
       if (const char* const len = std::getenv("RINGOUT_DETERMINISM_ROLLBACK_LEN"))
         result.rb_len = std::strtoull(len, nullptr, 10);
-      result.rb_on = result.rb_len != 0;
+      result.rb_on = result.rb_len != 0 &&
+                     result.rb_len <= (std::numeric_limits<u64>::max() - result.rb_at) / 2;
+      if (result.rb_len != 0 && !result.rb_on)
+        std::fprintf(stderr, "[rollback] frame range overflows; probe disabled\n");
+    }
+
+    if (const char* const rollback_core = std::getenv("RINGOUT_DETERMINISM_ROLLBACK_CORE"))
+    {
+      result.rb_core_requested = std::strcmp(rollback_core, "HEADLESS_ISOLATED_ORACLE") == 0;
+    }
+
+    if (const char* const corrected = std::getenv("RINGOUT_DETERMINISM_CORRECTED_INPUT"))
+    {
+      if (!result.rb_on)
+      {
+        std::fprintf(stderr,
+                     "[rollback] corrected input ignored without an enabled rollback probe\n");
+      }
+      else
+      {
+        result.rb_corrected_replay =
+            LoadInputScript(corrected, &result.corrected_input, "corrected replay");
+        for (int port = 0; port < Config::kPorts && result.rb_corrected_replay; ++port)
+        {
+          if (!result.input[port].empty() && result.corrected_input[port].empty())
+          {
+            std::fprintf(stderr,
+                         "[rollback] corrected input does not cover predicted P%d; correction "
+                         "probe disabled\n",
+                         port + 1);
+            result.rb_corrected_replay = false;
+          }
+        }
+      }
     }
 
     // A dump or a watch reads guest RAM and needs the same GPU quiesce the hash
@@ -360,14 +513,17 @@ bool ScriptedPad(int device_number, ::GCPadStatus* status)
   // Only ports the script actually names are driven. Feeding one port's script
   // to every port would fake a four-player game, so an unscripted port falls
   // through to the host pad exactly as it did before ports existed here.
-  if (!config.active || status == nullptr || device_number < 0 ||
-      device_number >= Config::kPorts || config.input[device_number].empty())
+  if (!config.active || status == nullptr || device_number < 0 || device_number >= Config::kPorts ||
+      config.input[device_number].empty())
   {
     return false;
   }
 
-  const std::vector<Config::PadFrame>& script = config.input[device_number];
-  std::size_t& cursor = config.input_cursor[device_number];
+  const bool corrected_replay = config.rb_replaying && config.rb_corrected_replay;
+  const std::vector<Config::PadFrame>& script =
+      corrected_replay ? config.corrected_input[device_number] : config.input[device_number];
+  std::size_t& cursor = corrected_replay ? config.corrected_input_cursor[device_number] :
+                                           config.input_cursor[device_number];
 
   // The script is sorted and s_frame only advances, so this walks forward once
   // over the run rather than searching per poll -- SI polls the pad several
@@ -435,15 +591,14 @@ void OnFrame(Core::System& system)
   u32 l1_hash = 0;
   if (config.hash)
   {
-
-  // Hashed in two pieces, because "the RAM differs" is not a usable answer.
-  //
-  // The bottom of memory is the OS globals block: the boot info, the console
-  // type and, critically, the real-time clock and time base the IPL seeds at
-  // boot. Two runs started seconds apart differ there by construction, and
-  // that is not a core defect -- it is why netplay pins the RTC across peers
-  // rather than hoping. Splitting it out separates that expected difference
-  // from a genuine one in the heap, where the game's actual state lives.
+    // Hashed in two pieces, because "the RAM differs" is not a usable answer.
+    //
+    // The bottom of memory is the OS globals block: the boot info, the console
+    // type and, critically, the real-time clock and time base the IPL seeds at
+    // boot. Two runs started seconds apart differ there by construction, and
+    // that is not a core defect -- it is why netplay pins the RTC across peers
+    // rather than hoping. Splitting it out separates that expected difference
+    // from a genuine one in the heap, where the game's actual state lives.
     system.GetFifo().SyncGPUForRegisterAccess();
 
     const u32 low_size = std::min<u32>(kOSGlobalsSize, ram_size);
@@ -477,44 +632,171 @@ void OnFrame(Core::System& system)
       // grows and then saves again -- it does the work twice plus a >100 MiB
       // allocation. Rollback would be saving into a warm buffer every frame, so
       // the second timing is the one that matters; both are reported.
-      const auto start = Clock::now();
-      config.rb_size = State::SaveToBuffer(system, config.rb_buffer);
-      const auto cold = Clock::now() - start;
-      const auto warm_start = Clock::now();
-      config.rb_size = State::SaveToBuffer(system, config.rb_buffer);
-      const auto elapsed = Clock::now() - warm_start;
-      std::fprintf(stderr,
-                   "[rollback] frame %llu: saved %.2f MiB in %.2f ms warm "
-                   "(%.2f ms cold, incl. measure+alloc)\n",
-                   static_cast<unsigned long long>(s_frame),
-                   double(config.rb_size) / (1024.0 * 1024.0), ms(elapsed), ms(cold));
+      Clock::duration cold{};
+      Clock::duration elapsed{};
+      bool saved = false;
+      const bool use_rollback_core = config.rb_core_requested && config.rb_corrected_replay;
+      if (use_rollback_core)
+      {
+        config.rb_state_store = std::make_unique<NetPlay::DolphinRollbackStateStore>(system, 1);
+        const auto store_status = config.rb_state_store->GetConfigurationStatus();
+        if (store_status ==
+            NetPlay::DolphinRollbackStateStore::ConfigurationStatus::ExperimentalSnapshotSkipActive)
+        {
+          // Narrow snapshots remain an explicit measurement experiment. The
+          // production store correctly refuses them, so retain the historical
+          // direct-buffer path without pretending it exercised rollback core.
+          std::fprintf(stderr, "[rollback] narrowed snapshot: production rollback core refused it; "
+                               "using legacy oracle path\n");
+          config.rb_state_store.reset();
+        }
+        else if (store_status != NetPlay::DolphinRollbackStateStore::ConfigurationStatus::Valid ||
+                 !PrepareHarnessJournal(config))
+        {
+          std::fprintf(stderr, "[rollback] frame %llu: rollback core setup FAILED\n",
+                       static_cast<unsigned long long>(s_frame));
+          config.rb_on = false;
+        }
+        else
+        {
+          config.rb_coordinator = std::make_unique<NetPlay::RollbackCoordinator>(
+              NetPlay::RollbackCoordinator::Config{
+                  .enabled = true, .max_replay_frames = static_cast<std::size_t>(config.rb_len)},
+              *config.rb_state_store, config.rb_output_gate);
+          const auto start = Clock::now();
+          const auto first_capture = config.rb_coordinator->BeginFrame(config.rb_at + 1);
+          cold = Clock::now() - start;
+          const auto warm_start = Clock::now();
+          const auto warm_capture = config.rb_coordinator->BeginFrame(config.rb_at + 1);
+          elapsed = Clock::now() - warm_start;
+          const std::optional<std::size_t> snapshot_size =
+              config.rb_state_store->GetSnapshotSize(config.rb_at + 1);
+          saved = first_capture == NetPlay::RollbackCoordinator::FrameStartStatus::Captured &&
+                  warm_capture == NetPlay::RollbackCoordinator::FrameStartStatus::Captured &&
+                  snapshot_size.has_value();
+          if (saved)
+          {
+            config.rb_size = *snapshot_size;
+            config.rb_use_coordinator = true;
+          }
+          else
+          {
+            std::fprintf(stderr, "[rollback] frame %llu: rollback core capture FAILED\n",
+                         static_cast<unsigned long long>(s_frame));
+            config.rb_on = false;
+          }
+        }
+      }
+
+      if (config.rb_on && !config.rb_use_coordinator)
+      {
+        const auto start = Clock::now();
+        config.rb_size = State::SaveToBuffer(system, config.rb_buffer);
+        cold = Clock::now() - start;
+        const auto warm_start = Clock::now();
+        config.rb_size = State::SaveToBuffer(system, config.rb_buffer);
+        elapsed = Clock::now() - warm_start;
+        saved = config.rb_size != 0;
+        if (!saved)
+          config.rb_on = false;
+      }
+
+      if (saved)
+      {
+        std::fprintf(stderr,
+                     "[rollback] frame %llu: saved %.2f MiB in %.2f ms warm "
+                     "(%.2f ms cold, incl. measure+alloc)%s\n",
+                     static_cast<unsigned long long>(s_frame),
+                     double(config.rb_size) / (1024.0 * 1024.0), ms(elapsed), ms(cold),
+                     config.rb_use_coordinator ? " [rollback core]" : "");
+      }
       std::fflush(stderr);
     }
     else if (!config.rb_replaying && s_frame == config.rb_at + config.rb_len)
     {
       config.rb_hash = rest_hash;
       const auto start = Clock::now();
-      const bool ok = State::LoadFromBuffer(system, {config.rb_buffer.data(), config.rb_size});
+      bool ok = false;
+      if (config.rb_use_coordinator && config.rb_coordinator && config.rb_request)
+      {
+        ok = config.rb_coordinator->StartRollback(*config.rb_request) ==
+                 NetPlay::RollbackCoordinator::RequestStatus::Started &&
+             config.rb_coordinator->BeginFrame(config.rb_at + 1) ==
+                 NetPlay::RollbackCoordinator::FrameStartStatus::RestoredFrameAlreadyCaptured;
+      }
+      else
+      {
+        ok = State::LoadFromBuffer(system, {config.rb_buffer.data(), config.rb_size});
+      }
       const auto elapsed = Clock::now() - start;
-      config.rb_replaying = true;
+      config.rb_replaying = ok;
       // The frame counter does not rewind, so rewind the input script instead.
-      config.rb_input_offset = config.rb_len;
+      if (ok)
+        config.rb_input_offset = config.rb_len;
+      else
+        config.rb_on = false;
       std::fprintf(stderr,
-                   "[rollback] frame %llu: restored in %.2f ms (%s); replaying %llu frames\n",
+                   "[rollback] frame %llu: restored in %.2f ms (%s); replaying %llu frames%s\n",
                    static_cast<unsigned long long>(s_frame), ms(elapsed), ok ? "ok" : "FAILED",
-                   static_cast<unsigned long long>(config.rb_len));
+                   static_cast<unsigned long long>(config.rb_len),
+                   config.rb_use_coordinator ? " [rollback core]" : "");
       std::fflush(stderr);
     }
-    else if (config.rb_replaying && s_frame == config.rb_at + 2 * config.rb_len)
+    else if (config.rb_replaying)
     {
-      const bool match = rest_hash == config.rb_hash;
-      std::fprintf(stderr, "[rollback] replay %s: game-memory hash %08x vs %08x\n",
-                   match ? "MATCHED" : "DIVERGED", rest_hash, config.rb_hash);
-      std::fprintf(stderr, "[rollback] %s\n",
-                   match ? "restore + replay reproduces state exactly -- rollback is viable"
-                         : "restore + replay does NOT reproduce state -- rollback is blocked");
-      std::fflush(stderr);
-      config.rb_on = false;
+      const u64 logical_frame = s_frame - config.rb_input_offset;
+      bool replay_step_ok =
+          logical_frame >= config.rb_at + 1 && logical_frame <= config.rb_at + config.rb_len;
+      if (replay_step_ok && config.rb_use_coordinator)
+      {
+        const auto complete = config.rb_coordinator->CompleteFrame(logical_frame);
+        if (logical_frame < config.rb_at + config.rb_len)
+        {
+          replay_step_ok =
+              complete == NetPlay::RollbackCoordinator::FrameCompleteStatus::ReplayContinues &&
+              config.rb_coordinator->BeginFrame(logical_frame + 1) ==
+                  NetPlay::RollbackCoordinator::FrameStartStatus::Captured;
+        }
+        else
+        {
+          replay_step_ok =
+              complete == NetPlay::RollbackCoordinator::FrameCompleteStatus::AwaitingCommit &&
+              config.rb_journal && config.rb_coordinator->CommitReplay(*config.rb_journal);
+        }
+      }
+
+      if (!replay_step_ok)
+      {
+        if (config.rb_use_coordinator && config.rb_coordinator)
+          config.rb_coordinator->CancelReplay();
+        std::fprintf(stderr, "[rollback] replay scheduling FAILED at logical frame %llu\n",
+                     static_cast<unsigned long long>(logical_frame));
+        config.rb_replaying = false;
+        config.rb_on = false;
+      }
+      else if (s_frame == config.rb_at + 2 * config.rb_len)
+      {
+        const bool match = rest_hash == config.rb_hash;
+        if (config.rb_corrected_replay)
+        {
+          std::fprintf(stderr,
+                       "[rollback] corrected replay COMPLETED: game-memory endpoint %08x "
+                       "(predicted endpoint was %08x)%s\n",
+                       rest_hash, config.rb_hash,
+                       config.rb_use_coordinator ? " [rollback core]" : "");
+        }
+        else
+        {
+          std::fprintf(stderr, "[rollback] replay %s: game-memory hash %08x vs %08x\n",
+                       match ? "MATCHED" : "DIVERGED", rest_hash, config.rb_hash);
+          std::fprintf(stderr, "[rollback] %s\n",
+                       match ? "restore + replay reproduces state exactly -- rollback is viable" :
+                               "restore + replay does NOT reproduce state -- rollback is blocked");
+        }
+        std::fflush(stderr);
+        config.rb_replaying = false;
+        config.rb_on = false;
+      }
     }
   }
 

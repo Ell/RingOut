@@ -549,8 +549,16 @@ add_library(core
   NetPlay/NetPlayClientSaves.cpp
   NetPlay/NetPlayCommon.cpp
   NetPlay/NetPlayCommon.h
+  NetPlay/DolphinRollbackStateStore.cpp
+  NetPlay/DolphinRollbackStateStore.h
+  NetPlay/RollbackCoordinator.cpp
+  NetPlay/RollbackCoordinator.h
   NetPlay/RollbackInputTimeline.cpp
   NetPlay/RollbackInputTimeline.h
+  NetPlay/RollbackSIInputJournal.cpp
+  NetPlay/RollbackSIInputJournal.h
+  NetPlay/RollbackSIInputProtocol.cpp
+  NetPlay/RollbackSIInputProtocol.h
   NetPlay/NetPlayServer.cpp
   NetPlay/NetPlayServer.h
   NetPlay/NetPlayServerChunked.cpp

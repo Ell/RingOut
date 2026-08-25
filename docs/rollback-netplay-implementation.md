@@ -1,14 +1,104 @@
 # Rollback netplay implementation handoff
 
-Status: first implementation slice on branch `codex/rollback-netplay`, based on
-commit `ff0ad952980f5083afd21c3d3758208a7a093d72`, recorded 2026-08-25.
+Status: second implementation slice on branch `codex/rollback-netplay`, based on
+commit `a67008ed623598e2833f16303304b075b456bdb3`, recorded 2026-08-25.
 
 This document records branch-local work. It does **not** change the shipped
-verdict: RingOut's live netplay remains fixed-delay lockstep. The new rollback
-timeline is not wired to the live input protocol, snapshot restore, replay,
-audio, or video paths.
+verdict: RingOut's live netplay remains fixed-delay lockstep. This slice adds a
+real full-emulator state store, a correction/replay coordinator, a versioned SI
+input codec and journal, and a real-game correction oracle. They are compiled
+into Core but are not connected to the live NetPlay client/server or SI poll
+path. Replay output and irreversible side effects are not suppressed yet.
 
 ## Outcome of this iteration
+
+The branch now crosses the save/restore/resimulation boundary in an offline
+real-game oracle:
+
+- `DolphinRollbackStateStore` keeps a bounded ring of full frame-start states
+  using Dolphin's real `State::SaveToBuffer` and `State::LoadFromBuffer`. It is
+  CPU-thread-only and fails closed for zero capacity or experimental snapshot
+  skip masks.
+- `RollbackCoordinator` validates SI-batch-to-emulator-frame replay mappings,
+  restores before the first affected emulated frame, enforces a bounded replay
+  horizon and strict replay order, supports chained corrections, and requires
+  an output gate before it permits state to move backwards.
+- `RollbackSIInputProtocol` supplies a bounded, versioned `RSIB` codec with a
+  session generation, scheduled SI batch IDs, optional contiguous ACK, and
+  canonical big-endian pad serialization. Its decoder rejects malformed,
+  oversized, wrong-generation, invalid-mask, invalid-flag, and non-increasing
+  input. Authority and conflicting-actual checks belong to the journal layer.
+- `RollbackSIInputJournal` records where each scheduled SI batch was actually
+  consumed as `(emulated_frame, poll_ordinal)`, performs repeat-last remote
+  prediction, and converts late authoritative corrections into coordinator
+  replay ranges. It deliberately rejects partial/non-batched SI schedules until
+  the live timeline supports a dynamic required-pad mask.
+- `.github/scripts/rollback-real-game.sh` runs an authoritative baseline,
+  withholds transitions to force a wrong prediction, restores the full emulator
+  state, replays corrected input, and requires every corrected game-memory and
+  L1 hash to converge to the baseline. The orchestration has an asset-free
+  regression test in `.github/scripts/test-rollback-real-game-harness.sh`.
+
+These components are not yet a live rollback mode. `GetNetPads`, the ENet
+protocol, session negotiation, and the main emulation loop still use fixed
+delay. The coordinator intentionally refuses to restore unless a comprehensive
+output/side-effect gate is available.
+
+## Real-game correction result
+
+The private `GRSEAF` revision-0 game image was converted and prepared only in a
+mode-700 directory under `/tmp`; no game-derived data was added to Git. The
+branch-matched runtime and recompilation module ran the `arcade-match.txt` route
+with a full snapshot and a 30-frame correction at frame 5200.
+
+Observed result:
+
+```text
+snapshot size:              106.57 MiB
+warm save:                  10.57 ms
+cold measure/allocate/save: 18.32 ms
+restore:                     8.43 ms
+predicted endpoint:          927329fa
+authoritative endpoint:      b45041a6
+corrected endpoint:          b45041a6
+pre-prediction diff:         empty
+speculative mismatch diff:   non-empty
+corrected replay diff:       empty
+```
+
+Exact command:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-real-game.sh \
+  --package /tmp/ringout-rollback-private.mGbUYiaf/package \
+  --input .github/input-scripts/arcade-match.txt \
+  --rollback-at 5200 --rollback-len 30 \
+  --work /tmp/ringout-rollback-private.mGbUYiaf/evidence-core-final
+```
+
+The runtime SHA-256 was
+`11841e3dfda8e43a0ed4637e21319446e983dbea0dec9b2295f2fe82f6d1ec4f`.
+The correction log marked save, restore, and completion with `[rollback core]`.
+
+This is executable evidence that a deliberately wrong speculative input path
+can be corrected through `DolphinRollbackStateStore`, `RollbackCoordinator`,
+and the journal's atomic acknowledge-and-publish path for this real match
+window. The oracle's journal token is synthetic because input remains
+frame-keyed rather than SI-poll-keyed. It is not evidence that live transport,
+production `GetNetPads` replay, catch-up pacing, presentation, audio, or
+irreversible side effects are rollback-safe.
+
+The oracle's snapshot is taken at the end of logical frame 5200 and replays
+5201 through 5230. It binds that state to coordinator checkpoint 5201—the state
+immediately before frame 5201—and completes coordinator frames 5201 through
+5230 while retaining the harness's existing physical hash-row numbering. This
+exercises the convention at `Core::FrameUpdateOnCPUThread`; live SI integration
+must preserve the same mapping for variable poll schedules.
+
+The harness-only output gate performs no suppression. It is acceptable only
+for this headless oracle with an isolated disposable user directory, and it
+does not weaken the production gate's fail-closed contract.
 
 The branch now has a tested rollback scheduling foundation and a safer lobby
 view:
@@ -133,6 +223,23 @@ host-ID race, authority matrix, and authentication findings in
 
 ## Verification performed
 
+The current integration suite passed all focused rollback and protocol tests:
+
+```bash
+cmake --build /tmp/ringout-rollback-integration-build2 \
+  --target moderngekko_rollback_input_timeline_test \
+  moderngekko_rollback_si_input_journal_test \
+  moderngekko_rollback_coordinator_test \
+  moderngekko_netplay_protocol_test moderngekko-run --parallel 8
+ctest --test-dir /tmp/ringout-rollback-integration-build2 --output-on-failure \
+  -R '^moderngekko\.(rollback_input_timeline|rollback_si_input_journal|rollback_coordinator|netplay_protocol)$'
+```
+
+Result: `4/4` passed. The asset-free real-game harness regression, shell syntax
+checks, and `git diff --check` also passed. The coordinator, SI journal, and
+codec were additionally compiled with `-Wall -Wextra -Wpedantic -Werror
+-fno-exceptions -fno-rtti`.
+
 The standalone rollback target was configured without the Dolphin runtime and
 passed:
 
@@ -190,14 +297,21 @@ toolchain workaround, not a netplay code change.
 
 ## Next iteration
 
-1. Add a versioned, fail-closed SI batch codec and protocol-generation
-   negotiation while continuing to consume it in fixed-delay mode.
-2. Exchange the existing full game/module fingerprint before roster admission.
-3. Add real Ready/Not Ready, mapping acknowledgement, capacity enforcement, and
+1. Implement the comprehensive replay gate: suppress intermediate video and
+   audio, and defer/deduplicate rumble, achievements, movie/replay writes,
+   memory-card writes, and outbound netplay effects.
+2. Replace the four independent pad FIFOs with grouped SI-batch consumption,
+   including deterministic startup seeds and a safe policy for guest-initiated
+   partial `RunSIBuffer` polls.
+3. Add capability/version negotiation, fresh nonzero session generations, and
+   an authenticated/ownership-checked SI batch relay. Keep fixed-delay fallback
+   for peers which do not negotiate the complete rollback feature set.
+4. Exchange the existing full game/module fingerprint before roster admission.
+5. Add real Ready/Not Ready, mapping acknowledgement, capacity enforcement, and
    typed lobby outcomes.
-4. Build the offline correction oracle for zero/one/multiple SI polls per frame,
-   then run full-state restore/replay across complete gameplay/audio routes.
-5. Add confirmed-frame component digests and archive the first mismatch with its
+6. Extend the correction oracle across zero/one/multiple SI polls per frame,
+   FMV, DMA, audio, EFB, saving, and SMC/JIT correction routes.
+7. Add confirmed-frame component digests and archive the first mismatch with its
    input journal and build fingerprint.
-6. Only after correctness and catch-up gates pass, wire an opt-in two-frame
+8. Only after correctness and catch-up gates pass, wire an opt-in two-frame
    hybrid rollback mode with fixed-delay fallback.

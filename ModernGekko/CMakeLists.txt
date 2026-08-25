@@ -564,6 +564,20 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(moderngekko_rollback_coordinator_test
+        tests/rollback_coordinator_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackCoordinator.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackInputTimeline.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputJournal.cpp)
+    target_include_directories(moderngekko_rollback_coordinator_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_coordinator_test PRIVATE cxx_std_20)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_coordinator_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_coordinator
+        COMMAND moderngekko_rollback_coordinator_test)
+
     add_executable(moderngekko_rollback_input_timeline_test
         tests/rollback_input_timeline_test.cpp
         vendor/dolphin/Source/Core/Core/NetPlay/RollbackInputTimeline.cpp)
@@ -575,6 +589,21 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME moderngekko.rollback_input_timeline
         COMMAND moderngekko_rollback_input_timeline_test)
+
+    add_executable(moderngekko_rollback_si_input_journal_test
+        tests/rollback_si_input_journal_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackCoordinator.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackInputTimeline.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputJournal.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputProtocol.cpp)
+    target_include_directories(moderngekko_rollback_si_input_journal_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_si_input_journal_test PRIVATE cxx_std_20)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_si_input_journal_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_si_input_journal
+        COMMAND moderngekko_rollback_si_input_journal_test)
 
     add_executable(moderngekko_frontend_config_test
         tests/frontend_config_test.cpp
