@@ -130,6 +130,12 @@ RollbackInputTimeline::ResolveResult RollbackInputTimeline::ResolveFrame(const u
   record->predicted_pad_mask = predicted_mask;
   if (!m_highest_resolved_frame || frame > *m_highest_resolved_frame)
     m_highest_resolved_frame = frame;
+  // A correction can arrive between two SI polls in the same emulated frame.
+  // Keep the pending replay frontier at the latest batch that normal execution
+  // has actually consumed; otherwise restoring that frame would run out of
+  // journaled input partway through its deterministic poll schedule.
+  if (m_pending_rollback && frame > m_pending_rollback->replay_through_frame)
+    m_pending_rollback->replay_through_frame = frame;
   return {.status = ResolveStatus::Resolved, .frame = resolved};
 }
 

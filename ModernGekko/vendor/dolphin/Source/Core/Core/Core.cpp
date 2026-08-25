@@ -41,9 +41,10 @@
 #include "Core/Boot/Boot.h"
 #include "Core/Boot/BootManager.h"
 #include "Core/CPUThreadConfigCallback.h"
+#include "Core/Cheats/PatchEngine.h"
+#include "Core/Config/ConfigManager.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/WiiSettings.h"
-#include "Core/Config/ConfigManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/DSPEmulator.h"
 #include "Core/DolphinAnalytics.h"
@@ -64,13 +65,13 @@
 #include "Core/IOS/IOS.h"
 #include "Core/MemTools.h"
 #include "Core/Movie.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/NetPlayProto.h"
-#include "Core/RecompDeterminism.h"
-#include "Core/Cheats/PatchEngine.h"
 #include "Core/PowerPC/GDBStub.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/RecompDeterminism.h"
 #include "Core/State.h"
 #include "Core/System.h"
 #include "Core/Wii/WiiRoot.h"
@@ -135,12 +136,20 @@ void SetIsThrottlerTempDisabled(bool disable)
 
 void FrameUpdateOnCPUThread()
 {
-  if (NetPlay::IsNetPlayRunning())
+  if (NetPlay::IsNetPlayRunning() && !NetPlay::NetPlayClient::IsLiveRollbackSessionActive() &&
+      !NetPlay::IsLiveRollbackHiddenReplayActive())
     NetPlay::NetPlayClient::SendTimeBase();
 
   // On the CPU thread and once per emulated frame, which is the only place a
   // state hash is comparable between two runs.
   RecompDeterminism::OnFrame(Core::System::GetInstance());
+
+  if (!NetPlay::NetPlayClient::UpdateLiveRollbackFrameBoundary())
+  {
+    PanicAlertFmt("Live rollback entered a faulted state. NetPlay will stop rather than resume "
+                  "from an unpublished historical state.");
+    QueueHostJob([](Core::System& system) { Stop(system); }, false);
+  }
 }
 
 void OnFrameEnd(Core::System& system)
@@ -192,8 +201,6 @@ bool IsUninitialized(Core::System& system)
 {
   return s_state.load() == State::Uninitialized;
 }
-
-
 
 bool WantsDeterminism()
 {
@@ -276,8 +283,6 @@ void Stop(Core::System& system)  // - Hammertime!
   INFO_LOG_FMT(CONSOLE, "{}", StopMessage(true, "Stop CPU"));
   system.GetCPU().Stop();
 }
-
-
 
 // For the CPU Thread only.
 static void CPUSetInitialExecutionState(Core::System& system, bool force_paused = false)
@@ -701,7 +706,6 @@ State GetState(Core::System& system)
     return state;
 }
 
-
 bool PauseAndLock(Core::System& system)
 {
   s_core_mutex.lock();
@@ -808,7 +812,8 @@ void Callback_NewField(Core::System& system)
     }
   }
 
-  AchievementManager::GetInstance().DoFrame();
+  if (!NetPlay::IsLiveRollbackHiddenReplayActive())
+    AchievementManager::GetInstance().DoFrame();
 }
 
 void UpdateTitle(Core::System& system)
@@ -865,8 +870,8 @@ void UpdateWantDeterminism(Core::System& system, bool initial)
   // netplay -- and it has to go through the same switch, because this also
   // drives FIFO determinism and JIT FMA use, either of which would otherwise
   // make the measurement disagree with the netplay it is meant to predict.
-  bool new_want_determinism = system.GetMovie().IsMovieActive() ||
-                              NetPlay::IsNetPlayRunning() || RecompDeterminism::IsActive();
+  bool new_want_determinism = system.GetMovie().IsMovieActive() || NetPlay::IsNetPlayRunning() ||
+                              RecompDeterminism::IsActive();
   if (new_want_determinism != s_wants_determinism || initial)
   {
     NOTICE_LOG_FMT(COMMON, "Want determinism <- {}", new_want_determinism ? "true" : "false");
@@ -883,8 +888,6 @@ void UpdateWantDeterminism(Core::System& system, bool initial)
     system.GetJitInterface().ClearCache(guard);
   }
 }
-
-
 
 // NOTE: Host Thread
 void DoFrameStep(Core::System& system)
@@ -922,7 +925,5 @@ void UpdateInputGate(bool require_focus, bool require_full_focus)
       !require_focus || !require_full_focus || (focus_passes && Host_RendererHasFullFocus());
   ControlReference::SetInputGate(focus_passes && full_focus_passes);
 }
-
-
 
 }  // namespace Core

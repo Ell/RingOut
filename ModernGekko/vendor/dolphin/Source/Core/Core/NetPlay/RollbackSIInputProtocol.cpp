@@ -287,4 +287,26 @@ RollbackSIInputDecodeResult DecodeRollbackSIInputPacket(const std::span<const u8
   return result;
 }
 
+bool IsRollbackSIInputOwnedByPlayer(const RollbackSIInputPacket& packet,
+                                    const std::array<u8, 4>& pad_mapping, const u8 player_id)
+{
+  if (player_id == 0 || packet.batch_count == 0 ||
+      packet.batch_count > ROLLBACK_SI_MAX_BATCHES_PER_PACKET)
+  {
+    return false;
+  }
+  for (std::size_t batch_index = 0; batch_index < packet.batch_count; ++batch_index)
+  {
+    const u8 pad_mask = packet.batches[batch_index].pad_mask;
+    if (pad_mask == 0 || (pad_mask & 0xf0) != 0)
+      return false;
+    for (std::size_t pad = 0; pad < pad_mapping.size(); ++pad)
+    {
+      if ((pad_mask & (u8{1} << pad)) != 0 && pad_mapping[pad] != player_id)
+        return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace NetPlay

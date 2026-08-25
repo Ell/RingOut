@@ -23,9 +23,33 @@ P="${P:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 W="${1:-/tmp/netplay-match}"
 PLAY="${2:-60}"
 PORT="${3:-2640}"
-PKG="$P/dist/RingOut-1.0-deck"
+PKG="${PKG:-$P/dist/RingOut-1.0-deck}"
 MIN_HASH_FRAMES="${MIN_HASH_FRAMES:-300}"
 result=0
+
+cleanup() {
+  local n pid
+  set +e
+  for n in host guest; do
+    if [ -f "$W/$n/pid" ]; then
+      read -r pid < "$W/$n/pid"
+      [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill "$pid" 2>/dev/null
+    fi
+  done
+  sleep 2
+  for n in host guest; do
+    for pid_file in "$W/$n/pid" "$W/$n/holder.pid"; do
+      if [ -f "$pid_file" ]; then
+        read -r pid < "$pid_file"
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -9 "$pid" 2>/dev/null
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] && wait "$pid" 2>/dev/null
+      fi
+    done
+  done
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 pre="$(pgrep -x moderngekko-run 2>/dev/null | wc -l)"
 if [ "$pre" != "0" ]; then
@@ -72,6 +96,16 @@ EOF
 setup_peer host
 setup_peer guest
 
+ensure_peers_alive() {
+  local n pid
+  for n in host guest; do
+    [ -s "$W/$n/pid" ] || return 1
+    read -r pid < "$W/$n/pid"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+  done
+}
+
 # WINDOWED=1 shows both peers, so the run can be confirmed by looking at it.
 # Headless proves the two peers agree with each other, which is NOT the same as
 # proving they reached a match -- two peers agreeing on a menu screen would look
@@ -80,8 +114,20 @@ launch() {
   local name="$1"; shift
   local d="$W/$name"
   local -a mode=(--headless)
+  local -a rollback_test_env=()
   [ "${WINDOWED:-0}" = "1" ] && mode=()
+  if [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ]; then
+    rollback_test_env=(
+      "RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED"
+      "RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES=${RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES:-2}"
+      "RINGOUT_ROLLBACK_HORIZON_FRAMES=${RINGOUT_ROLLBACK_HORIZON_FRAMES:-8}"
+    )
+    if [ "$name" = guest ]; then
+      rollback_test_env+=("RINGOUT_ROLLBACK_FAULT_SCRIPT=$RINGOUT_ROLLBACK_FAULT_SCRIPT")
+    fi
+  fi
   ( cd "$PKG" && exec env RINGOUT_DETERMINISM_LOG="$d/hash.log" \
+      "${rollback_test_env[@]}" \
       ./bin/moderngekko-run "${mode[@]}" --user-dir "$d/user" --game ./game \
       --module ./bin/gGRSEAF_recomp.so --controller "Standard Controller" \
       "$@" ) > "$d/log.txt" 2>&1 &
@@ -108,6 +154,7 @@ echo "both peers armed after ${waited}s"
 
 press() {  # $1 = host|guest  $2 = button  [$3 = settle seconds]
   local p="$W/$1/user/Pipes/ctrl"
+  ensure_peers_alive || { echo "a netplay peer exited before the route completed"; exit 1; }
   printf 'PRESS %s\n' "$2" > "$p"; sleep 0.25
   printf 'RELEASE %s\n' "$2" > "$p"; sleep "${3:-1.2}"
 }
@@ -153,12 +200,12 @@ while [ $slept -lt "$PLAY" ]; do
   fi
 done
 
-for n in host guest; do kill "$(cat "$W/$n/pid")" 2>/dev/null; done
-sleep 2
-for n in host guest; do
-  kill -9 "$(cat "$W/$n/pid")" 2>/dev/null
-  kill -9 "$(cat "$W/$n/holder.pid")" 2>/dev/null
-done
+if ! ensure_peers_alive; then
+  echo "FAIL: a netplay peer exited before intentional shutdown"
+  result=1
+fi
+cleanup
+trap - EXIT INT TERM
 sleep 1
 left="$(pgrep -x moderngekko-run 2>/dev/null | wc -l)"
 if [ "$left" != "0" ]; then
@@ -177,6 +224,13 @@ if [ -s "$W/host/hash.log" ] && [ -s "$W/guest/hash.log" ]; then
   if [ "$n" -lt "$MIN_HASH_FRAMES" ]; then
     echo "  FAIL: expected at least $MIN_HASH_FRAMES comparable frames"
     result=1
+  elif [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ]; then
+    # Rollback deliberately creates speculative physical-frame rows and then
+    # replays corrected logical frames, so the legacy line-for-line trace is
+    # not a valid oracle in fault mode.  Keep both traces as evidence; the
+    # rollback wrapper checks negotiated/correction markers and Dolphin's live
+    # desync detector.  Non-fault fixed-delay coverage remains byte-exact.
+    echo "  retained (rollback replay makes physical-frame rows incomparable)"
   elif diff -q "$W/h.trim" "$W/g.trim" >/dev/null; then
     echo "  IDENTICAL on every frame"
   else

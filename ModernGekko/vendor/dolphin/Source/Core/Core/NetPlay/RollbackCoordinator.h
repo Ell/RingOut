@@ -43,8 +43,10 @@ public:
   virtual void EndHiddenReplay(bool corrected_frontier_is_publishable) = 0;
 };
 
-// Not thread-safe: session code must marshal journal triggers onto the CPU
-// thread and keep construction, all calls, and destruction there.
+// Not thread-safe: session code must marshal journal triggers and normal state
+// transitions onto the CPU thread. CancelReplay and destruction may run on the
+// session owner thread only after an external lifecycle barrier has excluded
+// every CPU entry point; they perform no state capture/restore or guest work.
 class RollbackCoordinator final
 {
 public:

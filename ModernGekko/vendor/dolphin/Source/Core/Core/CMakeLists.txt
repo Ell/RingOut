@@ -546,11 +546,20 @@ add_library(core
   NetPlay/NetPlayClientCheats.cpp
   NetPlay/NetPlayClientDigest.cpp
   NetPlay/NetPlayClientInput.cpp
+  NetPlay/NetPlayClientRollback.cpp
+  NetPlay/NetPlayClientRollback.h
   NetPlay/NetPlayClientSaves.cpp
   NetPlay/NetPlayCommon.cpp
   NetPlay/NetPlayCommon.h
   NetPlay/DolphinRollbackStateStore.cpp
   NetPlay/DolphinRollbackStateStore.h
+  NetPlay/LiveRollbackFrameBoundary.cpp
+  NetPlay/LiveRollbackFrameBoundary.h
+  NetPlay/LiveRollbackFrameBoundaryCore.cpp
+  NetPlay/LiveRollbackInputScheduler.cpp
+  NetPlay/LiveRollbackInputScheduler.h
+  NetPlay/LiveRollbackOutputGate.cpp
+  NetPlay/LiveRollbackOutputGate.h
   NetPlay/RollbackCoordinator.cpp
   NetPlay/RollbackCoordinator.h
   NetPlay/RollbackInputTimeline.cpp

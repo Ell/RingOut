@@ -77,5 +77,7 @@ RollbackSIInputEncodeResult EncodeRollbackSIInputPacket(const RollbackSIInputPac
                                                         std::span<u8> output);
 RollbackSIInputDecodeResult DecodeRollbackSIInputPacket(std::span<const u8> input,
                                                         u64 expected_generation);
+bool IsRollbackSIInputOwnedByPlayer(const RollbackSIInputPacket& packet,
+                                    const std::array<u8, 4>& pad_mapping, u8 player_id);
 
 }  // namespace NetPlay

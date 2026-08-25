@@ -20,6 +20,7 @@
 #include "Common/SPSCQueue.h"
 #include "Common/TraversalClient.h"
 #include "Core/NetPlay/NetPlayProto.h"
+#include "Core/NetPlay/RollbackSIInputProtocol.h"
 #include "Core/SyncIdentifier.h"
 #include "InputCommon/GCPadStatus.h"
 
@@ -114,7 +115,8 @@ public:
   void SendAsync(sf::Packet&& packet, u8 channel_id = DEFAULT_CHANNEL);
 
   NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog, std::string name,
-                const NetTraversalConfig& traversal_config);
+                const NetTraversalConfig& traversal_config,
+                bool advertise_rollback_capability = false);
   ~NetPlayClient() override;
 
   // Return an immutable-by-ownership lobby view. The network thread may update
@@ -168,6 +170,10 @@ public:
   const PlayerId& GetLocalPlayerId() const;
 
   static void SendTimeBase();
+  // CPU-thread frame hook. Returns false only when an opted-in rollback
+  // session has faulted and emulation must stop rather than expose stale state.
+  static bool UpdateLiveRollbackFrameBoundary();
+  static bool IsLiveRollbackSessionActive();
   bool DoAllPlayersHaveGame();
 
   const PadMappingArray& GetPadMapping() const;
@@ -175,6 +181,14 @@ public:
   const PadMappingArray& GetWiimoteMapping() const;
 
   void AdjustPadBufferSize(unsigned int size);
+
+  // Network-thread/CPU-thread bridge for the negotiated rollback input
+  // transport.  These methods do not enable prediction or resimulation; they
+  // only move already validated RSIB packets across the dedicated channel.
+  RollbackNetplaySession GetRollbackNetplaySession() const;
+  bool SendRollbackSIInput(const RollbackSIInputPacket& packet);
+  bool TryPopRollbackSIInput(RollbackSIInputPacket* packet);
+  bool WaitForRollbackSIInput(std::chrono::milliseconds timeout);
 
   void SetWiiSyncData(std::unique_ptr<IOS::HLE::FS::FileSystem> fs, std::vector<u64> titles,
                       std::string redirect_folder);
@@ -196,6 +210,7 @@ protected:
     // lock order
     std::recursive_mutex players;
     std::recursive_mutex async_queue_write;
+    mutable std::recursive_mutex rollback;
   } m_crit;
 
   Common::SPSCQueue<AsyncQueueEntry> m_async_queue;
@@ -259,6 +274,15 @@ private:
   void SyncCodeResponse(bool success);
 
   bool PollLocalPad(int local_pad, sf::Packet& packet);
+  GCPadStatus SampleLocalPad(int local_pad) const;
+  bool GetLiveRollbackPads(int pad_nb, bool batching, GCPadStatus* pad_status, bool* handled);
+  bool UpdateLiveRollbackFrameBoundaryImpl();
+  bool IsLiveRollbackSessionActiveImpl() const;
+  // CPU-thread lifecycle normally owns these objects. Off-CPU callers must
+  // hold crit_netplay_client, the barrier shared by both CPU entry points.
+  void DeactivateLiveRollbackImpl();
+  void FaultLiveRollbackImpl();
+  void ResetLiveRollbackImpl();
   void SendPadHostPoll(PadIndex pad_num);
 
   bool AddLocalWiimoteToBuffer(int local_wiimote, const WiimoteEmu::SerializedWiimoteState& state,
@@ -276,7 +300,7 @@ private:
   void DisplayPlayersPing();
   u32 GetPlayersMaxPing() const;
 
-  void OnData(sf::Packet& packet);
+  void OnData(sf::Packet& packet, u8 channel_id);
   void OnPlayerJoin(sf::Packet& packet);
   void OnPlayerLeave(sf::Packet& packet);
   void OnChatMessage(sf::Packet& packet);
@@ -292,6 +316,10 @@ private:
   void OnWiimoteData(sf::Packet& packet);
   void OnPadBuffer(sf::Packet& packet);
   void OnHostInputAuthority(sf::Packet& packet);
+  void OnRollbackCapabilityQuery(sf::Packet& packet);
+  bool OnRollbackSession(sf::Packet& packet);
+  bool OnRollbackSIInput(sf::Packet& packet);
+  void FailRollbackProtocol();
   void OnGolfSwitch(sf::Packet& packet);
   void OnGolfPrepare(sf::Packet& packet);
   void OnChangeGame(sf::Packet& packet);
@@ -319,6 +347,10 @@ private:
   void OnGameDigestResult(sf::Packet& packet);
   void OnGameDigestError(sf::Packet& packet);
   void OnGameDigestAbort();
+  bool LoadRollbackFaultScript();
+  bool SendRollbackPacketWithFaults(sf::Packet&& packet);
+
+  struct LiveRollbackState;
 
   bool m_is_connected = false;
   ConnectionState m_connection_state = ConnectionState::Failure;
@@ -336,6 +368,8 @@ private:
   Common::Event m_wii_pad_event;
   Common::Event m_first_pad_status_received_event;
   Common::Event m_wait_on_input_event;
+  Common::Event m_rollback_input_event;
+  Common::Flag m_rollback_protocol_fault{false};
   u8 m_sync_save_data_count = 0;
   u8 m_sync_save_data_success_count = 0;
   u16 m_sync_gecko_codes_count = 0;
@@ -345,6 +379,29 @@ private:
   u16 m_sync_ar_codes_success_count = 0;
   bool m_sync_ar_codes_complete = false;
   std::unordered_map<u32, sf::Packet> m_chunked_data_receive_queue;
+
+  struct RollbackFaultAction
+  {
+    bool drop = false;
+    u64 send_ordinal = 0;
+    u64 release_after_send_ordinal = 0;
+  };
+
+  struct DelayedRollbackPacket
+  {
+    u64 release_after_send_ordinal = 0;
+    sf::Packet packet;
+  };
+
+  bool m_advertise_rollback_capability = false;
+  RollbackNetplaySession m_rollback_session{};
+  Common::SPSCQueue<RollbackSIInputPacket> m_rollback_input_queue;
+  std::vector<RollbackFaultAction> m_rollback_fault_actions;
+  std::vector<DelayedRollbackPacket> m_delayed_rollback_packets;
+  u64 m_rollback_send_ordinal = 0;
+  std::unique_ptr<LiveRollbackState> m_live_rollback;
+
+  friend void NetPlay_Disable();
 
   u64 m_initial_rtc = 0;
   u32 m_timebase_frame = 0;

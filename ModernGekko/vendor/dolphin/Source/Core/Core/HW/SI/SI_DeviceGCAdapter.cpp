@@ -10,6 +10,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/GCPad.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/NetPlay/NetPlayProto.h"
 #include "Core/System.h"
 #include "InputCommon/GCAdapter.h"
@@ -83,6 +84,9 @@ DataResponse CSIDevice_GCAdapter::GetData(u32& hi, u32& low)
 
 void CSIDevice_GCController::Rumble(int pad_num, ControlState strength, SIDevices device)
 {
+  if (NetPlay::IsLiveRollbackHiddenReplayActive())
+    return;
+
   if (device == SIDEVICE_WIIU_ADAPTER)
     GCAdapter::Output(pad_num, static_cast<u8>(strength));
   else if (SIDevice_IsGCController(device))

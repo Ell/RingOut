@@ -3,14 +3,10 @@
 
 #include "Core/NetPlay/NetPlayClient.h"
 
-#include "InputCommon/InputConfig.h"
-#include "InputCommon/ControllerEmu/ControllerEmu.h"
-#include <string>
-#include "Core/Host.h"
-#include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fmt/ranges.h>
+#include <string>
 #include "Common/Config/Config.h"
 #include "Common/Logging/Log.h"
 #include "Common/SFMLHelper.h"
@@ -19,9 +15,13 @@
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/GCPad.h"
 #include "Core/HW/SI/SI_Device.h"
+#include "Core/Host.h"
 #include "Core/Movie.h"
 #include "Core/System.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/GCAdapter.h"
+#include "InputCommon/InputConfig.h"
 
 namespace NetPlay
 {
@@ -46,6 +46,11 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
 
     m_wait_on_input_event.Wait();
   }
+
+  bool rollback_handled = false;
+  const bool rollback_result = GetLiveRollbackPads(pad_nb, batching, pad_status, &rollback_handled);
+  if (rollback_handled)
+    return rollback_result;
 
   if (IsFirstInGamePad(pad_nb) && batching)
   {
@@ -129,8 +134,8 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
       {
         s_last[pad_nb] = pad_status->button;
         ++s_count[pad_nb];
-        std::fprintf(stderr, "[padlog] in-game pad %d: buttons=0x%04x stick=(%u,%u)\n",
-                     pad_nb + 1, pad_status->button, pad_status->stickX, pad_status->stickY);
+        std::fprintf(stderr, "[padlog] in-game pad %d: buttons=0x%04x stick=(%u,%u)\n", pad_nb + 1,
+                     pad_status->button, pad_status->stickX, pad_status->stickY);
         std::fflush(stderr);
       }
     }
@@ -190,31 +195,7 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
 {
   const int ingame_pad = LocalPadToInGamePad(local_pad);
   bool data_added = false;
-  GCPadStatus pad_status{};
-
-  // The active netplay overlay cannot pause only one peer, so emulation keeps
-  // running while its D-pad/A/B navigation is read directly by the host loop.
-  // Do not send those same physical inputs into the game. The ordinary input
-  // gate intentionally permits background input in netplay, making this
-  // explicit neutral packet the only reliable UI capture point for every GC
-  // pad source (configured pad, GBA and adapter).
-  if (Host_UIBlocksControllerState())
-  {
-    pad_status = {};
-  }
-  else if (m_gba_config[ingame_pad].enabled)
-  {
-    pad_status = Pad::GetGBAStatus(local_pad);
-  }
-  else if (Config::Get(Config::GetInfoForSIDevice(local_pad)) ==
-           SerialInterface::SIDEVICE_WIIU_ADAPTER)
-  {
-    pad_status = GCAdapter::Input(local_pad);
-  }
-  else
-  {
-    pad_status = Pad::GetStatus(local_pad);
-  }
+  const GCPadStatus pad_status = SampleLocalPad(local_pad);
 
   // Send side. The receive-side padlog shows what each port is HANDED; this shows
   // what this peer READ from its own controller before sending. A peer whose
@@ -227,56 +208,13 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
     {
       static int s_count = 0;
       static u16 s_last = 0;
-      if (s_count == 0)
-      {
-        // Which device is this pad actually bound to, asked at the moment it is
-        // read -- asking earlier reports "no pad config", because controllers
-        // are initialised inside Runtime::Create. An empty device here is the
-        // difference between "the pad is unbound" and "the pad is bound but
-        // reports nothing" (focus / background input).
-        std::string device = "<none>";
-        if (InputConfig* const cfg = Pad::GetConfig())
-        {
-          if (cfg->GetControllerCount() > static_cast<size_t>(local_pad))
-            device = cfg->GetController(local_pad)->GetDefaultDevice().ToString();
-        }
-        // Measured HERE, not in the lobby: Runtime::Create applies
-        // background_input after the lobby logs, so a lobby-time reading shows
-        // the stale ini value and means nothing. If the pad is bound and input
-        // is still neutral, these two say why.
-        std::fprintf(stderr,
-                     "[padlog] SEND local pad %d bound to device: %s  "
-                     "background_input=%s renderer_focus=%s\n",
-                     local_pad, device.c_str(),
-                     Config::Get(Config::MAIN_INPUT_BACKGROUND_INPUT) ? "true" : "false",
-                     Host_RendererHasFocus() ? "true" : "false");
-        // GetDefaultDevice() is the string from the ini -- it says what the
-        // profile ASKS for, not that such a device exists now. A profile naming
-        // a device the interface never enumerated resolves to nothing and reads
-        // neutral, with no error anywhere. So: is it actually there, and what IS
-        // there?
-        {
-          bool found = false;
-          if (InputConfig* const cfg = Pad::GetConfig())
-          {
-            if (cfg->GetControllerCount() > static_cast<size_t>(local_pad))
-              found = g_controller_interface.FindDevice(
-                          cfg->GetController(local_pad)->GetDefaultDevice()) != nullptr;
-          }
-          std::string available;
-          for (const std::string& d : g_controller_interface.GetAllDeviceStrings())
-            available += (available.empty() ? "" : " | ") + d;
-          std::fprintf(stderr, "[padlog] device present in interface: %s; available now: [%s]\n",
-                       found ? "YES" : "NO", available.c_str());
-        }
-      }
       if (s_count < 12 || pad_status.button != s_last)
       {
         s_last = pad_status.button;
         ++s_count;
-        std::fprintf(stderr, "[padlog] SEND local pad %d -> in-game pad %d: buttons=0x%04x stick=(%u,%u)\n",
-                     local_pad, ingame_pad + 1, pad_status.button, pad_status.stickX,
-                     pad_status.stickY);
+        std::fprintf(
+            stderr, "[padlog] SEND local pad %d -> in-game pad %d: buttons=0x%04x stick=(%u,%u)\n",
+            local_pad, ingame_pad + 1, pad_status.button, pad_status.stickX, pad_status.stickY);
         std::fflush(stderr);
       }
     }
@@ -306,6 +244,92 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
   }
 
   return data_added;
+}
+
+GCPadStatus NetPlayClient::SampleLocalPad(const int local_pad) const
+{
+  const int ingame_pad = LocalPadToInGamePad(local_pad);
+  GCPadStatus pad_status{};
+
+  // The active netplay overlay cannot pause only one peer, so emulation keeps
+  // running while its D-pad/A/B navigation is read directly by the host loop.
+  // Do not send those same physical inputs into the game. The ordinary input
+  // gate intentionally permits background input in netplay, making this
+  // explicit neutral packet the only reliable UI capture point for every GC
+  // pad source (configured pad, GBA and adapter).
+  if (Host_UIBlocksControllerState())
+  {
+    pad_status = {};
+  }
+  else if (m_gba_config[ingame_pad].enabled)
+  {
+    pad_status = Pad::GetGBAStatus(local_pad);
+  }
+  else if (Config::Get(Config::GetInfoForSIDevice(local_pad)) ==
+           SerialInterface::SIDEVICE_WIIU_ADAPTER)
+  {
+    pad_status = GCAdapter::Input(local_pad);
+  }
+  else
+  {
+    pad_status = Pad::GetStatus(local_pad);
+  }
+
+  // This one-time diagnostic belongs at the acquisition point so both fixed
+  // delay and rollback report the same physical-device evidence.
+  {
+    static const bool s_padlog = std::getenv("RINGOUT_NETPLAY_PADLOG") != nullptr;
+    if (s_padlog)
+    {
+      static bool s_reported = false;
+      if (!s_reported)
+      {
+        s_reported = true;
+        // Which device is this pad actually bound to, asked at the moment it is
+        // read -- asking earlier reports "no pad config", because controllers
+        // are initialised inside Runtime::Create. An empty device here is the
+        // difference between "the pad is unbound" and "the pad is bound but
+        // reports nothing" (focus / background input).
+        std::string device = "<none>";
+        if (InputConfig* const cfg = Pad::GetConfig())
+        {
+          if (cfg->GetControllerCount() > local_pad)
+            device = cfg->GetController(local_pad)->GetDefaultDevice().ToString();
+        }
+        // Measured HERE, not in the lobby: Runtime::Create applies
+        // background_input after the lobby logs, so a lobby-time reading shows
+        // the stale ini value and means nothing. If the pad is bound and input
+        // is still neutral, these two say why.
+        std::fprintf(stderr,
+                     "[padlog] SEND local pad %d bound to device: %s  "
+                     "background_input=%s renderer_focus=%s\n",
+                     local_pad, device.c_str(),
+                     Config::Get(Config::MAIN_INPUT_BACKGROUND_INPUT) ? "true" : "false",
+                     Host_RendererHasFocus() ? "true" : "false");
+        // GetDefaultDevice() is the string from the ini -- it says what the
+        // profile ASKS for, not that such a device exists now. A profile naming
+        // a device the interface never enumerated resolves to nothing and reads
+        // neutral, with no error anywhere. So: is it actually there, and what IS
+        // there?
+        {
+          bool found = false;
+          if (InputConfig* const cfg = Pad::GetConfig())
+          {
+            if (cfg->GetControllerCount() > local_pad)
+              found = g_controller_interface.FindDevice(
+                          cfg->GetController(local_pad)->GetDefaultDevice()) != nullptr;
+          }
+          std::string available;
+          for (const std::string& d : g_controller_interface.GetAllDeviceStrings())
+            available += (available.empty() ? "" : " | ") + d;
+          std::fprintf(stderr, "[padlog] device present in interface: %s; available now: [%s]\n",
+                       found ? "YES" : "NO", available.c_str());
+        }
+      }
+      // Per-sample values are logged by the caller with its transport context.
+    }
+  }
+  return pad_status;
 }
 
 bool NetPlayClient::AddLocalWiimoteToBuffer(const int local_wiimote,

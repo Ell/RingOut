@@ -6,11 +6,17 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <sstream>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -34,15 +40,15 @@
 #include "Common/Timer.h"
 #include "Common/Version.h"
 
-#include "Core/Cheats/ActionReplay.h"
 #include "Core/Boot/Boot.h"
+#include "Core/Cheats/ActionReplay.h"
+#include "Core/Cheats/GeckoCode.h"
+#include "Core/Config/ConfigManager.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/Config/SessionSettings.h"
 #include "Core/Config/WiimoteSettings.h"
-#include "Core/Config/ConfigManager.h"
-#include "Core/Cheats/GeckoCode.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/EXI/EXI_DeviceIPL.h"
 #ifdef HAS_LIBMGBA
@@ -64,6 +70,7 @@
 #include "Core/IOS/FS/HostBackend/FS.h"
 #include "Core/IOS/Uids.h"
 #include "Core/Movie.h"
+#include "Core/NetPlay/NetPlayClientRollback.h"
 #include "Core/NetPlay/NetPlayCommon.h"
 #include "Core/SyncIdentifier.h"
 #include "Core/System.h"
@@ -87,6 +94,12 @@ NetPlayClient::~NetPlayClient()
   // not perfect
   if (m_is_running.IsSet())
     StopGame();
+  {
+    std::lock_guard lk(crit_netplay_client);
+    ResetLiveRollbackImpl();
+    if (netplay_client == this)
+      netplay_client = nullptr;
+  }
 
   if (m_is_connected)
   {
@@ -124,9 +137,16 @@ NetPlayClient::~NetPlayClient()
 
 // called from ---GUI--- thread
 NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog,
-                             std::string name, const NetTraversalConfig& traversal_config)
-    : m_dialog(dialog), m_player_name(std::move(name))
+                             std::string name, const NetTraversalConfig& traversal_config,
+                             const bool advertise_rollback_capability)
+    : m_dialog(dialog), m_player_name(std::move(name)),
+      m_advertise_rollback_capability(advertise_rollback_capability)
 {
+  if (m_advertise_rollback_capability && !LoadRollbackFaultScript())
+  {
+    std::fprintf(stderr, "[rollback live] invalid fault script; capability disabled\n");
+    m_advertise_rollback_capability = false;
+  }
   ClearBuffers();
 
   if (!traversal_config.use_traversal)
@@ -335,10 +355,16 @@ static void ReceiveSyncIdentifier(sf::Packet& spac, SyncIdentifier& sync_identif
 }
 
 // called from ---NETPLAY--- thread
-void NetPlayClient::OnData(sf::Packet& packet)
+void NetPlayClient::OnData(sf::Packet& packet, const u8 channel_id)
 {
-  MessageID mid;
+  MessageID mid{};
   packet >> mid;
+
+  if (!packet || (channel_id == ROLLBACK_INPUT_CHANNEL) != (mid == MessageID::RollbackSIInput))
+  {
+    FailRollbackProtocol();
+    return;
+  }
 
   INFO_LOG_FMT(NETPLAY, "Got server message: {:x}", static_cast<u8>(mid));
 
@@ -402,6 +428,20 @@ void NetPlayClient::OnData(sf::Packet& packet)
 
   case MessageID::HostInputAuthority:
     OnHostInputAuthority(packet);
+    break;
+
+  case MessageID::RollbackCapabilityQuery:
+    OnRollbackCapabilityQuery(packet);
+    break;
+
+  case MessageID::RollbackSession:
+    if (!OnRollbackSession(packet))
+      FailRollbackProtocol();
+    break;
+
+  case MessageID::RollbackSIInput:
+    if (!OnRollbackSIInput(packet))
+      FailRollbackProtocol();
     break;
 
   case MessageID::GolfSwitch:
@@ -566,7 +606,7 @@ void NetPlayClient::OnChunkedDataEnd(sf::Packet& packet)
   INFO_LOG_FMT(NETPLAY, "Ending data chunk {}.", cid);
 
   auto& data_packet = data_packet_iter->second;
-  OnData(data_packet);
+  OnData(data_packet, CHUNKED_DATA_CHANNEL);
   m_chunked_data_receive_queue.erase(data_packet_iter);
   m_dialog->HideChunkedProgressDialog();
 
@@ -766,6 +806,96 @@ void NetPlayClient::OnHostInputAuthority(sf::Packet& packet)
   m_dialog->OnHostInputAuthorityChanged(m_host_input_authority);
 }
 
+void NetPlayClient::OnRollbackCapabilityQuery(sf::Packet& packet)
+{
+  u16 maximum_version = 0;
+  packet >> maximum_version;
+  if (!packet || !packet.endOfPacket())
+    return;
+
+  sf::Packet response;
+  response << MessageID::RollbackCapability;
+  if (m_advertise_rollback_capability && maximum_version >= ROLLBACK_NETPLAY_VERSION)
+  {
+    response << ROLLBACK_NETPLAY_VERSION << ROLLBACK_NETPLAY_MAX_HORIZON;
+  }
+  else
+  {
+    response << u16{0} << u16{0};
+  }
+  Send(response);
+}
+
+bool NetPlayClient::OnRollbackSession(sf::Packet& packet)
+{
+  u8 enabled = 0;
+  RollbackNetplaySession session;
+  packet >> enabled >> session.protocol_version >> session.generation >>
+      session.base_delay_samples >> session.rollback_horizon_frames;
+  session.enabled = enabled != 0;
+  if (!packet || !packet.endOfPacket() || enabled > 1 || !IsValidRollbackNetplaySession(session) ||
+      (session.enabled && !m_advertise_rollback_capability))
+  {
+    return false;
+  }
+
+  std::lock_guard guard(m_crit.rollback);
+  m_rollback_session = session;
+  m_rollback_protocol_fault.Clear();
+  if (session.enabled)
+  {
+    std::fprintf(stderr,
+                 "[rollback live] negotiated generation=%llu base_delay_samples=%u "
+                 "horizon_frames=%u\n",
+                 static_cast<unsigned long long>(session.generation), session.base_delay_samples,
+                 session.rollback_horizon_frames);
+    std::fflush(stderr);
+  }
+  return true;
+}
+
+bool NetPlayClient::OnRollbackSIInput(sf::Packet& packet)
+{
+  u16 payload_size = 0;
+  packet >> payload_size;
+  if (!packet || payload_size == 0 || payload_size > ROLLBACK_SI_MAX_PACKET_SIZE)
+    return false;
+
+  std::array<u8, ROLLBACK_SI_MAX_PACKET_SIZE> payload{};
+  for (std::size_t i = 0; i < payload_size; ++i)
+    packet >> payload[i];
+  if (!packet || !packet.endOfPacket())
+    return false;
+
+  RollbackNetplaySession session;
+  {
+    std::lock_guard guard(m_crit.rollback);
+    session = m_rollback_session;
+  }
+  if (!session.enabled)
+    return false;
+
+  RollbackSIInputDecodeResult decoded = DecodeRollbackSIInputPacket(
+      std::span<const u8>(payload.data(), payload_size), session.generation);
+  if (!decoded || m_rollback_input_queue.Size() >= 64)
+    return false;
+
+  // Packets can deliberately overlap: each sender may include up to eight
+  // recent batches so an unreliable loss is repaired by the next datagram.
+  // RollbackSIInputJournal performs per-batch duplicate/conflict detection.
+  m_rollback_input_queue.Push(std::move(decoded.packet));
+  m_rollback_input_event.Set();
+  return true;
+}
+
+void NetPlayClient::FailRollbackProtocol()
+{
+  m_rollback_protocol_fault.Set();
+  m_rollback_input_event.Set();
+  std::lock_guard guard(m_crit.rollback);
+  m_rollback_session = {};
+}
+
 void NetPlayClient::OnGolfSwitch(sf::Packet& packet)
 {
   PlayerId pid;
@@ -803,6 +933,10 @@ void NetPlayClient::OnGolfPrepare(sf::Packet& packet)
 
 void NetPlayClient::OnChangeGame(sf::Packet& packet)
 {
+  {
+    std::lock_guard guard(m_crit.rollback);
+    m_rollback_session = {};
+  }
   std::string netplay_name;
   {
     std::lock_guard lkg(m_crit.game);
@@ -946,6 +1080,11 @@ void NetPlayClient::OnStopGame(sf::Packet& packet)
 {
   INFO_LOG_FMT(NETPLAY, "Game stopped");
 
+  {
+    std::lock_guard guard(m_crit.rollback);
+    m_rollback_session = {};
+  }
+
   StopGame();
   m_dialog->OnMsgStopGame();
 }
@@ -1003,11 +1142,12 @@ void NetPlayClient::OnDesyncDetected(sf::Packet& packet)
   m_dialog->OnDesync(frame, player);
 }
 
-
-
 void NetPlayClient::Send(const sf::Packet& packet, const u8 channel_id)
 {
-  Common::ENet::SendPacket(m_server, packet, channel_id);
+  const Common::ENet::PacketDelivery delivery =
+      channel_id == ROLLBACK_INPUT_CHANNEL ? Common::ENet::PacketDelivery::UnreliableSequenced :
+                                             Common::ENet::PacketDelivery::Reliable;
+  Common::ENet::SendPacket(m_server, packet, channel_id, delivery);
 }
 
 u64 NetPlayClient::GetInitialRTCValue() const
@@ -1118,7 +1258,7 @@ void NetPlayClient::ThreadFunc()
         INFO_LOG_FMT(NETPLAY, "enet_host_service: receive event");
 
         rpac.append(netEvent.packet->data, netEvent.packet->dataLength);
-        OnData(rpac);
+        OnData(rpac, netEvent.channelID);
 
         enet_packet_destroy(netEvent.packet);
         break;
@@ -1172,6 +1312,152 @@ std::vector<Player> NetPlayClient::GetPlayers()
 const NetSettings& NetPlayClient::GetNetSettings() const
 {
   return m_net_settings;
+}
+
+RollbackNetplaySession NetPlayClient::GetRollbackNetplaySession() const
+{
+  std::lock_guard guard(m_crit.rollback);
+  return m_rollback_session;
+}
+
+bool NetPlayClient::LoadRollbackFaultScript()
+{
+  const char* const ack = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
+  const char* const path = std::getenv("RINGOUT_ROLLBACK_FAULT_SCRIPT");
+  if (ack == nullptr || std::string_view(ack) != "HEADLESS_ISOLATED" || path == nullptr)
+    return true;
+
+  std::ifstream script(path);
+  if (!script)
+    return false;
+
+  std::string line;
+  while (std::getline(script, line))
+  {
+    if (const std::size_t comment = line.find('#'); comment != std::string::npos)
+      line.erase(comment);
+    if (line.find_first_not_of(" \t\r") == std::string::npos)
+      continue;
+    if (m_rollback_fault_actions.size() >= 64)
+      return false;
+
+    std::istringstream fields(line);
+    std::string operation;
+    RollbackFaultAction action;
+    fields >> operation >> action.send_ordinal;
+    if (!fields || action.send_ordinal == 0)
+      return false;
+    if (operation == "drop")
+    {
+      action.drop = true;
+    }
+    else if (operation == "delay")
+    {
+      fields >> action.release_after_send_ordinal;
+      if (!fields || action.release_after_send_ordinal <= action.send_ordinal)
+        return false;
+    }
+    else
+    {
+      return false;
+    }
+    fields >> std::ws;
+    if (!fields.eof())
+      return false;
+    m_rollback_fault_actions.push_back(action);
+  }
+
+  std::ranges::sort(m_rollback_fault_actions, {}, &RollbackFaultAction::send_ordinal);
+  return std::adjacent_find(m_rollback_fault_actions.begin(), m_rollback_fault_actions.end(),
+                            [](const auto& lhs, const auto& rhs) {
+                              return lhs.send_ordinal == rhs.send_ordinal;
+                            }) == m_rollback_fault_actions.end();
+}
+
+bool NetPlayClient::SendRollbackPacketWithFaults(sf::Packet&& packet)
+{
+  if (m_rollback_send_ordinal == std::numeric_limits<u64>::max())
+    return false;
+  const u64 ordinal = ++m_rollback_send_ordinal;
+  const auto action = std::ranges::lower_bound(m_rollback_fault_actions, ordinal, {},
+                                               &RollbackFaultAction::send_ordinal);
+
+  bool send_current = true;
+  if (action != m_rollback_fault_actions.end() && action->send_ordinal == ordinal)
+  {
+    if (action->drop)
+    {
+      send_current = false;
+    }
+    else
+    {
+      if (m_delayed_rollback_packets.size() >= 64)
+        return false;
+      m_delayed_rollback_packets.push_back(
+          {.release_after_send_ordinal = action->release_after_send_ordinal,
+           .packet = std::move(packet)});
+      send_current = false;
+    }
+  }
+
+  if (send_current)
+    SendAsync(std::move(packet), ROLLBACK_INPUT_CHANNEL);
+
+  // Queue the delayed datagram after the current ordinal.  This deliberately
+  // gives it a newer ENet sequence while retaining its older RSIB batch IDs,
+  // modeling a late authoritative correction without sleeping a network
+  // thread or perturbing control traffic.
+  for (auto delayed = m_delayed_rollback_packets.begin();
+       delayed != m_delayed_rollback_packets.end();)
+  {
+    if (delayed->release_after_send_ordinal == ordinal)
+    {
+      SendAsync(std::move(delayed->packet), ROLLBACK_INPUT_CHANNEL);
+      delayed = m_delayed_rollback_packets.erase(delayed);
+    }
+    else
+    {
+      ++delayed;
+    }
+  }
+  return true;
+}
+
+bool NetPlayClient::SendRollbackSIInput(const RollbackSIInputPacket& input)
+{
+  const RollbackNetplaySession session = GetRollbackNetplaySession();
+  if (!m_is_connected || !session.enabled || input.protocol_version != session.protocol_version ||
+      input.session_generation != session.generation)
+  {
+    return false;
+  }
+
+  std::array<u8, ROLLBACK_SI_MAX_PACKET_SIZE> payload{};
+  const RollbackSIInputEncodeResult encoded = EncodeRollbackSIInputPacket(input, payload);
+  if (!encoded)
+    return false;
+
+  sf::Packet packet;
+  packet << MessageID::RollbackSIInput << static_cast<u16>(encoded.size);
+  for (std::size_t i = 0; i < encoded.size; ++i)
+    packet << payload[i];
+  return SendRollbackPacketWithFaults(std::move(packet));
+}
+
+bool NetPlayClient::TryPopRollbackSIInput(RollbackSIInputPacket* const packet)
+{
+  return packet != nullptr && m_rollback_input_queue.Pop(*packet);
+}
+
+bool NetPlayClient::WaitForRollbackSIInput(const std::chrono::milliseconds timeout)
+{
+  if (!m_is_running.IsSet())
+    return false;
+  if (!m_rollback_input_queue.Empty())
+    return true;
+  if (!m_rollback_input_event.WaitFor(timeout))
+    return false;
+  return m_is_running.IsSet() && !m_rollback_input_queue.Empty();
 }
 
 // called from ---GUI--- thread
@@ -1238,6 +1524,22 @@ bool NetPlayClient::StartGame(const std::string& path)
     PanicAlertFmtT("Game is already running!");
     return false;
   }
+
+  // A NetPlayClient can host more than one match. Rollback objects carry a
+  // generation, journal, snapshots, and poll cursor and therefore must never be
+  // reused across StartGame boundaries.
+  {
+    std::lock_guard lk(crit_netplay_client);
+    ResetLiveRollbackImpl();
+  }
+  m_rollback_protocol_fault.Clear();
+  RollbackSIInputPacket stale_rollback_input;
+  while (m_rollback_input_queue.Pop(stale_rollback_input))
+  {
+  }
+  m_rollback_input_event.Reset();
+  m_delayed_rollback_packets.clear();
+  m_rollback_send_ordinal = 0;
 
   m_timebase_frame = 0;
   m_current_golfer = 1;
@@ -1435,6 +1737,7 @@ void NetPlayClient::InvokeStop()
   m_wii_pad_event.Set();
   m_first_pad_status_received_event.Set();
   m_wait_on_input_event.Set();
+  m_rollback_input_event.Set();
 }
 
 // called from ---GUI--- thread and ---NETPLAY--- thread (client side)
@@ -1640,6 +1943,18 @@ void NetPlayClient::SendTimeBase()
   netplay_client->m_timebase_frame++;
 }
 
+bool NetPlayClient::UpdateLiveRollbackFrameBoundary()
+{
+  std::lock_guard lk(crit_netplay_client);
+  return netplay_client == nullptr || netplay_client->UpdateLiveRollbackFrameBoundaryImpl();
+}
+
+bool NetPlayClient::IsLiveRollbackSessionActive()
+{
+  std::lock_guard lk(crit_netplay_client);
+  return netplay_client != nullptr && netplay_client->IsLiveRollbackSessionActiveImpl();
+}
+
 bool NetPlayClient::DoAllPlayersHaveGame()
 {
   std::lock_guard lkp(m_crit.players);
@@ -1648,7 +1963,6 @@ bool NetPlayClient::DoAllPlayersHaveGame()
     return entry.second.game_status == SyncIdentifierComparison::SameGame;
   });
 }
-
 
 const PadMappingArray& NetPlayClient::GetPadMapping() const
 {
@@ -1798,7 +2112,12 @@ void NetPlay_Enable(NetPlayClient* const np)
 
 void NetPlay_Disable()
 {
+  // This mutex is the lifecycle barrier used by NetPlay_GetInput and
+  // UpdateLiveRollbackFrameBoundary. Once acquired, no CPU callback can retain
+  // a reference while the owner thread cancels and destroys rollback state.
   std::lock_guard lk(crit_netplay_client);
+  if (netplay_client)
+    netplay_client->ResetLiveRollbackImpl();
   netplay_client = nullptr;
 }
 }  // namespace NetPlay

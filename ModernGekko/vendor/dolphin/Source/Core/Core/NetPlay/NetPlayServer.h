@@ -65,6 +65,12 @@ public:
   void AdjustPadBufferSize(unsigned int size);
   void SetHostInputAuthority(bool enable);
 
+  // Rollback is disabled by default.  An enabled request still falls back to
+  // fixed delay unless every connected peer negotiated the selected version.
+  bool SetRollbackNetplayConfig(const RollbackNetplayConfig& config);
+  bool CanUseRollbackNetplay();
+  RollbackNetplaySession GetRollbackNetplaySession();
+
   void KickPlayer(PlayerId player);
 
   u16 GetPort() const;
@@ -84,6 +90,8 @@ private:
     SyncIdentifierComparison game_status = SyncIdentifierComparison::Unknown;
     bool has_ipl_dump = false;
     bool has_hardware_fma = false;
+    u16 rollback_protocol_version = 0;
+    u16 rollback_max_horizon_frames = 0;
 
     ENetPeer* socket = nullptr;
     u32 ping = 0;
@@ -135,7 +143,9 @@ private:
   void Send(ENetPeer* socket, const sf::Packet& packet, u8 channel_id = DEFAULT_CHANNEL);
   ConnectionError OnConnect(ENetPeer* socket, sf::Packet& received_packet);
   unsigned int OnDisconnect(const Client& player);
-  unsigned int OnData(sf::Packet& packet, Client& player);
+  unsigned int OnData(sf::Packet& packet, Client& player, u8 channel_id);
+  RollbackNetplaySession SelectRollbackNetplaySession();
+  void SendRollbackNetplaySession(const RollbackNetplaySession& session);
 
   void OnTraversalStateChanged() override;
   void OnConnectReady(ENetAddress) override {}
@@ -176,6 +186,9 @@ private:
   bool m_codes_synced = true;
   bool m_start_pending = false;
   bool m_host_input_authority = false;
+  RollbackNetplayConfig m_rollback_config{};
+  RollbackNetplaySession m_rollback_session{};
+  u64 m_next_rollback_generation = 1;
   PlayerId m_current_golfer = 1;
   PlayerId m_pending_golfer = 0;
 

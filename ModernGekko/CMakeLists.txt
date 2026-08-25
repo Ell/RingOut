@@ -564,6 +564,24 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(moderngekko_live_rollback_gate_test
+        tests/live_rollback_gate_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackFrameBoundary.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackOutputGate.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackCoordinator.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackInputTimeline.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputJournal.cpp)
+    target_include_directories(moderngekko_live_rollback_gate_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_live_rollback_gate_test PRIVATE cxx_std_20)
+    target_compile_definitions(moderngekko_live_rollback_gate_test PRIVATE
+        RINGOUT_ROLLBACK_GATE_TESTING=1)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_live_rollback_gate_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.live_rollback_gate
+        COMMAND moderngekko_live_rollback_gate_test)
+
     add_executable(moderngekko_rollback_coordinator_test
         tests/rollback_coordinator_test.cpp
         vendor/dolphin/Source/Core/Core/NetPlay/RollbackCoordinator.cpp
@@ -604,6 +622,46 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME moderngekko.rollback_si_input_journal
         COMMAND moderngekko_rollback_si_input_journal_test)
+
+    # Executable contract for the live transport integration.  It is isolated
+    # from sockets and the emulator core, keeping the negotiation oracle local
+    # while exercising the production SI codec and journal for packet,
+    # correction, polling, and horizon behavior.
+    add_executable(moderngekko_rollback_live_contract_test
+        tests/rollback_live_contract_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackCoordinator.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackInputTimeline.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputJournal.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputProtocol.cpp)
+    target_include_directories(moderngekko_rollback_live_contract_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_live_contract_test PRIVATE cxx_std_20)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_live_contract_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_live_contract
+        COMMAND moderngekko_rollback_live_contract_test)
+
+    add_executable(moderngekko_rollback_live_scheduler_test
+        tests/rollback_live_scheduler_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/LiveRollbackInputScheduler.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackCoordinator.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackInputTimeline.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputJournal.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackSIInputProtocol.cpp)
+    target_include_directories(moderngekko_rollback_live_scheduler_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_live_scheduler_test PRIVATE cxx_std_20)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_live_scheduler_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_live_scheduler
+        COMMAND moderngekko_rollback_live_scheduler_test)
+
+    if(UNIX)
+        add_test(NAME moderngekko.rollback_live_harness
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/../.github/scripts/test-rollback-live-real-game-harness.sh")
+    endif()
 
     add_executable(moderngekko_frontend_config_test
         tests/frontend_config_test.cpp

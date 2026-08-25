@@ -2,10 +2,10 @@
 //
 // The previous implementation was written against a private RecompCore fork of
 // NetPlayClient/NetPlayServer (SetReady, CanStart, SetLocalControllerCount,
-// GetPlayersSnapshot, GetConnectionError, SetAdaptiveBuffer, ...) that is not in
-// the vendored Dolphin, so it could not be compiled here and was replaced by a
-// stub that always reported "netplay is unavailable". This is a rewrite against
-// the vendored API only. The original is kept at
+// GetPlayersSnapshot, GetConnectionError, SetAdaptiveBuffer, ...) that is not
+// in the vendored Dolphin, so it could not be compiled here and was replaced by
+// a stub that always reported "netplay is unavailable". This is a rewrite
+// against the vendored API only. The original is kept at
 // work/out/netplay_session.cpp.orig; its SessionUI carried over nearly intact,
 // while its ImGui/SDL3 lobby window is gone -- this runs headless and is driven
 // by flags, which is what a scripted two-instance test needs.
@@ -27,14 +27,14 @@
 
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
-#include "Core/HW/SI/SI_Device.h"
-#include "InputCommon/ControllerEmu/ControllerEmu.h"
-#include "InputCommon/InputConfig.h"
-#include "Core/HW/GCPad.h"
 #include "Core/Config/NetplaySettings.h"
+#include "Core/HW/GCPad.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/NetPlayServer.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/InputConfig.h"
 #include "UICommon/GameFile.h"
 #include "UICommon/UICommon.h"
 #include "runtime/dolphin_runtime_internal.hpp"
@@ -48,13 +48,17 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -67,6 +71,27 @@ using Clock = std::chrono::steady_clock;
 void Log(const std::string &message) {
   std::cerr << "netplay: " << message << '\n';
   std::cerr.flush();
+}
+
+bool RollbackTestOptIn(const RuntimeConfig &config) {
+  const char *ack = std::getenv("RINGOUT_ROLLBACK_TEST_ACK");
+  return config.headless && ack != nullptr &&
+         std::string_view(ack) == "HEADLESS_ISOLATED";
+}
+
+std::optional<u16> RollbackTestNumber(const char *name, u16 fallback,
+                                      u16 maximum) {
+  const char *text = std::getenv(name);
+  if (text == nullptr)
+    return fallback;
+  unsigned int value = 0;
+  const std::string_view view(text);
+  const auto [end, error] =
+      std::from_chars(view.data(), view.data() + view.size(), value);
+  if (error != std::errc{} || end != view.data() + view.size() ||
+      value > maximum)
+    return std::nullopt;
+  return static_cast<u16>(value);
 }
 
 // Bridges Dolphin's netplay callbacks to a headless session. Every method is
@@ -249,9 +274,10 @@ private:
 // the host is always pad 1 and the assignment does not depend on join order.
 // Without this the map stays all-zero and no input reaches the game.
 // What this peer will actually do with its controller. The pad map alone is not
-// enough: routing is LocalPadToInGamePad(0), and "no input reaches player 2" and
-// "both peers drive player 1" are both answered by that one number. Logged from
-// the host and the client paths alike, because only each peer's own view counts.
+// enough: routing is LocalPadToInGamePad(0), and "no input reaches player 2"
+// and "both peers drive player 1" are both answered by that one number. Logged
+// from the host and the client paths alike, because only each peer's own view
+// counts.
 void LogPadRouting(NetPlay::NetPlayClient &client) {
   const NetPlay::PadMappingArray &m = client.GetPadMapping();
   std::string view;
@@ -265,7 +291,8 @@ void LogPadRouting(NetPlay::NetPlayClient &client) {
   Log("pad routing here: map=[" + view + "] my pid=" +
       std::to_string(static_cast<int>(client.GetLocalPlayerId())) +
       " local pads=" + std::to_string(local_pads) +
-      (routing.empty() ? std::string("  NONE - this peer sends no input") : routing));
+      (routing.empty() ? std::string("  NONE - this peer sends no input")
+                       : routing));
 }
 
 void AssignPads(NetPlay::NetPlayServer &server,
@@ -328,12 +355,12 @@ public:
     // the very next screen.
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
       return false;
-    const float scale = std::max(SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay()), 1.0f);
-    m_window = SDL_CreateWindow("Ring Out — Netplay Lobby",
-                                static_cast<int>(760 * scale),
-                                static_cast<int>(520 * scale),
-                                SDL_WINDOW_RESIZABLE |
-                                    SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    const float scale =
+        std::max(SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay()), 1.0f);
+    m_window = SDL_CreateWindow(
+        "Ring Out — Netplay Lobby", static_cast<int>(760 * scale),
+        static_cast<int>(520 * scale),
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!m_window) {
       SDL_Quit();
       return false;
@@ -349,9 +376,9 @@ public:
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard |
-                      ImGuiConfigFlags_NavEnableGamepad;
-    io.IniFilename = nullptr;   // do not litter the user dir
+    io.ConfigFlags |=
+        ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.IniFilename = nullptr; // do not litter the user dir
     ImGui::StyleColorsDark();
     ImGui::GetStyle().ScaleAllSizes(scale);
     if (!ImGui_ImplSDL3_InitForSDLRenderer(m_window, m_renderer)) {
@@ -444,7 +471,8 @@ PortErrorChoice ShowPortError(WindowSystem window_system, std::uint16_t port,
                               const std::string &address) {
   LobbyWindow window;
   if (!window.Open(window_system))
-    return PortErrorChoice::Quit;   // headless or no display: caller logs and exits
+    return PortErrorChoice::Quit; // headless or no display: caller logs and
+                                  // exits
 
   while (true) {
     if (!window.Frame()) {
@@ -621,7 +649,7 @@ bool RunLobbyWindow(RuntimeConfig &runtime_config, NetplayOptions &options,
   while (true) {
     if (!window.Frame())
       return false;
-    beacon.Tick();   // rate-limits itself to once a second
+    beacon.Tick(); // rate-limits itself to once a second
     if (ui.ConnectionLost() || !client.IsConnected()) {
       window.Close();
       Log("connection lost while in the lobby");
@@ -780,8 +808,8 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   UICommon::Init();
   detail::SetExternalUICommon(true);
 
-  // Netplay used to force single-core, reasoning that a dual-core split lets the
-  // CPU and GPU threads interleave differently on each peer. Dolphin's own
+  // Netplay used to force single-core, reasoning that a dual-core split lets
+  // the CPU and GPU threads interleave differently on each peer. Dolphin's own
   // answer to that problem is not single-core but a DETERMINISTIC GPU thread
   // (Fifo.cpp, UpdateWantDeterminism), which pre-processes the FIFO so the CPU
   // thread's view does not depend on interleaving. Its enabling condition ends
@@ -790,10 +818,12 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   //
   // Measured on the Deck over a real PC-to-Deck match: 41 -> 46 fps (+12%),
   // no desync. Offline was already dual-core, so netplay was the only mode
-  // paying for this. Also clean over a ~6.5 min two-peer soak and a shorter run.
+  // paying for this. Also clean over a ~6.5 min two-peer soak and a shorter
+  // run.
   //
   // Dual-core with a deterministic GPU thread. Netplay used to force
-  // single-core, but Dolphin's answer to CPU/GPU interleaving is not single-core
+  // single-core, but Dolphin's answer to CPU/GPU interleaving is not
+  // single-core
   // -- it is the deterministic GPU thread (Fifo.cpp, UpdateWantDeterminism),
   // whose enabling condition ends `gpu_thread && IsDualCoreMode()`. Forcing
   // single-core switched off the very mechanism built to make dual-core safe.
@@ -812,7 +842,8 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   const bool single_core = std::getenv("RINGOUT_NETPLAY_SINGLECORE") != nullptr;
   Config::SetBase(Config::MAIN_CPU_THREAD, !single_core);
   if (!single_core)
-    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE, std::string("fake-completion"));
+    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE,
+                    std::string("fake-completion"));
   Log(single_core ? "netplay: single-core (forced)"
                   : "netplay: dual-core with a deterministic GPU thread");
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
@@ -878,6 +909,7 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   const NetPlay::NetTraversalConfig direct{};
   std::unique_ptr<NetPlay::NetPlayServer> server;
   std::unique_ptr<NetPlay::NetPlayClient> client;
+  const bool rollback_test_opt_in = RollbackTestOptIn(runtime_config);
 
   // Hosting can fail on a busy port, which is recoverable: offer to join the
   // host that already owns it, or retry. Headless keeps the old behaviour --
@@ -885,8 +917,8 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   while (options.role == NetplayRole::Host) {
     Log("hosting on port " + std::to_string(options.port));
     ui.SetHosting(true);
-    server =
-        std::make_unique<NetPlay::NetPlayServer>(options.port, false, &ui, direct);
+    server = std::make_unique<NetPlay::NetPlayServer>(options.port, false, &ui,
+                                                      direct);
     if (server->is_connected)
       break;
 
@@ -898,8 +930,8 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
       UICommon::Shutdown();
       return static_cast<int>(NetplayExitCode::Failed);
     }
-    const PortErrorChoice choice =
-        ShowPortError(runtime_config.window_system, options.port, options.address);
+    const PortErrorChoice choice = ShowPortError(runtime_config.window_system,
+                                                 options.port, options.address);
     if (choice == PortErrorChoice::Quit) {
       detail::SetExternalUICommon(false);
       UICommon::Shutdown();
@@ -918,6 +950,29 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     // Fixed-delay, not host input authority: both peers run the same inputs on
     // the same frame, which is the model the determinism work validated.
     server->SetHostInputAuthority(false);
+    if (rollback_test_opt_in) {
+      const std::optional<u16> base_delay =
+          RollbackTestNumber("RINGOUT_ROLLBACK_BASE_DELAY_SAMPLES", 2,
+                             NetPlay::ROLLBACK_NETPLAY_MAX_BASE_DELAY);
+      const std::optional<u16> horizon =
+          RollbackTestNumber("RINGOUT_ROLLBACK_HORIZON_FRAMES", 8,
+                             NetPlay::ROLLBACK_NETPLAY_MAX_HORIZON);
+      if (!base_delay || !horizon || *horizon == 0 ||
+          !server->SetRollbackNetplayConfig({
+              .enabled = true,
+              .protocol_version = NetPlay::ROLLBACK_NETPLAY_VERSION,
+              .base_delay_samples = *base_delay,
+              .rollback_horizon_frames = *horizon,
+          })) {
+        Log("rollback test opt-in has invalid numeric configuration");
+        server.reset();
+        detail::SetExternalUICommon(false);
+        UICommon::Shutdown();
+        return static_cast<int>(NetplayExitCode::InvalidConfiguration);
+      }
+      Log("rollback test opt-in armed; waiting for peer capability "
+          "negotiation");
+    }
     if (options.buffer != "auto") {
       try {
         server->AdjustPadBufferSize(
@@ -926,15 +981,19 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
         Log("ignoring unparsable --buffer '" + options.buffer + "'");
       }
     }
-    server->ChangeGame(game->GetSyncIdentifier(), inspected.metadata->game_name);
+    server->ChangeGame(game->GetSyncIdentifier(),
+                       inspected.metadata->game_name);
     // The host plays through a local client too, so it shares one code path
     // with the joiners.
     client = std::make_unique<NetPlay::NetPlayClient>(
-        "127.0.0.1", server->GetPort(), &ui, options.nickname, direct);
+        "127.0.0.1", server->GetPort(), &ui, options.nickname, direct,
+        rollback_test_opt_in);
   } else {
-    Log("connecting to " + options.address + ":" + std::to_string(options.port));
+    Log("connecting to " + options.address + ":" +
+        std::to_string(options.port));
     client = std::make_unique<NetPlay::NetPlayClient>(
-        options.address, options.port, &ui, options.nickname, direct);
+        options.address, options.port, &ui, options.nickname, direct,
+        rollback_test_opt_in);
   }
 
   if (!client->IsConnected()) {
@@ -994,7 +1053,8 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
       created.runtime.reset();
     }
     if (ui.Desynced()) {
-      Log("session ended DESYNCED at frame " + std::to_string(ui.DesyncFrame()));
+      Log("session ended DESYNCED at frame " +
+          std::to_string(ui.DesyncFrame()));
       result = 1;
     } else if (result == 0) {
       Log("session ended cleanly, no desync reported");
@@ -1043,12 +1103,13 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
 
   if (result == 0) {
     // OnMsgStartGame only *signals* the start. NetPlayClient::StartGame is what
-    // calls NetPlay_Enable -- and until that happens NetPlay::IsNetPlayRunning()
-    // is false, which means SI reads local pads instead of GetNetPads and
-    // Dolphin's desync detection never arms. Booting straight from the signal
-    // gives two independent single-player sessions that look like a clean
-    // netplay run: it reports no desync precisely because nothing was checking.
-    // That false pass is why the assertion below exists.
+    // calls NetPlay_Enable -- and until that happens
+    // NetPlay::IsNetPlayRunning() is false, which means SI reads local pads
+    // instead of GetNetPads and Dolphin's desync detection never arms. Booting
+    // straight from the signal gives two independent single-player sessions
+    // that look like a clean netplay run: it reports no desync precisely
+    // because nothing was checking. That false pass is why the assertion below
+    // exists.
     if (!client->StartGame(game->GetFilePath())) {
       Log("the client refused to start the game");
       result = static_cast<int>(NetplayExitCode::Failed);
@@ -1063,8 +1124,8 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     std::string map_text;
     for (size_t i = 0; i < map.size(); ++i)
       map_text += (i ? "," : "") + std::to_string(static_cast<int>(map[i]));
-    Log("pad map [" + map_text + "], local pads = " +
-        std::to_string(client->NumLocalPads()) +
+    Log("pad map [" + map_text +
+        "], local pads = " + std::to_string(client->NumLocalPads()) +
         ", local player has a controller = " +
         (client->LocalPlayerHasControllerMapped() ? "yes" : "no"));
     if (client->NumLocalPads() == 0)

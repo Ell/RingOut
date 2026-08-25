@@ -37,6 +37,7 @@
 #include "Core/HW/MMIO.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/ProcessorInterface.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/State.h"
 #include "Core/System.h"
@@ -432,7 +433,8 @@ void DSPManager::UpdateAudioDMA()
     // streaming output.
     auto& memory = m_system.GetMemory();
     void* address = memory.GetPointerForRange(m_audio_dma.current_source_address, 32);
-    AudioCommon::SendAIBuffer(m_system, static_cast<short*>(address), 8);
+    if (!NetPlay::IsLiveRollbackHiddenReplayActive())
+      AudioCommon::SendAIBuffer(m_system, static_cast<short*>(address), 8);
 
     if (m_audio_dma.remaining_blocks_count != 0)
     {
@@ -450,7 +452,8 @@ void DSPManager::UpdateAudioDMA()
   }
   else
   {
-    AudioCommon::SendAIBuffer(m_system, &zero_samples[0], 8);
+    if (!NetPlay::IsLiveRollbackHiddenReplayActive())
+      AudioCommon::SendAIBuffer(m_system, &zero_samples[0], 8);
   }
 }
 

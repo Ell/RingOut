@@ -37,7 +37,8 @@ int ENET_CALLBACK InterceptCallback(ENetHost* host, ENetEvent* event)
   return 0;
 }
 
-bool SendPacket(ENetPeer* socket, const sf::Packet& packet, u8 channel_id)
+bool SendPacket(ENetPeer* socket, const sf::Packet& packet, const u8 channel_id,
+                const PacketDelivery delivery)
 {
   if (!socket)
   {
@@ -45,8 +46,12 @@ bool SendPacket(ENetPeer* socket, const sf::Packet& packet, u8 channel_id)
     return false;
   }
 
-  ENetPacket* epac =
-      enet_packet_create(packet.getData(), packet.getDataSize(), ENET_PACKET_FLAG_RELIABLE);
+  // No flags means ENet's sequenced-unreliable delivery: a late packet is
+  // discarded once a newer sequence number on this channel has arrived.  Only
+  // rollback input opts into this; all existing callers retain reliable,
+  // ordered delivery through the default argument.
+  const enet_uint32 flags = delivery == PacketDelivery::Reliable ? ENET_PACKET_FLAG_RELIABLE : 0;
+  ENetPacket* epac = enet_packet_create(packet.getData(), packet.getDataSize(), flags);
   if (!epac)
   {
     ERROR_LOG_FMT(NETPLAY, "Failed to create ENetPacket ({} bytes).", packet.getDataSize());

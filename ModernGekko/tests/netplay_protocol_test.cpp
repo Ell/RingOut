@@ -197,6 +197,20 @@ int main() {
       moderngekko::frontend::CompatibilityFingerprint(changed_config, metadata))
     return 12;
 
+  NetPlay::RollbackSIInputPacket ownership_packet;
+  ownership_packet.session_generation = 1;
+  ownership_packet.batch_count = 1;
+  ownership_packet.batches[0].pad_mask = 0x01;
+  const std::array<u8, 4> ownership_mapping{1, 2, 0, 0};
+  if (!NetPlay::IsRollbackSIInputOwnedByPlayer(ownership_packet,
+                                               ownership_mapping, 1))
+    return 34;
+  ownership_packet.batch_count = 2;
+  ownership_packet.batches[1].pad_mask = 0x02;
+  if (NetPlay::IsRollbackSIInputOwnedByPlayer(ownership_packet,
+                                              ownership_mapping, 1))
+    return 35;
+
   const auto directory =
       std::filesystem::temp_directory_path() / "moderngekko-netplay-test";
   std::filesystem::remove_all(directory);
@@ -219,14 +233,44 @@ int main() {
       0, false, &host_ui, NetPlay::NetTraversalConfig{});
   if (!server->is_connected)
     return 1;
+  if (NetPlay::ROLLBACK_INPUT_CHANNEL == NetPlay::DEFAULT_CHANNEL ||
+      NetPlay::ROLLBACK_INPUT_CHANNEL == NetPlay::CHUNKED_DATA_CHANNEL)
+    return 25;
+  NetPlay::RollbackNetplayConfig rollback_config{
+      .enabled = true,
+      .protocol_version = NetPlay::ROLLBACK_NETPLAY_VERSION,
+      .base_delay_samples = 2,
+      .rollback_horizon_frames = 8,
+  };
+  if (!server->SetRollbackNetplayConfig(rollback_config))
+    return 26;
+  auto invalid_rollback_config = rollback_config;
+  invalid_rollback_config.rollback_horizon_frames = 0;
+  if (server->SetRollbackNetplayConfig(invalid_rollback_config))
+    return 27;
   auto first = std::make_unique<NetPlay::NetPlayClient>(
       "127.0.0.1", server->GetPort(), &first_ui, "First",
-      NetPlay::NetTraversalConfig{});
+      NetPlay::NetTraversalConfig{}, true);
   if (!first->IsConnected())
     return 2;
+  if (!WaitFor([&] { return server->CanUseRollbackNetplay(); }))
+    return 28;
+  if (first->GetRollbackNetplaySession().enabled)
+    return 29;
+
+  NetPlay::RollbackSIInputPacket inactive_input;
+  inactive_input.session_generation = 1;
+  inactive_input.batch_count = 1;
+  inactive_input.batches[0].pad_mask = 1;
+  if (first->SendRollbackSIInput(inactive_input))
+    return 30;
+
+  // This peer intentionally behaves like a legacy client: it answers the
+  // optional query with version zero.  One such peer must force the whole
+  // lobby back to fixed delay rather than creating a mixed-mode session.
   auto second = std::make_unique<NetPlay::NetPlayClient>(
       "127.0.0.1", server->GetPort(), &second_ui, "Second",
-      NetPlay::NetTraversalConfig{});
+      NetPlay::NetTraversalConfig{}, false);
   if (!second->IsConnected())
     return 3;
   // The client constructor returns once its own connection is up, but the
@@ -235,6 +279,22 @@ int main() {
   if (!WaitFor([&] { return first->GetPlayers().size() == 2; }) ||
       !WaitFor([&] { return second->GetPlayers().size() == 2; }))
     return 4;
+  if (!WaitFor([&] { return !server->CanUseRollbackNetplay(); }))
+    return 31;
+
+  const NetPlay::RollbackNetplaySession valid_session{
+      .enabled = true,
+      .protocol_version = NetPlay::ROLLBACK_NETPLAY_VERSION,
+      .generation = 1,
+      .base_delay_samples = 2,
+      .rollback_horizon_frames = 8,
+  };
+  if (!NetPlay::IsValidRollbackNetplaySession(valid_session))
+    return 32;
+  auto zero_generation = valid_session;
+  zero_generation.generation = 0;
+  if (NetPlay::IsValidRollbackNetplaySession(zero_generation))
+    return 33;
 
   // The lobby roster must own its values. The receive thread can erase a
   // departed player immediately after GetPlayers() returns; keeping pointers
@@ -257,7 +317,8 @@ int main() {
   // the player who OWNS that port, and DISCONNECTS anyone sending for a port
   // they do not:
   //
-  //     if (!IsValidPadIndex(m_pad_map, map) || m_pad_map.at(map) != player.pid)
+  //     if (!IsValidPadIndex(m_pad_map, map) || m_pad_map.at(map) !=
+  //     player.pid)
   //         return 1;                       // NetPlayServer.cpp
   //
   // That guard is the whole reason a peer cannot inject input on someone else's
@@ -271,18 +332,21 @@ int main() {
   // checked is the routing decision itself, which is the part that protects
   // the port.
   {
-    NetPlay::PadMappingArray pads{};   // 0 = unassigned
+    NetPlay::PadMappingArray pads{}; // 0 = unassigned
     pads[0] = first->GetLocalPlayerId();
     server->SetPadMapping(pads);
-    if (!WaitFor([&] { return first->GetPadMapping()[0] == first->GetLocalPlayerId(); }))
+    if (!WaitFor([&] {
+          return first->GetPadMapping()[0] == first->GetLocalPlayerId();
+        }))
       return 19;
 
     const auto pad_packet = [](NetPlay::PadIndex map) {
       sf::Packet p;
       p << NetPlay::MessageID::PadData << map;
-      p << static_cast<u16>(0x0100);                     // button
-      p << u8(0) << u8(0) << u8(128) << u8(128)          // analogA/B, stickX/Y
-        << u8(128) << u8(128) << u8(0) << u8(0) << u8(1); // substick, triggers, isConnected
+      p << static_cast<u16>(0x0100);            // button
+      p << u8(0) << u8(0) << u8(128) << u8(128) // analogA/B, stickX/Y
+        << u8(128) << u8(128) << u8(0) << u8(0)
+        << u8(1); // substick, triggers, isConnected
       return p;
     };
 

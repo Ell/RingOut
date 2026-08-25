@@ -18,14 +18,15 @@
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Common/Swap.h"
-#include "Core/Config/MainSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/MMIO.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SI/SI_DeviceGBA.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/NetPlay/NetPlayProto.h"
 #include "Core/System.h"
 
@@ -555,7 +556,11 @@ void SerialInterfaceManager::UpdateDevices()
   // Update inputs at the rate of SI
   // Typically 120hz but is variable
   g_controller_interface.SetCurrentInputChannel(ciface::InputChannel::SerialInterface);
-  g_controller_interface.UpdateInput();
+  // Hidden replay must consume the journaled sample sequence without advancing
+  // physical controller backends. The next real poll performs one fresh host
+  // update after the corrected frontier is published.
+  if (!NetPlay::IsLiveRollbackHiddenReplayActive())
+    g_controller_interface.UpdateInput();
 
   // Update channels and set the status bit if there's new data
   for (u32 i = 0; i != MAX_SI_CHANNELS; ++i)

@@ -9,6 +9,7 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/VideoInterface.h"
 #include "Core/Host.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/System.h"
 
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
@@ -257,6 +258,9 @@ void Presenter::SetNextSwapEstimatedTime(u64 ticks, TimePoint host_time)
 
 void Presenter::ProcessFrameDumping(u64 ticks) const
 {
+  if (NetPlay::IsLiveRollbackHiddenReplayActive())
+    return;
+
   if (g_frame_dumper->IsFrameDumping() && m_xfb_entry)
   {
     MathUtil::Rectangle<int> target_rect;
@@ -906,6 +910,11 @@ void Presenter::Present(PresentInfo* present_info)
   std::lock_guard<std::mutex> present_call_guard(m_present_call_mutex);
 
   m_present_count++;
+
+  // XFB/GPU emulation has already advanced. Only suppress the host-visible
+  // swap; corrected-frontier publication remains a separate capability.
+  if (NetPlay::IsLiveRollbackHiddenReplayActive())
+    return;
 
   if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
     return;

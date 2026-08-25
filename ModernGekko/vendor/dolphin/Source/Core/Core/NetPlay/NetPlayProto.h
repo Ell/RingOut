@@ -153,6 +153,7 @@ enum class MessageID : u8
   PadBuffer = 0x62,
   PadHostData = 0x63,
   GBAConfig = 0x64,
+  RollbackSIInput = 0x65,
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,
@@ -171,6 +172,9 @@ enum class MessageID : u8
   ClientCapabilities = 0xA5,
   HostInputAuthority = 0xA6,
   PowerButton = 0xA7,
+  RollbackCapabilityQuery = 0xA8,
+  RollbackCapability = 0xA9,
+  RollbackSession = 0xAA,
 
   TimeBase = 0xB0,
   DesyncDetected = 0xB1,
@@ -231,8 +235,56 @@ enum : u8
 {
   DEFAULT_CHANNEL,
   CHUNKED_DATA_CHANNEL,
+  ROLLBACK_INPUT_CHANNEL,
   CHANNEL_COUNT
 };
+
+// Rollback is an optional extension to the stock NetPlay protocol.  Peers that
+// do not answer RollbackCapabilityQuery remain valid fixed-delay peers.  A
+// session is enabled only when every connected peer advertises the exact wire
+// version selected by the host.
+constexpr u16 ROLLBACK_NETPLAY_VERSION = 1;
+constexpr u16 ROLLBACK_NETPLAY_MAX_BASE_DELAY = 120;
+constexpr u16 ROLLBACK_NETPLAY_MAX_HORIZON = 120;
+
+struct RollbackNetplayConfig
+{
+  bool enabled = false;
+  u16 protocol_version = ROLLBACK_NETPLAY_VERSION;
+  u16 base_delay_samples = 2;
+  u16 rollback_horizon_frames = 8;
+};
+
+struct RollbackNetplaySession
+{
+  bool enabled = false;
+  u16 protocol_version = 0;
+  u64 generation = 0;
+  u16 base_delay_samples = 0;
+  u16 rollback_horizon_frames = 0;
+};
+
+constexpr bool IsValidRollbackNetplayConfig(const RollbackNetplayConfig& config)
+{
+  return config.protocol_version == ROLLBACK_NETPLAY_VERSION &&
+         config.base_delay_samples <= ROLLBACK_NETPLAY_MAX_BASE_DELAY &&
+         config.rollback_horizon_frames != 0 &&
+         config.rollback_horizon_frames <= ROLLBACK_NETPLAY_MAX_HORIZON;
+}
+
+constexpr bool IsValidRollbackNetplaySession(const RollbackNetplaySession& session)
+{
+  if (!session.enabled)
+  {
+    return session.protocol_version == 0 && session.generation == 0 &&
+           session.rollback_horizon_frames == 0 &&
+           session.base_delay_samples <= ROLLBACK_NETPLAY_MAX_BASE_DELAY;
+  }
+  return session.protocol_version == ROLLBACK_NETPLAY_VERSION && session.generation != 0 &&
+         session.base_delay_samples <= ROLLBACK_NETPLAY_MAX_BASE_DELAY &&
+         session.rollback_horizon_frames != 0 &&
+         session.rollback_horizon_frames <= ROLLBACK_NETPLAY_MAX_HORIZON;
+}
 
 using PlayerId = u8;
 using FrameNum = u32;

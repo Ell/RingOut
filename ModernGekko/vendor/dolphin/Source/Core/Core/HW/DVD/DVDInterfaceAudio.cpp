@@ -1,14 +1,15 @@
 // Copyright 2026 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "Core/HW/DVD/DVDInterface.h"
 #include "AudioCommon/AudioCommon.h"
 #include "Common/Logging/Log.h"
 #include "Common/Swap.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/AudioInterface.h"
+#include "Core/HW/DVD/DVDInterface.h"
 #include "Core/HW/DVD/DVDThread.h"
 #include "Core/HW/SystemTimers.h"
+#include "Core/NetPlay/LiveRollbackOutputGate.h"
 #include "Core/System.h"
 
 namespace DVD
@@ -106,9 +107,12 @@ void DVDInterface::DTKStreamingCallback(DIInterruptType interrupt_type,
     const u32 pending_blocks = std::min(m_pending_blocks, MAX_POSSIBLE_BLOCKS);
     ProcessDTKSamples(temp_pcm.data(), pending_blocks, audio_data);
 
-    SoundStream* sound_stream = m_system.GetSoundStream();
-    sound_stream->GetMixer()->PushStreamingSamples(temp_pcm.data(),
-                                                   pending_blocks * StreamADPCM::SAMPLES_PER_BLOCK);
+    if (!NetPlay::IsLiveRollbackHiddenReplayActive())
+    {
+      SoundStream* sound_stream = m_system.GetSoundStream();
+      sound_stream->GetMixer()->PushStreamingSamples(
+          temp_pcm.data(), pending_blocks * StreamADPCM::SAMPLES_PER_BLOCK);
+    }
 
     if (m_stream && ai.IsPlaying())
     {

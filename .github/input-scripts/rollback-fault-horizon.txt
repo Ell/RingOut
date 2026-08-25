@@ -1,0 +1,8 @@
+# Run this schedule with RINGOUT_ROLLBACK_HORIZON_FRAMES=1. The live scheduler
+# conservatively permits one predicted SI batch per horizon frame, so holding
+# all redundant copies beyond that batch must stall. The sender keeps running
+# and releases the retained packets at ordinal 37, so the frozen peer resumes.
+delay 32 37
+delay 33 37
+delay 34 37
+delay 35 37
