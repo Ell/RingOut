@@ -28,7 +28,7 @@ public:
   bool Successful() const { return m_success; }
 
 private:
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__MINGW32__)
   void* m_qos_handle = nullptr;
   unsigned long m_qos_flow_id = 0;
 

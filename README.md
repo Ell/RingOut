@@ -181,7 +181,8 @@ back end is saturated at IPC 1.92. The workload is not inefficient, just large:
 - **Windows support is experimental.** Its MinGW cross-build uses Vulkan or
   OpenGL, Cubeb/OpenAL audio, and SDL input. Microsoft-SDK-only Direct3D,
   WASAPI, native Windows controller backends, and the native Bluetooth Wii
-  Remote transport are omitted. The release is cross-built and Wine-smoked,
+  Remote transport are omitted. QWave/DSCP traffic marking is also omitted;
+  netplay itself remains available. The release is cross-built and Wine-smoked,
   not yet gameplay-verified on real Windows hardware.
 - The `-march=native` build is machine-specific by design; setup compiles on your
   own machine, so this only matters if you copy a built folder to another CPU.

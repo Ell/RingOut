@@ -211,7 +211,6 @@ elseif(WIN32)
   target_link_libraries(common
   PRIVATE
     kernel32.lib
-    qwave.lib
     shlwapi.lib
     winmm.lib
   )
@@ -320,7 +319,7 @@ if(WIN32)
       WindowsDevice.cpp
       WindowsDevice.h
     )
-    target_link_libraries(common PRIVATE cfgmgr32.lib)
+    target_link_libraries(common PRIVATE cfgmgr32.lib qwave.lib)
   endif()
   if(MSVC)
     # This patches MSVC's CRT initialization table and uses link.exe-specific

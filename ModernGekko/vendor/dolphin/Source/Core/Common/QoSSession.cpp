@@ -3,14 +3,14 @@
 
 #include "Common/QoSSession.h"
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__MINGW32__)
 #include <Qos2.h>
 #pragma comment(lib, "qwave")
 #endif
 
 namespace Common
 {
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__MINGW32__)
 QoSSession::QoSSession(ENetPeer* peer, int tos_val) : m_peer(peer)
 {
   QOS_VERSION ver = {1, 0};
@@ -49,6 +49,16 @@ QoSSession::~QoSSession()
 
   QOSCloseHandle(m_qos_handle);
 }
+#elif defined(__MINGW32__)
+// mingw-w64 11, shipped by Ubuntu 24.04, lacks several QWave declarations
+// needed by Dolphin's native Windows implementation. QoS marking is an
+// optional netplay optimization, so keep netplay functional and leave the
+// session unmarked rather than requiring the Microsoft SDK.
+QoSSession::QoSSession(ENetPeer*, int)
+{
+}
+
+QoSSession::~QoSSession() = default;
 #else
 QoSSession::QoSSession(ENetPeer* peer, int tos_val)
 {
@@ -76,7 +86,7 @@ QoSSession& QoSSession::operator=(QoSSession&& session)
 {
   if (this != &session)
   {
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__MINGW32__)
     m_qos_handle = session.m_qos_handle;
     m_qos_flow_id = session.m_qos_flow_id;
     m_peer = session.m_peer;
