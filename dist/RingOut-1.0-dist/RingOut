@@ -156,11 +156,14 @@ if ! have_module || [ ! -d "$HERE/game" ]; then
     fi
 fi
 
-GAME_ARGS=""
-case " $* " in
-    *" --game "*) ;;
-    *) [ -d "$HERE/game" ] && GAME_ARGS="--game $HERE/game" ;;
-esac
+GAME_ARGS=()
+HAS_GAME_ARG=0
+for arg in "$@"; do
+    [ "$arg" = "--game" ] && HAS_GAME_ARG=1
+done
+if [ "$HAS_GAME_ARG" = 0 ] && [ -d "$HERE/game" ]; then
+    GAME_ARGS=(--game "$HERE/game")
+fi
 
 # --- glibc fallback -----------------------------------------------------
 # This build is produced on a bleeding-edge toolchain, so the binary asks for a
@@ -189,7 +192,7 @@ if [ -n "$host_glibc" ] && [ -x "$LOADER" ] && \
     # win, but the rest of the bundle should still defer to the host for
     # anything the host already has, for the Mesa reason above.
     exec "$LOADER" --library-path "$HERE/libc-fallback:$LIB_PATH:$LD_LIBRARY_PATH:/usr/lib:/usr/lib64:/lib:/lib64" \
-        "$HERE/bin/moderngekko-run" --user-dir "$USER_DIR" $GAME_ARGS "$@"
+        "$HERE/bin/moderngekko-run" --user-dir "$USER_DIR" "${GAME_ARGS[@]}" "$@"
 fi
 
-exec "$HERE/bin/moderngekko-run" --user-dir "$USER_DIR" $GAME_ARGS "$@"
+exec "$HERE/bin/moderngekko-run" --user-dir "$USER_DIR" "${GAME_ARGS[@]}" "$@"

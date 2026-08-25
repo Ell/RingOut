@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <mutex>
@@ -200,6 +202,8 @@ struct State
   int state_slot = 1;
   std::function<void()> fullscreen_callback;
   std::function<void()> quit_callback;
+  std::uint64_t quit_callback_generation = 0;
+  bool quit_pending = false;
 
   // Netplay cannot be joined in place: the lobby runs before the core boots and
   // NetPlay_Enable happens inside NetPlayClient::StartGame, so entering a
@@ -269,9 +273,21 @@ struct State
   std::vector<ActionReplay::ARCode> ar_codes;
   std::vector<Gecko::GeckoCode> gecko_codes;
   std::vector<CheatRow> cheat_rows;
+
 };
 
-State s_state;
+// LAN discovery is a bounded detached worker. Keep its shared state alive until
+// process termination so closing the application during the listen window
+// cannot race C++ static destruction of the mutex/vector it reports into.
+State& s_state = *new State;
+// Published separately so the CPU/netplay input thread can suppress gameplay
+// input while the overlay owns the controller without taking the menu mutex.
+// Taking it there would risk a lock inversion with host-thread Config/input
+// work performed after OnKey drops this mutex.
+std::atomic<bool> s_open_published{false};
+std::atomic<bool> s_input_capture_published{false};
+std::atomic<bool> s_controller_capture_linger{false};
+std::atomic<bool> s_quit_pending_published{false};
 
 // Entries below the tab selector for the active tab.
 int RowCount(const State& state)
@@ -314,6 +330,19 @@ std::condition_variable& s_core_state_cv = *new std::condition_variable;
 bool s_core_state_want_paused = false;
 bool s_core_state_pending = false;
 bool s_core_state_worker_started = false;
+bool s_core_state_in_flight = false;
+bool s_core_state_in_flight_target = false;
+bool s_core_state_discard_callbacks = false;
+
+// Terminal callbacks point at the current Platform. Unlike the process-life
+// pause worker, a quit task must therefore be joined before that Platform can
+// be destroyed. Heap-own the holders to avoid static-destruction ordering; the
+// runtime explicitly cancels/joins the task on every shutdown path.
+std::mutex& s_terminal_task_mutex = *new std::mutex;
+std::jthread& s_terminal_task = *new std::jthread;
+bool& s_terminal_task_accepting = *new bool{false};
+std::uint64_t& s_terminal_generation_counter = *new std::uint64_t{0};
+std::uint64_t& s_terminal_accepting_generation = *new std::uint64_t{0};
 
 // Settings staged while the menu is open. Config::SetBase still writes straight
 // away (so a row shows its new value immediately), but the callbacks that make a
@@ -324,7 +353,31 @@ bool s_core_state_worker_started = false;
 // unpause first, then apply. Guarded by s_core_state_mutex.
 // unique_ptr, not optional: ConfigChangeCallbackGuard is deliberately neither
 // copyable nor movable, so it can only be handed around behind a pointer.
-std::unique_ptr<Config::ConfigChangeCallbackGuard> s_settings_guard;
+// Heap-own the holder as well as the worker primitives. PrepareForShutdown
+// normally empties it while Config is alive; if a broken backend makes that
+// bounded cleanup time out, leaking is safer than invoking Config callbacks
+// during cross-translation-unit static destruction.
+std::unique_ptr<Config::ConfigChangeCallbackGuard>& s_settings_guard =
+    *new std::unique_ptr<Config::ConfigChangeCallbackGuard>;
+
+void EnsureSettingsGuard()
+{
+  std::lock_guard<std::mutex> lock(s_core_state_mutex);
+  if (!s_settings_guard)
+    s_settings_guard = std::make_unique<Config::ConfigChangeCallbackGuard>();
+}
+
+void ReleaseSettingsGuard()
+{
+  std::unique_ptr<Config::ConfigChangeCallbackGuard> release;
+  {
+    std::lock_guard<std::mutex> lock(s_core_state_mutex);
+    release = std::move(s_settings_guard);
+  }
+  // Dispatch outside the worker/menu locks. In active netplay the core never
+  // paused, so there is no resume to wait for before applying staged changes.
+  release.reset();
+}
 
 void CoreStateWorker()
 {
@@ -336,24 +389,42 @@ void CoreStateWorker()
       s_core_state_cv.wait(lock, [] { return s_core_state_pending; });
       want_paused = s_core_state_want_paused;
       s_core_state_pending = false;
+      s_core_state_in_flight = true;
+      s_core_state_in_flight_target = want_paused;
     }
 
     auto& system = Core::System::GetInstance();
     if (Core::IsRunning(system))
       Core::SetState(system, want_paused ? Core::State::Paused : Core::State::Running);
 
+    std::unique_ptr<Config::ConfigChangeCallbackGuard> release;
+    bool discard_release = false;
     if (!want_paused)
     {
       // Released here, off the host thread and after the core is running again.
       // Destroying the guard is what dispatches the staged config callbacks.
       // (Unconditional, so a resume requested while the core is not running
       // still flushes rather than stranding the settings forever.)
-      std::unique_ptr<Config::ConfigChangeCallbackGuard> release;
       {
         std::lock_guard<std::mutex> lock(s_core_state_mutex);
-        release = std::move(s_settings_guard);
+        // A close/reopen can arrive while SetState(Running) is blocked. Keep
+        // the existing guard for that newer pause; if resume already took it,
+        // RequestCoreState created a nested replacement before we get here.
+        if (!(s_core_state_pending && s_core_state_want_paused))
+        {
+          release = std::move(s_settings_guard);
+          discard_release = s_core_state_discard_callbacks;
+        }
       }
+      if (release && discard_release)
+        release->DismissWithoutCallback();
       release.reset();   // fires the staged callbacks, outside the lock
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(s_core_state_mutex);
+      s_core_state_in_flight = false;
+      s_core_state_cv.notify_all();
     }
   }
 }
@@ -361,6 +432,16 @@ void CoreStateWorker()
 void RequestCoreState(bool paused)
 {
   std::lock_guard<std::mutex> lock(s_core_state_mutex);
+  // Once terminal shutdown has claimed the platform callback, resume is
+  // monotonic. A Toggle that opened just before RequestQuit must not arrive
+  // here a moment later and overwrite that resume with another pause.
+  if (paused && s_quit_pending_published.load(std::memory_order_acquire))
+    return;
+  // Creating the guard and publishing the pause target are one transaction.
+  // Otherwise a worker finishing an older resume can release the guard between
+  // those operations and leave a newly-open menu unprotected.
+  if (paused && !s_settings_guard)
+    s_settings_guard = std::make_unique<Config::ConfigChangeCallbackGuard>();
   if (!s_core_state_worker_started)
   {
     s_core_state_worker_started = true;
@@ -369,6 +450,12 @@ void RequestCoreState(bool paused)
   s_core_state_want_paused = paused;
   s_core_state_pending = true;
   s_core_state_cv.notify_one();
+}
+
+bool CoreStateSettled()
+{
+  std::lock_guard<std::mutex> lock(s_core_state_mutex);
+  return !s_core_state_pending && !s_core_state_in_flight;
 }
 
 bool IsSelectable(Item item)
@@ -925,6 +1012,8 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
   switch (item)
   {
   case Item::NetplayMode:
+    if (NetPlay::IsNetPlayRunning())
+      return "ACTIVE (LOCKED)";
     switch (netplay_mode)
     {
     case 1:
@@ -950,6 +1039,8 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
     return std::to_string(percent) + "%";
   }
   case Item::NetplayScan:
+    if (NetPlay::IsNetPlayRunning())
+      return "LOCKED";
     if (netplay_mode != 2)
       return "-";
     if (netplay_scanning)
@@ -962,6 +1053,8 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
            std::to_string(netplay_host_index + 1) + "/" +
            std::to_string(netplay_hosts.size()) + ")";
   case Item::NetplayAddress:
+    if (NetPlay::IsNetPlayRunning())
+      return "LOCKED";
     // Only a joiner dials anything; a host binds a port and waits. Showing an
     // address on the host row would suggest it decides who connects.
     if (netplay_mode != 2)
@@ -971,8 +1064,12 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
                ? FormatAddress(netplay_addr, netplay_addr_octet)
                : netplay_addr_text;
   case Item::NetplayPort:
+    if (NetPlay::IsNetPlayRunning())
+      return "LOCKED";
     return netplay_mode == 0 ? "-" : std::to_string(netplay_port);
   case Item::NetplayStart:
+    if (NetPlay::IsNetPlayRunning())
+      return "SESSION ACTIVE";
     // Deliberately blunt about the cost: this is not a pause-menu toggle, the
     // session has to be built from boot.
     return netplay_mode == 0 ? "-" : "RESTARTS GAME";
@@ -1071,15 +1168,24 @@ std::string ItemValue(Item item, int state_slot, int netplay_mode,
     return Config::Get(Config::MAIN_AUDIO_FILL_GAPS) ? "ON" : "OFF";
   case Item::Speed:
   {
+    if (NetPlay::IsNetPlayRunning())
+      return "100% (netplay)";
     const float speed = Config::Get(Config::MAIN_EMULATION_SPEED);
     if (speed <= 0.0f)
       return "Unlimited";
     return std::to_string(static_cast<int>(speed * 100.0f + 0.5f)) + "%";
   }
+  case Item::SaveState:
+  case Item::LoadState:
+    return NetPlay::IsNetPlayRunning() ? "LOCKED" : "";
   case Item::StateSlot:
-    return std::to_string(state_slot);
+    return NetPlay::IsNetPlayRunning() ? "LOCKED" : std::to_string(state_slot);
   case Item::AutoResume:
+    if (NetPlay::IsNetPlayRunning())
+      return "LOCKED";
     return Config::Get(RECOMP_AUTO_RESUME) ? "ON" : "OFF";
+  case Item::Reset:
+    return NetPlay::IsNetPlayRunning() ? "LOCKED" : "";
   default:
     return "";
   }
@@ -1248,6 +1354,26 @@ void LoadCheatCodesData(std::vector<ActionReplay::ARCode>* ar_codes,
     cheat_rows->push_back({"[Gecko] " + (*gecko_codes)[i].name, true, i});
 }
 
+// Persists the enabled/disabled overrides using the same per-game file and
+// serializers as DolphinQt's ARCodeWidget and GeckoCodeWidget. LoadLocalGameIni
+// merges ID, region, and revision files and must not be saved back wholesale;
+// user cheat edits conventionally belong in GameSettings/<game id>.ini.
+// Does file I/O, so callers must keep the menu mutex RELEASED.
+bool SaveCheatCodesData(std::span<const ActionReplay::ARCode> ar_codes,
+                        std::span<const Gecko::GeckoCode> gecko_codes)
+{
+  const std::string& game_id = SConfig::GetInstance().GetGameID();
+  if (game_id.empty())
+    return false;
+
+  const std::string ini_path = File::GetUserPath(D_GAMESETTINGS_IDX) + game_id + ".ini";
+  Common::IniFile local_ini;
+  local_ini.Load(ini_path);
+  ActionReplay::SaveCodes(&local_ini, ar_codes);
+  Gecko::SaveCodes(local_ini, gecko_codes);
+  return local_ini.Save(ini_path);
+}
+
 // Pushes the current enabled flags to the live cheat engine. RunAllActive fires
 // each frame from a VI-timed CoreTiming event, so this takes effect immediately
 // without a reboot. Turning any code on also flips the master cheats switch so
@@ -1277,13 +1403,20 @@ void SetWidescreen(bool enable)
 // (Config::Save) must happen with the menu mutex released -- see OnKey.
 bool AdjustItem(Item item, int direction, State& state)
 {
+  if (NetPlay::IsNetPlayRunning() &&
+      (item == Item::Speed || item == Item::Overclock || item == Item::StateSlot ||
+       item == Item::AutoResume))
+  {
+    return false;
+  }
+
   switch (item)
   {
   case Item::Overclock:
   {
     // Refuse rather than change something netplay will overwrite anyway.
     if (NetPlay::IsNetPlayRunning())
-      break;
+      return false;
     // A curated ladder, not a free slider: the interesting settings are a few
     // steps either side of stock, and underclocking matters as much as
     // overclocking -- some GameCube titles are bound by an unnecessarily fast
@@ -1309,6 +1442,8 @@ bool AdjustItem(Item item, int direction, State& state)
   }
   case Item::NetplayScan:
   {
+    if (NetPlay::IsNetPlayRunning())
+      return false;
     // Picking a host is the whole point of having scanned, so selecting one
     // fills in the address and port rather than merely naming it.
     if (state.netplay_mode != 2 || state.netplay_hosts.empty())
@@ -1323,9 +1458,13 @@ bool AdjustItem(Item item, int direction, State& state)
     break;
   }
   case Item::NetplayMode:
+    if (NetPlay::IsNetPlayRunning())
+      return false;
     state.netplay_mode = std::clamp(state.netplay_mode + direction, 0, 2);
     break;
   case Item::NetplayPort:
+    if (NetPlay::IsNetPlayRunning())
+      return false;
     // Ports are not worth paging one at a time; step by 1 and let the value
     // wrap inside the ephemeral range most people will use.
     state.netplay_port = std::clamp(state.netplay_port + direction, 1024, 65535);
@@ -1473,7 +1612,7 @@ bool AdjustItem(Item item, int direction, State& state)
   }
   case Item::AutoResume:
     // On quit, save a state; on next launch, load it. Save/load themselves
-    // happen outside the mutex (Quit action / ScheduleAutoResumeLoad).
+    // happen outside the mutex (Quit action / native boot session data).
     Config::SetBase(RECOMP_AUTO_RESUME, !Config::Get(RECOMP_AUTO_RESUME));
     break;
   case Item::StateSlot:
@@ -1516,20 +1655,60 @@ enum class Action
 // row too, not just here: it hangs identically, which is why the fix lives in a
 // helper both call.
 //
-// The wait runs on a detached thread for the reason documented on the state
+// The wait runs on a tracked worker for the reason documented on the state
 // worker: the host thread is the X11/Wayland event loop, and blocking it while
-// the video thread waits on a swapchain image closes the deadlock loop. The
-// bound means a core that never resumes still quits rather than hanging forever.
-void QuitOnceResumed(const std::function<void()>& quit_callback)
+// the video thread waits on a swapchain image closes the deadlock loop. Runtime
+// cancels and joins this task before Platform teardown, so its callback cannot
+// outlive the window object it targets.
+bool StartTerminalTask(std::uint64_t generation,
+                       std::function<void(std::stop_token)> task)
 {
-  std::thread([quit_callback] {
+  std::lock_guard<std::mutex> lock(s_terminal_task_mutex);
+  // PrepareForShutdown closes this gate before checking/moving the worker.
+  // That makes a terminal claim racing a natural MainLoop exit harmless: it
+  // cannot start a raw-Platform callback after teardown's cancel phase.
+  if (!s_terminal_task_accepting || generation != s_terminal_accepting_generation)
+    return false;
+  if (s_terminal_task.joinable())
+  {
+    std::fprintf(stderr, "[menu] terminal task already active\n");
+    return false;
+  }
+  s_terminal_task = std::jthread(std::move(task));
+  return true;
+}
+
+void CancelAndJoinTerminalTask()
+{
+  std::jthread task;
+  {
+    std::lock_guard<std::mutex> lock(s_terminal_task_mutex);
+    s_terminal_task_accepting = false;
+    if (!s_terminal_task.joinable())
+      return;
+    s_terminal_task.request_stop();
+    task = std::move(s_terminal_task);
+  }
+  task.join();
+}
+
+void QuitOnceResumed(const std::function<void()>& quit_callback,
+                     std::uint64_t generation)
+{
+  StartTerminalTask(generation, [quit_callback](const std::stop_token stop_token) {
     auto& system = Core::System::GetInstance();
-    for (int i = 0; i < 300 && Core::GetState(system) != Core::State::Running; ++i)
+    int waits = 0;
+    while (!stop_token.stop_requested() &&
+           (Core::GetState(system) != Core::State::Running || !CoreStateSettled()))
+    {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    if (Core::GetState(system) != Core::State::Running)
-      std::fprintf(stderr, "[menu] core did not resume; quitting anyway\n");
+      if (++waits == 300)
+        std::fprintf(stderr, "[menu] still waiting for a safe core resume before quit\n");
+    }
+    if (stop_token.stop_requested())
+      return;
     quit_callback();
-  }).detach();
+  });
 }
 
 // Hand the netplay request to the runner and let it restart into the lobby.
@@ -1559,22 +1738,23 @@ bool WriteNetplayRequest(int mode, int port, const std::string& addr)
 
 Action DecideAction(Item item, State& state, bool* needs_config_save)
 {
+  const bool netplay_running = NetPlay::IsNetPlayRunning();
   switch (item)
   {
   case Item::Fullscreen:
     return Action::Fullscreen;
   case Item::SaveState:
-    return Action::SaveState;
+    return netplay_running ? Action::None : Action::SaveState;
   case Item::LoadState:
-    return Action::LoadState;
+    return netplay_running ? Action::None : Action::LoadState;
   case Item::Reset:
-    return Action::Reset;
+    return netplay_running ? Action::None : Action::Reset;
   case Item::Quit:
     return Action::Quit;
   case Item::NetplayScan:
     // Only a joiner looks for anyone, and the listen blocks for seconds -- so
     // OnKey runs it on a worker after unlocking, like every other slow action.
-    return state.netplay_mode == 2 ? Action::ScanHosts : Action::None;
+    return !netplay_running && state.netplay_mode == 2 ? Action::ScanHosts : Action::None;
   case Item::NetplayAddress:
     // Space starts editing; the arrows then belong to the octets until Space
     // ends it. Inert unless joining, matching what the row displays -- only a
@@ -1584,7 +1764,7 @@ Action DecideAction(Item item, State& state, bool* needs_config_save)
     // cannot show. That is deliberate and takes a keypress on this exact row:
     // the alternative, converting on sight, is how a MagicDNS name would get
     // silently replaced by whatever the octets happened to hold.
-    if (state.netplay_mode == 2)
+    if (!netplay_running && state.netplay_mode == 2)
     {
       state.netplay_addr_octet = 0;
       state.netplay_addr_text = PlainAddress(state.netplay_addr);
@@ -1593,7 +1773,7 @@ Action DecideAction(Item item, State& state, bool* needs_config_save)
   case Item::NetplayStart:
     // Off means the row is inert, so Enter cannot restart the game by accident
     // while somebody is paging past it.
-    return state.netplay_mode == 0 ? Action::None : Action::StartNetplay;
+    return netplay_running || state.netplay_mode == 0 ? Action::None : Action::StartNetplay;
   case Item::Apply:
     // Settings already take effect as they are changed; this flushes them to
     // disk and gives an explicit confirm step.
@@ -1610,8 +1790,22 @@ Action DecideAction(Item item, State& state, bool* needs_config_save)
 
 bool IsOpen()
 {
-  std::lock_guard<std::mutex> guard(s_state.mutex);
-  return s_state.open;
+  return s_open_published.load(std::memory_order_acquire);
+}
+
+bool CapturesGameInput()
+{
+  return s_input_capture_published.load(std::memory_order_acquire);
+}
+
+bool IsNetplayActive()
+{
+  return NetPlay::IsNetPlayRunning();
+}
+
+bool IsQuitting()
+{
+  return s_quit_pending_published.load(std::memory_order_acquire);
 }
 
 void Toggle()
@@ -1623,6 +1817,8 @@ void Toggle()
   bool seed_address = false;
   {
     std::lock_guard<std::mutex> guard(s_state.mutex);
+    if (s_state.quit_pending)
+      return;
     seed_address = !s_state.netplay_addr_seeded;
     s_state.netplay_addr_seeded = true;
   }
@@ -1639,7 +1835,12 @@ void Toggle()
   bool open_now;
   {
     std::lock_guard<std::mutex> guard(s_state.mutex);
+    if (s_state.quit_pending)
+      return;
     s_state.open = !s_state.open;
+    s_open_published.store(s_state.open, std::memory_order_release);
+    if (s_state.open || !s_controller_capture_linger.load(std::memory_order_acquire))
+      s_input_capture_published.store(s_state.open, std::memory_order_release);
     open_now = s_state.open;
     if (open_now)
     {
@@ -1653,18 +1854,28 @@ void Toggle()
     s_state.netplay_addr_run_dir = 0;
   }
 
-  // Escape pauses. The pause itself is handed to the worker thread -- doing it
-  // on the host thread deadlocks against the compositor (see RequestCoreState).
+  // Tab is a hold-to-fast-forward input. Controller Back and the debug
+  // auto-open path enter this function directly, without passing through a
+  // platform's Escape handler, so clear the CurrentRun speed override here as
+  // well. Otherwise opening the menu while Tab is held can leave unlimited
+  // speed active when gameplay resumes.
   if (open_now)
-  {
-    std::lock_guard<std::mutex> lock(s_core_state_mutex);
-    if (!s_settings_guard)
-      s_settings_guard = std::make_unique<Config::ConfigChangeCallbackGuard>();
-  }
-  RequestCoreState(open_now);
+    SetFastForward(false);
+
+  // Offline, Escape pauses through the worker: doing it on the host thread can
+  // deadlock against the compositor (see RequestCoreState). During netplay the
+  // overlay must stay live without pausing only this peer; that would make the
+  // other peer run ahead until the session stalls or disconnects.
+  const bool pause_for_menu = !NetPlay::IsNetPlayRunning();
+  if (pause_for_menu)
+    RequestCoreState(open_now);
+  else if (open_now)
+    EnsureSettingsGuard();
+  else
+    ReleaseSettingsGuard();
 
   std::fprintf(stderr, "[menu] toggle open=%d (core %s)\n", open_now ? 1 : 0,
-               open_now ? "pausing" : "resuming");
+               pause_for_menu ? (open_now ? "pausing" : "resuming") : "running: netplay");
 }
 
 void CloseAndResume()
@@ -1674,16 +1885,28 @@ void CloseAndResume()
     if (!s_state.open)
       return;
     s_state.open = false;
+    s_open_published.store(false, std::memory_order_release);
+    if (!s_controller_capture_linger.load(std::memory_order_acquire))
+      s_input_capture_published.store(false, std::memory_order_release);
   }
-  RequestCoreState(false);   // resumes, then flushes the staged settings
+  if (!NetPlay::IsNetPlayRunning())
+    RequestCoreState(false);   // resumes, then flushes the staged settings
+  else
+    ReleaseSettingsGuard();
 }
 
 void OnKey(Key key)
 {
+  // Cheat state is part of deterministic emulation state. Once a netplay game
+  // has started, changing either the master switch or an individual code on
+  // only one peer would desync the session.
+  const bool netplay_running = NetPlay::IsNetPlayRunning();
+
   Action action = Action::None;
   int slot = 1;
   std::function<void()> fullscreen_callback;
   std::function<void()> quit_callback;
+  std::uint64_t quit_generation = 0;
   int netplay_mode_snapshot = 0;
   int netplay_port_snapshot = 2626;
   std::string netplay_addr_snapshot = "127.0.0.1";
@@ -1695,6 +1918,7 @@ void OnKey(Key key)
   // act after unlocking.
   bool needs_config_save = false;
   bool needs_cheat_apply = false;
+  bool needs_cheat_persist = false;
   bool enable_cheats_master = false;
   bool needs_build_controls = false;
   bool needs_load_cheats = false;
@@ -1711,8 +1935,15 @@ void OnKey(Key key)
 
   {
     std::lock_guard<std::mutex> guard(s_state.mutex);
-    if (!s_state.open)
+    if (!s_state.open || s_state.quit_pending)
       return;
+
+    // The setup rows belong to the pre-boot lobby. If this menu is being drawn
+    // inside an active session, discard any editor state retained from the
+    // preceding offline runtime so no address change can leak into a later
+    // request file.
+    if (netplay_running)
+      s_state.netplay_addr_octet = -1;
 
     // Ignore everything while waiting for a button press to bind.
     if (s_state.detector != nullptr)
@@ -1733,7 +1964,7 @@ void OnKey(Key key)
             (static_cast<int>(s_state.tab) + dir + kTabCount) % kTabCount);
         // These two build their rows on entry, but that means game-ini I/O and
         // InputConfig access -- deferred until the mutex is released.
-        if (s_state.tab == Tab::Controls)
+        if (s_state.tab == Tab::Controls && !netplay_running)
           needs_build_controls = true;
         else if (s_state.tab == Tab::Cheats)
           needs_load_cheats = true;
@@ -1832,6 +2063,8 @@ void OnKey(Key key)
         const int dir = key == Key::Left ? -1 : 1;
         if (s_state.tab == Tab::Controls)
         {
+          if (netplay_running)
+            break;
           const int control_index = index - kControlsHeaderRows;
           if (index == 0)
           {
@@ -1865,6 +2098,8 @@ void OnKey(Key key)
       case Key::Activate:
         if (s_state.tab == Tab::Controls)
         {
+          if (netplay_running)
+            break;
           const int control_index = index - kControlsHeaderRows;
           // On either header row, Space re-scans instead of rebinding: a pad
           // plugged in after the menu opened is otherwise invisible until the
@@ -1876,23 +2111,29 @@ void OnKey(Key key)
         }
         else if (s_state.tab == Tab::Cheats)
         {
-          if (index == 0)
+          if (!netplay_running)
           {
-            enable_cheats_master = !Config::Get(Config::MAIN_ENABLE_CHEATS);
+            // Code synchronization, when requested by the session frontend,
+            // happens before boot. In-session changes are never safe.
+            if (index == 0)
+            {
+              enable_cheats_master = !Config::Get(Config::MAIN_ENABLE_CHEATS);
+            }
+            else if (index - 1 < static_cast<int>(s_state.cheat_rows.size()))
+            {
+              const CheatRow& row = s_state.cheat_rows[index - 1];
+              if (row.gecko)
+                s_state.gecko_codes[row.index].enabled = !s_state.gecko_codes[row.index].enabled;
+              else
+                s_state.ar_codes[row.index].enabled = !s_state.ar_codes[row.index].enabled;
+              enable_cheats_master = true;
+              needs_cheat_persist = true;
+            }
+            ar_snapshot = s_state.ar_codes;
+            gecko_snapshot = s_state.gecko_codes;
+            needs_cheat_apply = true;
+            needs_config_save = true;
           }
-          else if (index - 1 < static_cast<int>(s_state.cheat_rows.size()))
-          {
-            const CheatRow& row = s_state.cheat_rows[index - 1];
-            if (row.gecko)
-              s_state.gecko_codes[row.index].enabled = !s_state.gecko_codes[row.index].enabled;
-            else
-              s_state.ar_codes[row.index].enabled = !s_state.ar_codes[row.index].enabled;
-            enable_cheats_master = true;
-          }
-          ar_snapshot = s_state.ar_codes;
-          gecko_snapshot = s_state.gecko_codes;
-          needs_cheat_apply = true;
-          needs_config_save = true;
         }
         else
         {
@@ -1906,7 +2147,6 @@ void OnKey(Key key)
 
     slot = s_state.state_slot;
     fullscreen_callback = s_state.fullscreen_callback;
-    quit_callback = s_state.quit_callback;
     netplay_mode_snapshot = s_state.netplay_mode;
     netplay_port_snapshot = s_state.netplay_port;
     netplay_addr_snapshot = s_state.netplay_addr_text;
@@ -1985,6 +2225,8 @@ void OnKey(Key key)
   if (needs_cheat_apply)
   {
     Config::SetBase(Config::MAIN_ENABLE_CHEATS, enable_cheats_master);
+    if (needs_cheat_persist && !SaveCheatCodesData(ar_snapshot, gecko_snapshot))
+      std::fprintf(stderr, "[menu] failed to persist cheat selections\n");
     ApplyCheatCodes(ar_snapshot, gecko_snapshot);
   }
 
@@ -1998,6 +2240,8 @@ void OnKey(Key key)
       fullscreen_callback();
     break;
   case Action::Reset:
+    if (netplay_running)
+      break;
     // Close (and resume) first: ResetButton_Tap only schedules the reset, so it
     // lands once the CPU thread is running again rather than against a paused
     // core.
@@ -2006,6 +2250,8 @@ void OnKey(Key key)
     break;
   case Action::ScanHosts:
   {
+    if (netplay_running)
+      break;
     // Off-thread: the listen blocks for seconds and this is the host thread,
     // which also has to keep drawing the menu (the core is paused, so Draw only
     // happens via PumpFrame from here). Blocking would freeze the overlay and
@@ -2039,25 +2285,58 @@ void OnKey(Key key)
     break;
   }
   case Action::StartNetplay:
+    if (netplay_running)
+      break;
     // No auto-resume snapshot: a netplay session starts from boot on every
     // peer, so restoring this machine's save would desync it immediately.
-    if (!quit_callback)
-      break;
     if (!WriteNetplayRequest(netplay_mode_snapshot, netplay_port_snapshot,
                              netplay_addr_snapshot))
     {
       std::fprintf(stderr, "[netplay] could not write the request file\n");
       break;
     }
+    {
+      std::lock_guard<std::mutex> guard(s_state.mutex);
+      if (!s_state.quit_pending)
+      {
+        quit_callback = std::move(s_state.quit_callback);
+        if (quit_callback)
+        {
+          quit_generation = s_state.quit_callback_generation;
+          s_state.quit_pending = true;
+          s_quit_pending_published.store(true, std::memory_order_release);
+        }
+      }
+    }
+    if (!quit_callback)
+    {
+      // An external stop may have claimed the terminal callback between the
+      // request-file write above and this lock. Do not leave a stale request
+      // that would unexpectedly open the lobby on a later launch.
+      File::Delete(File::GetUserPath(D_USER_IDX) + "netplay-request.ini");
+      break;
+    }
     std::fprintf(stderr, "[netplay] restarting into the lobby\n");
     CloseAndResume();
-    QuitOnceResumed(quit_callback);
+    QuitOnceResumed(quit_callback, quit_generation);
     break;
   case Action::Quit:
+    {
+      std::lock_guard<std::mutex> guard(s_state.mutex);
+      if (!s_state.quit_pending)
+      {
+        quit_callback = std::move(s_state.quit_callback);
+        if (quit_callback)
+        {
+          quit_generation = s_state.quit_callback_generation;
+          s_state.quit_pending = true;
+          s_quit_pending_published.store(true, std::memory_order_release);
+        }
+      }
+    }
     if (!quit_callback)
       break;
-    if (Config::Get(RECOMP_AUTO_RESUME) &&
-        Core::GetState(Core::System::GetInstance()) == Core::State::Running)
+    if (Config::Get(RECOMP_AUTO_RESUME) && !netplay_running)
     {
       // Capture the auto-resume state before quitting. State::SaveAs only
       // QUEUES: the snapshot runs later on the CPU thread and the file is
@@ -2066,18 +2345,33 @@ void OnKey(Key key)
       // queues the save, waits for the renamed file to appear, then quits.
       // Never block the host thread on the CPU thread here (see the pause
       // deadlock note above).
-      std::thread([quit_callback] {
+      CloseAndResume();
+      StartTerminalTask(quit_generation,
+                        [quit_callback](const std::stop_token stop_token) {
         auto& system = Core::System::GetInstance();
+        int waits = 0;
+        while (!stop_token.stop_requested() &&
+               (Core::GetState(system) != Core::State::Running || !CoreStateSettled()))
+        {
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          if (++waits == 300)
+            std::fprintf(stderr,
+                         "[autoresume] still waiting for a safe core resume before save\n");
+        }
+        if (stop_token.stop_requested())
+          return;
         const std::string path = AutoResumePath();
         File::Delete(path);
         std::fprintf(stderr, "[autoresume] saving %s\n", path.c_str());
         ::State::SaveAs(system, path);
-        for (int i = 0; i < 1000 && !File::Exists(path); ++i)
+        for (int i = 0; i < 1000 && !stop_token.stop_requested() && !File::Exists(path); ++i)
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (stop_token.stop_requested())
+          return;
         std::fprintf(stderr, "[autoresume] save %s\n",
                      File::Exists(path) ? "complete" : "TIMED OUT");
         quit_callback();
-      }).detach();
+      });
     }
     else
     {
@@ -2085,7 +2379,7 @@ void OnKey(Key key)
       // the CPU thread is parked and a straight quit_callback() here wedges
       // shutdown. Resume first, then quit once it has taken.
       CloseAndResume();
-      QuitOnceResumed(quit_callback);
+      QuitOnceResumed(quit_callback, quit_generation);
     }
     break;
   case Action::SaveState:
@@ -2112,6 +2406,9 @@ void OnEscape()
 {
   {
     std::lock_guard<std::mutex> guard(s_state.mutex);
+
+    if (s_state.quit_pending)
+      return;
 
     // While open, Escape unwinds one level at a time: cancel a pending bind,
     // then leave the subpage, and only then close. When closed, every path
@@ -2141,6 +2438,147 @@ void OnEscape()
   Toggle();
 }
 
+bool RequestQuit()
+{
+  std::function<void()> quit_callback;
+  std::uint64_t quit_generation = 0;
+  {
+    std::lock_guard<std::mutex> guard(s_state.mutex);
+    s_state.open = false;
+    s_open_published.store(false, std::memory_order_release);
+    s_controller_capture_linger.store(false, std::memory_order_release);
+    s_input_capture_published.store(false, std::memory_order_release);
+    s_state.detector.reset();
+    s_state.detecting_control = nullptr;
+    // Terminal callbacks capture their Platform object. Consume this one so
+    // repeated WM_CLOSE/Shift+Escape events cannot leave a second detached
+    // waiter calling through a platform that the first callback destroyed.
+    if (s_state.quit_pending)
+      return true;
+    quit_callback = std::move(s_state.quit_callback);
+    quit_generation = s_state.quit_callback_generation;
+    s_state.quit_pending = static_cast<bool>(quit_callback);
+    s_quit_pending_published.store(s_state.quit_pending, std::memory_order_release);
+  }
+  if (!quit_callback)
+    return false;
+
+  // Requesting Running is harmless when the core is already running, and is
+  // essential when a window close or Shift+Escape arrives while the menu/F10
+  // has it paused. The detached waiter keeps the platform event loop pumping.
+  RequestCoreState(false);
+  QuitOnceResumed(quit_callback, quit_generation);
+  return true;
+}
+
+bool TogglePause()
+{
+  if (IsQuitting())
+    return false;
+
+  auto& system = Core::System::GetInstance();
+  if (!Core::IsRunning(system) || NetPlay::IsNetPlayRunning())
+    return false;
+
+  // Derive from the worker's pending target when there is one. Two deliberate
+  // presses made before the CPU acknowledges the first should still mean
+  // pause, then resume—not two identical pause requests.
+  std::lock_guard<std::mutex> lock(s_core_state_mutex);
+  if (s_quit_pending_published.load(std::memory_order_acquire))
+    return false;
+  if (!s_core_state_worker_started)
+  {
+    s_core_state_worker_started = true;
+    std::thread(CoreStateWorker).detach();
+  }
+  const bool paused = s_core_state_pending ? s_core_state_want_paused :
+                      s_core_state_in_flight ? s_core_state_in_flight_target :
+                                               Core::GetState(system) == Core::State::Paused;
+  s_core_state_want_paused = !paused;
+  s_core_state_pending = true;
+  s_core_state_cv.notify_one();
+  return !paused;
+}
+
+void PrepareForShutdown()
+{
+  // A competing natural stop or boot failure may end MainLoop before the
+  // terminal worker invokes its Platform callback. Revoke and join that copy
+  // while Platform and Config/Core are still alive.
+  CancelAndJoinTerminalTask();
+
+  {
+    std::lock_guard<std::mutex> guard(s_state.mutex);
+    s_state.open = false;
+    s_open_published.store(false, std::memory_order_release);
+    s_controller_capture_linger.store(false, std::memory_order_release);
+    s_input_capture_published.store(false, std::memory_order_release);
+    s_state.detector.reset();
+    s_state.detecting_control = nullptr;
+    s_state.netplay_addr_octet = -1;
+    s_state.netplay_addr_run = 0;
+    s_state.netplay_addr_run_dir = 0;
+    // These rows contain raw pointers into the current runtime's controller
+    // tree. A menu-started netplay session constructs a second Runtime in this
+    // process, so retaining them would let Draw dereference runtime-1 objects
+    // while the Controls tab is rebuilding against runtime 2.
+    s_state.control_rows.clear();
+    s_state.devices.clear();
+    s_state.device_current.clear();
+  }
+
+  // Runtime calls this after the platform loop but before Core and Config are
+  // shut down. Finish any pause/resume already in flight and, crucially, wait
+  // until any normal guarded callback release has finished. A guard still
+  // owned here is discarded because teardown does not need live backend
+  // reconfiguration. This covers disconnects, signals, and natural stops that
+  // do not enter RequestQuit.
+  std::unique_ptr<Config::ConfigChangeCallbackGuard> discarded_guard;
+  bool needs_worker = false;
+  {
+    std::lock_guard<std::mutex> lock(s_core_state_mutex);
+    s_core_state_discard_callbacks = true;
+    needs_worker = s_core_state_worker_started || s_core_state_pending ||
+                   s_core_state_in_flight || static_cast<bool>(s_settings_guard) ||
+                   Core::GetState(Core::System::GetInstance()) == Core::State::Paused;
+    if (s_settings_guard)
+    {
+      // Runtime teardown does not need live backend reconfiguration: base
+      // values are already persisted and the next init applies them. Dropping
+      // the callback avoids both paused-backend deadlocks and callbacks racing
+      // Config/UICommon shutdown on a disconnect path.
+      s_settings_guard->DismissWithoutCallback();
+      discarded_guard = std::move(s_settings_guard);
+    }
+  }
+  discarded_guard.reset();
+
+  if (!needs_worker)
+  {
+    std::lock_guard<std::mutex> lock(s_core_state_mutex);
+    s_core_state_discard_callbacks = false;
+    return;
+  }
+
+  RequestCoreState(false);
+  bool settled = false;
+  {
+    std::unique_lock<std::mutex> lock(s_core_state_mutex);
+    settled = s_core_state_cv.wait_for(lock, std::chrono::seconds(3), [] {
+      return !s_core_state_pending && !s_core_state_in_flight;
+    });
+  }
+  if (!settled)
+  {
+    std::fprintf(stderr, "[menu] state worker did not settle before shutdown\n");
+  }
+  // The guard owned by this runtime was already removed above. Do not carry a
+  // teardown-only policy into a later Runtime constructed for netplay: its
+  // menu changes must dispatch normally even if this bounded wait timed out.
+  std::lock_guard<std::mutex> lock(s_core_state_mutex);
+  s_core_state_discard_callbacks = false;
+}
+
 void SetFullscreenCallback(std::function<void()> callback)
 {
   std::lock_guard<std::mutex> guard(s_state.mutex);
@@ -2149,7 +2587,24 @@ void SetFullscreenCallback(std::function<void()> callback)
 
 void SetQuitCallback(std::function<void()> callback)
 {
+  std::uint64_t generation = 0;
+  if (callback)
+  {
+    // A new Platform is now alive and owns the callback installed below.
+    // Runtime's prior PrepareForShutdown joined any task before constructing a
+    // replacement (the normal offline -> netplay transition).
+    std::lock_guard<std::mutex> lock(s_terminal_task_mutex);
+    generation = ++s_terminal_generation_counter;
+    s_terminal_task_accepting = true;
+    s_terminal_accepting_generation = generation;
+  }
   std::lock_guard<std::mutex> guard(s_state.mutex);
+  if (callback)
+  {
+    s_state.quit_pending = false;
+    s_quit_pending_published.store(false, std::memory_order_release);
+  }
+  s_state.quit_callback_generation = generation;
   s_state.quit_callback = std::move(callback);
 }
 
@@ -2160,6 +2615,16 @@ void SetFastForward(bool enable)
   // through again — restoring a saved value here would instead mask any speed
   // change made while the key was down.
   static std::atomic<bool> s_active{false};
+  if (enable && IsQuitting())
+    return;
+  // Speed changes are local. Refuse them in a deterministic session and also
+  // clear any stale current-run override defensively.
+  if (enable && NetPlay::IsNetPlayRunning())
+  {
+    if (s_active.exchange(false))
+      Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_EMULATION_SPEED);
+    return;
+  }
   if (s_active.exchange(enable) == enable)
     return;
   if (enable)
@@ -2173,29 +2638,14 @@ void SetFastForward(bool enable)
   }
 }
 
-void ScheduleAutoResumeLoad()
+std::optional<std::string> GetAutoResumePathForBoot()
 {
   if (!Config::Get(RECOMP_AUTO_RESUME))
-    return;
+    return std::nullopt;
   const std::string path = AutoResumePath();
   if (!File::Exists(path))
-    return;
-  // State::LoadAs needs a running CPU thread to execute the queued job, so
-  // wait for Running off the host thread, plus a beat for the backends to
-  // settle before swapping the whole machine state.
-  std::thread([path] {
-    auto& system = Core::System::GetInstance();
-    for (int i = 0; i < 3000 && Core::GetState(system) != Core::State::Running; ++i)
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    if (Core::GetState(system) != Core::State::Running)
-    {
-      std::fprintf(stderr, "[autoresume] core never reached Running; not loading\n");
-      return;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-    std::fprintf(stderr, "[autoresume] loading %s\n", path.c_str());
-    ::State::LoadAs(system, path);
-  }).detach();
+    return std::nullopt;
+  return path;
 }
 
 void Draw()
@@ -2210,6 +2660,7 @@ void Draw()
   bool detecting;
   bool editing_address = false;
   bool cheats_enabled = false;
+  const bool netplay_running = NetPlay::IsNetPlayRunning();
   // label, value, highlight-value-green
   std::vector<std::tuple<std::string, std::string, bool>> rows;
 
@@ -2228,6 +2679,12 @@ void Draw()
     {
     case Tab::Controls:
     {
+      if (netplay_running)
+      {
+        rows.emplace_back("Input Backend", "LOCKED", false);
+        rows.emplace_back("Device", "LOCKED DURING NETPLAY", false);
+        break;
+      }
       // Read from the snapshot rather than the pad, so Draw stays off
       // InputConfig while holding the menu mutex.
       const bool has_device = !s_state.device_current.empty();
@@ -2359,17 +2816,21 @@ void Draw()
     ImGui::Spacing();
     ImGui::Separator();
 
-    const char* hint = "Up/Down select   Left/Right change   Space confirm   Esc close";
+    const char* hint = "Up/Down select   Left/Right change   Space/Enter confirm   Esc close";
     if (detecting)
       hint = "Press a key or button...   Esc cancel";
     else if (editing_address)
       hint = "Left/Right octet   Up/Down value   Space done";
     else if (tab_focused)
       hint = "Left/Right switch tab   Down enter list   Esc close";
+    else if (tab == Tab::Controls && netplay_running)
+      hint = "Controls locked during netplay   Esc close";
     else if (tab == Tab::Controls && selected >= 1 && selected <= kControlsHeaderRows)
       hint = "Left/Right change   Space rescan devices   Esc close";
     else if (tab == Tab::Controls)
       hint = "Space rebind   Left clear   Up/Down select   Esc close";
+    else if (tab == Tab::Cheats && netplay_running)
+      hint = "Cheats locked during netplay   Esc close";
     else if (tab == Tab::Cheats)
       hint = "Space toggle   Up/Down select   Esc close";
     ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.65f, 1.0f), "%s", hint);
@@ -2437,18 +2898,32 @@ void UpdateDetection()
 // gamepad": if the player remapped it, that is still the one in their hands.
 void PollMenuGamepad()
 {
+  const auto clear_lingering_capture = [] {
+    s_controller_capture_linger.store(false, std::memory_order_release);
+    if (!s_open_published.load(std::memory_order_acquire))
+      s_input_capture_published.store(false, std::memory_order_release);
+  };
+
   ControllerEmu::EmulatedController* const pad = GetPad();
   if (pad == nullptr)
+  {
+    if (s_controller_capture_linger.load(std::memory_order_acquire) && !IsOpen())
+      clear_lingering_capture();
     return;
+  }
   const auto device = g_controller_interface.FindDevice(pad->GetDefaultDevice());
   if (device == nullptr)
+  {
+    if (s_controller_capture_linger.load(std::memory_order_acquire) && !IsOpen())
+      clear_lingering_capture();
     return;
+  }
 
   // Device state is refreshed by SI on the CPU thread -- but only while the
   // emulator is running, and opening this menu pauses it. Without pumping it
   // here the first press would open the overlay and then nothing would move.
   // Only while open, so this never races the CPU thread's own polling.
-  if (IsOpen())
+  if (IsOpen() && Core::GetState(Core::System::GetInstance()) == Core::State::Paused)
     g_controller_interface.UpdateInput();
 
   struct Binding
@@ -2478,6 +2953,35 @@ void PollMenuGamepad()
     *was_held = down;
     return edge;
   };
+
+  const auto controller_action = [&](auto&& action) {
+    // Publish capture BEFORE an action can close/resume the menu. If it does
+    // close, keep gameplay neutral until every menu button is released; if it
+    // merely navigates, ordinary open-menu capture remains sufficient.
+    s_controller_capture_linger.store(true, std::memory_order_release);
+    s_input_capture_published.store(true, std::memory_order_release);
+    action();
+    if (IsOpen())
+      s_controller_capture_linger.store(false, std::memory_order_release);
+  };
+
+  if (s_controller_capture_linger.load(std::memory_order_acquire) && !IsOpen())
+  {
+    bool any_down = false;
+    static constexpr std::array<const char*, 2> kBackInputs = {"Back", "Button E"};
+    for (const char* const name : kBackInputs)
+    {
+      const auto* const input = device->FindInput(name);
+      any_down |= input != nullptr && input->GetState() > 0.5;
+    }
+    for (const Binding& binding : kBindings)
+    {
+      const auto* const input = device->FindInput(binding.input);
+      any_down |= input != nullptr && input->GetState() > 0.5;
+    }
+    if (!any_down)
+      clear_lingering_capture();
+  }
 
   // BACK OPENS ON A HOLD, NOT A TAP.
   //
@@ -2520,7 +3024,7 @@ void PollMenuGamepad()
       if (press && !consumed)
       {
         consumed = true;
-        OnEscape();
+        controller_action([] { OnEscape(); });
         return;
       }
     }
@@ -2544,13 +3048,18 @@ void PollMenuGamepad()
 
   if (pressed("Button E", &held[std::size(kBindings) + 1]))
   {
-    OnEscape();  // unwinds one level, exactly as Escape does
+    controller_action([] { OnEscape(); });  // unwinds one level, exactly as Escape does
     return;
   }
   for (std::size_t i = 0; i < std::size(kBindings); ++i)
   {
     if (pressed(kBindings[i].input, &held[i]))
-      OnKey(kBindings[i].key);
+    {
+      if (kBindings[i].key == Key::Activate)
+        controller_action([&] { OnKey(kBindings[i].key); });
+      else
+        OnKey(kBindings[i].key);
+    }
   }
 }
 
@@ -2635,8 +3144,9 @@ void HostTick()
   std::fprintf(stderr, "[menu] auto-open done, open=%d\n", IsOpen() ? 1 : 0);
 }
 
-// The menu DOES pause emulation again (Escape = pause), but this must still
-// never present.
+// The offline menu DOES pause emulation again (Escape = pause), but this must
+// still never present from the host thread. Active netplay is the exception:
+// it cannot pause one peer, so the normal video frames keep drawing the menu.
 //
 // The original design paused the core and redrew the overlay by calling
 // g_presenter->Present() from the host thread. That is unsound: Vulkan command
@@ -2662,7 +3172,7 @@ void HostTick()
 // posted TO the video thread (AsyncRequests), never a Present from here.
 void PumpFrame()
 {
-  if (!IsOpen())
+  if (!IsOpen() || Core::GetState(Core::System::GetInstance()) != Core::State::Paused)
     return;
 
   UpdateDetection();

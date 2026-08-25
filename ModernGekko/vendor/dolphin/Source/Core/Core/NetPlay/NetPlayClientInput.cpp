@@ -190,9 +190,19 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
 {
   const int ingame_pad = LocalPadToInGamePad(local_pad);
   bool data_added = false;
-  GCPadStatus pad_status;
+  GCPadStatus pad_status{};
 
-  if (m_gba_config[ingame_pad].enabled)
+  // The active netplay overlay cannot pause only one peer, so emulation keeps
+  // running while its D-pad/A/B navigation is read directly by the host loop.
+  // Do not send those same physical inputs into the game. The ordinary input
+  // gate intentionally permits background input in netplay, making this
+  // explicit neutral packet the only reliable UI capture point for every GC
+  // pad source (configured pad, GBA and adapter).
+  if (Host_UIBlocksControllerState())
+  {
+    pad_status = {};
+  }
+  else if (m_gba_config[ingame_pad].enabled)
   {
     pad_status = Pad::GetGBAStatus(local_pad);
   }

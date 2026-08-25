@@ -1,0 +1,396 @@
+name: Linux x86-64 AppImage
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version used for the validation package
+        required: true
+        type: string
+        default: v1.2.1-ell.4
+  push:
+    tags:
+      - 'v*-ell.*'
+
+# A tag build adds an AppImage, checksum, and checksummed runtime source/relink
+# companion to the same DRAFT prerelease used by the Windows workflow. Manual
+# dispatch builds and validates without publishing. A human publishes only
+# after both platform assets and their matching source records are inspected.
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-appimage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+
+    env:
+      BUILD_DIR: build-appimage
+      DOLRECOMP_BUILD_DIR: build-dolrecomp-appimage
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache-appimage
+      TOOL_DIR: ${{ github.workspace }}/.cache/appimage-tools
+      BUILD_IMAGE: ringout-appimage-build:debian12
+      CONTAINER_CCACHE_DIR: /src/.cache/ccache-appimage
+      CONTAINER_TOOL_DIR: /src/.cache/appimage-tools
+      APPIMAGETOOL_FILE: appimagetool-1.9.1-x86_64.AppImage
+      APPIMAGE_RUNTIME_FILE: runtime-x86_64-asset-456065460
+      TYPE2_SOURCE_FILE: type2-runtime-75849dce7cc37e4319b633df1f116ca895c71a12.tar.gz
+      LIBFUSE_SOURCE_FILE: fuse-3.15.0.tar.xz
+      SQUASHFUSE_SOURCE_FILE: squashfuse-0.5.2.tar.gz
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and validate version
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="$DISPATCH_VERSION"
+          fi
+          [[ "$version" =~ ^v[0-9][0-9A-Za-z._+-]*$ ]] || {
+            echo "invalid release version: $version" >&2
+            exit 1
+          }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Set up cached Docker builder
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build recorded Debian 12 build environment
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: .github/containers/appimage-debian12.Containerfile
+          load: true
+          tags: ${{ env.BUILD_IMAGE }}
+          cache-from: type=gha,scope=ringout-appimage-debian12-v1
+          cache-to: type=gha,mode=max,scope=ringout-appimage-debian12-v1
+
+      - name: Restore compiler cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ringout-${{ runner.os }}-debian12-appimage-release-ccache-v1-${{ github.sha }}
+          restore-keys: |
+            ringout-${{ runner.os }}-debian12-appimage-release-ccache-v1-
+
+      - name: Configure compiler cache
+        run: |
+          set -euo pipefail
+          mkdir -p "$CCACHE_DIR"
+          container=(docker run --rm
+            --user "$(id -u):$(id -g)"
+            --volume "$GITHUB_WORKSPACE:/src"
+            --workdir /src
+            --env "CCACHE_DIR=$CONTAINER_CCACHE_DIR"
+            --env CCACHE_BASEDIR=/src
+            --env CCACHE_COMPILERCHECK=content)
+          "${container[@]}" "$BUILD_IMAGE" ccache --set-config=max_size=1.5G
+          "${container[@]}" "$BUILD_IMAGE" ccache --set-config=compression=true
+          "${container[@]}" "$BUILD_IMAGE" ccache --set-config=compression_level=5
+          "${container[@]}" "$BUILD_IMAGE" ccache --zero-stats
+
+      - name: Configure Linux runtime
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            --env "CCACHE_DIR=$CONTAINER_CCACHE_DIR" \
+            --env CCACHE_BASEDIR=/src \
+            --env CCACHE_COMPILERCHECK=content \
+            --env CFLAGS=-ffile-prefix-map=/src=. \
+            --env CXXFLAGS=-ffile-prefix-map=/src=. \
+            "$BUILD_IMAGE" \
+          cmake -S ModernGekko -B "$BUILD_DIR" -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLINUX_LOCAL_DEV=ON \
+            -DENABLE_QT=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_ANALYTICS=OFF \
+            -DENABLE_AUTOUPDATE=OFF \
+            -DBUILD_TESTING=ON \
+            -DMODERNGEKKO_ENABLE_DOLPHIN_TESTS=OFF
+
+      - name: Build Linux runtime and tests
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            --env "CCACHE_DIR=$CONTAINER_CCACHE_DIR" \
+            --env CCACHE_BASEDIR=/src \
+            --env CCACHE_COMPILERCHECK=content \
+            "$BUILD_IMAGE" \
+          cmake --build "$BUILD_DIR" \
+            --target moderngekko-run moderngekko-module-info moderngekko-tests \
+            --parallel "$(nproc)"
+
+      - name: Test Linux runtime
+        run: >-
+          docker run --rm
+          --user "$(id -u):$(id -g)"
+          --volume "$GITHUB_WORKSPACE:/src"
+          --workdir /src
+          "$BUILD_IMAGE"
+          ctest --test-dir "$BUILD_DIR" --output-on-failure -j"$(nproc)"
+
+      - name: Configure static DolRecomp
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            --env "CCACHE_DIR=$CONTAINER_CCACHE_DIR" \
+            --env CCACHE_BASEDIR=/src \
+            --env CCACHE_COMPILERCHECK=content \
+            --env CFLAGS=-ffile-prefix-map=/src=. \
+            "$BUILD_IMAGE" \
+          cmake -S DolRecomp -B "$DOLRECOMP_BUILD_DIR" -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS=-static \
+            -DZLIB_USE_STATIC_LIBS=ON
+
+      - name: Build and test static DolRecomp
+        run: |
+          set -euo pipefail
+          container=(docker run --rm
+            --user "$(id -u):$(id -g)"
+            --volume "$GITHUB_WORKSPACE:/src"
+            --workdir /src
+            --env "CCACHE_DIR=$CONTAINER_CCACHE_DIR"
+            --env CCACHE_BASEDIR=/src
+            --env CCACHE_COMPILERCHECK=content)
+          "${container[@]}" "$BUILD_IMAGE" \
+            cmake --build "$DOLRECOMP_BUILD_DIR" --parallel "$(nproc)"
+          "${container[@]}" "$BUILD_IMAGE" \
+            ctest --test-dir "$DOLRECOMP_BUILD_DIR" --output-on-failure -j"$(nproc)"
+          "${container[@]}" "$BUILD_IMAGE" \
+            readelf -l "$DOLRECOMP_BUILD_DIR/dolrecomp" >dolrecomp-program-headers.txt
+          if grep -q INTERP dolrecomp-program-headers.txt; then
+              echo "dolrecomp is dynamically linked; AppImage first-run setup would not be portable" >&2
+              exit 1
+          fi
+          rm dolrecomp-program-headers.txt
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: >-
+          docker run --rm
+          --user "$(id -u):$(id -g)"
+          --volume "$GITHUB_WORKSPACE:/src"
+          --workdir /src
+          --env "CCACHE_DIR=$CONTAINER_CCACHE_DIR"
+          "$BUILD_IMAGE"
+          ccache --show-stats
+
+      - name: Cache pinned AppImage construction tools
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.TOOL_DIR }}
+          key: ringout-appimage-tools-appimagetool-1.9.1-runtime-asset-456065460-sources-v2
+
+      - name: Download and verify pinned AppImage construction tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$TOOL_DIR"
+          if [[ ! -f "$TOOL_DIR/$APPIMAGETOOL_FILE" ]]; then
+            curl --fail --location --retry 5 --retry-all-errors \
+              --output "$TOOL_DIR/$APPIMAGETOOL_FILE" \
+              https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          fi
+          if [[ ! -f "$TOOL_DIR/$APPIMAGE_RUNTIME_FILE" ]]; then
+            curl --fail --location --retry 5 --retry-all-errors \
+              -H 'Accept: application/octet-stream' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              --output "$TOOL_DIR/$APPIMAGE_RUNTIME_FILE" \
+              https://api.github.com/repos/AppImage/type2-runtime/releases/assets/456065460
+          fi
+          if [[ ! -f "$TOOL_DIR/$TYPE2_SOURCE_FILE" ]]; then
+            curl --fail --location --retry 5 --retry-all-errors \
+              --output "$TOOL_DIR/$TYPE2_SOURCE_FILE" \
+              https://codeload.github.com/AppImage/type2-runtime/tar.gz/75849dce7cc37e4319b633df1f116ca895c71a12
+          fi
+          if [[ ! -f "$TOOL_DIR/$LIBFUSE_SOURCE_FILE" ]]; then
+            curl --fail --location --retry 5 --retry-all-errors \
+              --output "$TOOL_DIR/$LIBFUSE_SOURCE_FILE" \
+              https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz
+          fi
+          if [[ ! -f "$TOOL_DIR/$SQUASHFUSE_SOURCE_FILE" ]]; then
+            curl --fail --location --retry 5 --retry-all-errors \
+              --output "$TOOL_DIR/$SQUASHFUSE_SOURCE_FILE" \
+              https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz
+          fi
+          cd "$TOOL_DIR"
+          sha256sum -c <<EOF
+          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $APPIMAGETOOL_FILE
+          1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf  $APPIMAGE_RUNTIME_FILE
+          b7af4960da4b90364e935a3281d04fad6560da4813c012414fa2f738291ad443  $TYPE2_SOURCE_FILE
+          70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0  $LIBFUSE_SOURCE_FILE
+          db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3  $SQUASHFUSE_SOURCE_FILE
+          EOF
+          chmod 755 "$APPIMAGETOOL_FILE" "$APPIMAGE_RUNTIME_FILE"
+
+      - name: Assemble and validate AppImage
+        env:
+          SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          PACKAGE_VALIDATION_ONLY: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            --env "SOURCE_REPOSITORY=$SOURCE_REPOSITORY" \
+            --env "SOURCE_COMMIT=$SOURCE_COMMIT" \
+            --env "PACKAGE_VALIDATION_ONLY=$PACKAGE_VALIDATION_ONLY" \
+            "$BUILD_IMAGE" \
+          .github/scripts/package-appimage.sh \
+            --version '${{ steps.version.outputs.version }}' \
+            --build-dir "$BUILD_DIR" \
+            --dolrecomp-build-dir "$DOLRECOMP_BUILD_DIR" \
+            --out-dir dist/out \
+            --appimagetool "$CONTAINER_TOOL_DIR/$APPIMAGETOOL_FILE" \
+            --appimage-runtime "$CONTAINER_TOOL_DIR/$APPIMAGE_RUNTIME_FILE" \
+            --type2-source "$CONTAINER_TOOL_DIR/$TYPE2_SOURCE_FILE" \
+            --libfuse-source "$CONTAINER_TOOL_DIR/$LIBFUSE_SOURCE_FILE" \
+            --squashfuse-source "$CONTAINER_TOOL_DIR/$SQUASHFUSE_SOURCE_FILE"
+
+      - name: Test exact AppImage without FUSE on clean Ubuntu 24.04
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(dist/out/RingOut-*-linux-x86_64.AppImage)
+          [[ ${#images[@]} -eq 1 ]] || {
+            echo "expected exactly one AppImage, found ${#images[@]}" >&2
+            exit 1
+          }
+          artifact="$(realpath "${images[0]}")"
+          docker run --rm \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 65534:65534 \
+            --env APPIMAGE_EXTRACT_AND_RUN=1 \
+            --env RINGOUT_DATA_DIR=/tmp/ringout-selftest \
+            --volume "$artifact:/RingOut.AppImage:ro" \
+            ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 \
+            /RingOut.AppImage --ringout-self-test
+
+      - name: Summarize validated package
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(dist/out/RingOut-*-linux-x86_64.AppImage)
+          [[ ${#images[@]} -eq 1 ]] || {
+            echo "expected exactly one AppImage, found ${#images[@]}" >&2
+            exit 1
+          }
+          file_version='${{ steps.version.outputs.version }}'
+          file_version=${file_version#v}
+          source_bundle="dist/out/RingOut-$file_version-appimage-runtime-sources.tar.zst"
+          [[ -s "${images[0]}.sha256" ]] || {
+            echo "missing AppImage checksum: ${images[0]}.sha256" >&2
+            exit 1
+          }
+          [[ -s "$source_bundle" && -s "$source_bundle.sha256" ]] || {
+            echo "missing AppImage runtime corresponding-source bundle or checksum" >&2
+            exit 1
+          }
+          validate_sidecar() {
+            local payload=$1 sidecar="$1.sha256" expected actual
+            expected="$(sha256sum "$payload" | awk '{print $1}')  $(basename "$payload")"
+            actual=$(<"$sidecar")
+            [[ $(wc -l <"$sidecar") -eq 1 && "$actual" == "$expected" ]] || {
+              echo "malformed or incorrect checksum sidecar: $sidecar" >&2
+              exit 1
+            }
+            (
+              cd dist/out
+              sha256sum -c "$(basename "$sidecar")"
+            )
+          }
+          validate_sidecar "${images[0]}"
+          validate_sidecar "$source_bundle"
+          {
+            echo '### Linux AppImage'
+            echo
+            echo "Version: \`${{ steps.version.outputs.version }}\`"
+            echo "Package: \`$(basename "${images[0]}")\`"
+            echo "Package size: \`$(stat -c '%s' "${images[0]}") bytes\`"
+            echo "SHA-256: \`$(sha256sum "${images[0]}" | awk '{print $1}')\`"
+            echo "Runtime source/relink bundle: \`$(basename "$source_bundle")\`"
+            echo "Source bundle size: \`$(stat -c '%s' "$source_bundle") bytes\`"
+            echo "Source bundle SHA-256: \`$(sha256sum "$source_bundle" | awk '{print $1}')\`"
+            echo
+            echo 'Validated: AppDir manifest, exact Debian DSO/source closure, runtime source/relink bundle, source provenance, static recompiler, Sys resources, glibc floor, privacy/no-game-data policy, synthetic DOL module build/load, extraction, and clean-Ubuntu no-FUSE self-test.'
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+              echo
+              echo '> Manual runs are validation-only and have no retained download. Push a `v*-ell.*` tag to create draft-release assets.'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Publish immutable assets to source-bound draft prerelease
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/out/RingOut-*-linux-x86_64.AppImage)
+          [[ ${#assets[@]} -eq 1 ]] || exit 1
+          assets+=("${assets[0]}.sha256")
+          file_version=${RELEASE_TAG#v}
+          source_bundles=(dist/out/RingOut-*-appimage-runtime-sources.tar.zst)
+          source_checksums=(dist/out/RingOut-*-appimage-runtime-sources.tar.zst.sha256)
+          [[ ${#source_bundles[@]} -eq 1 && ${#source_checksums[@]} -eq 1 ]] || {
+            echo "expected exactly one AppImage runtime source bundle/checksum pair" >&2
+            exit 1
+          }
+          expected_source="dist/out/RingOut-$file_version-appimage-runtime-sources.tar.zst"
+          [[ "${source_bundles[0]}" == "$expected_source" &&
+             "${source_checksums[0]}" == "$expected_source.sha256" ]] || {
+            echo "AppImage runtime source bundle name does not match release $RELEASE_TAG" >&2
+            exit 1
+          }
+          assets+=("${source_bundles[0]}" "${source_checksums[0]}")
+          .github/scripts/publish-tag-draft-assets.sh \
+            --tag "$RELEASE_TAG" \
+            "${assets[@]}"
+
+      - name: Upload CMake diagnostics on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-appimage-cmake-logs
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            build-appimage/CMakeCache.txt
+            build-appimage/CMakeFiles/CMakeConfigureLog.yaml
+            build-dolrecomp-appimage/CMakeCache.txt
+            build-dolrecomp-appimage/CMakeFiles/CMakeConfigureLog.yaml

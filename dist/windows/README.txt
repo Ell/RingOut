@@ -22,7 +22,9 @@ QUICK START
 The first setup needs roughly 1.5 GB of free space and may take several
 minutes. Later launches start directly. The package includes the compiler,
 CMake, Ninja, and Python needed for first-run compilation; no system-wide
-development tools are required.
+development tools are required. Recompilation and the module build use all
+logical processors. A bounded ThinLTO link cache is retained under
+%LOCALAPPDATA%\RingOut\thinlto so later rebuilds can reuse linker work.
 
 REQUIREMENTS
 ------------
@@ -57,12 +59,40 @@ CONTROLS
 --------
 
   Escape          settings menu
+  Hold Back/View  open settings menu from a controller (about half a second)
   Arrow keys      navigate; Left/Right change a value or switch tab
-  Space           confirm / activate
+  Space / Enter   confirm / activate
+  D-pad / A / B   controller menu navigation / activate / back
+  Tab (hold)      fast-forward
   Alt+W           toggle widescreen (16:9)
   Alt+Enter       fullscreen
+  F10             pause / resume
   F1-F8           load state      Shift+F1-F8   save state
   Shift+Escape    quit
+
+NETPLAY
+-------
+
+Both players need this same Ring Out release and the same GameCube disc
+revision. Open the settings menu, stay on the SYSTEM tab, then:
+
+  Host: set Netplay Mode to Host, choose the port (default 2626), and activate
+        Start Netplay. Allow RingOut through Windows Firewall on private
+        networks if prompted. The lobby waits for the other player.
+
+  Join: set Netplay Mode to Join. On the same LAN, activate Scan for Hosts and
+        select the result. For a direct address, select Netplay Address, press
+        Space, edit its four octets with the arrows, press Space again, set the
+        matching port, then activate Start Netplay.
+
+Starting netplay restarts the runtime into its lobby; this is expected. The
+host's enabled AR/Gecko codes are synchronized to the guest before boot. Choose
+unlock codes before starting—the Cheats tab is read-only during a match so one
+peer cannot change deterministic state by itself.
+
+The settings overlay does not pause only one peer during an active session.
+Speed, F10, save/load/reset, controller rebinding, and cheats are locked while
+the match continues. D-pad/A/B menu navigation is suppressed from the game.
 
 FREE CAMERA (enable in the VIDEO tab)
 

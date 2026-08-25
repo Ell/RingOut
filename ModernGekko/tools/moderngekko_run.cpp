@@ -384,6 +384,11 @@ int RunMain(int argc, char **argv) {
   });
   const moderngekko::RuntimeRunResult result = created.runtime->Run();
   signal_watcher.request_stop();
+  // The watcher captures created.runtime by reference. A menu-started netplay
+  // session resets that runtime below before constructing the lobby/runtime
+  // pair, so merely requesting stop leaves a window where the watcher can
+  // dereference a destroyed object. Join before any error return or reset.
+  signal_watcher.join();
   if (result.error) {
     std::cerr << "runtime failed: " << result.error->message << '\n';
     return 1;

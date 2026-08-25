@@ -106,7 +106,10 @@ echo "==> personal identifiers"
 hits=0
 while IFS= read -r f; do
   case "$f" in
-    */lib/*|*/toolchain/*|*llvm-mingw*|*/Externals/*) continue ;;
+    # Legal notices contain upstream authors' public contact details. Like the
+    # corresponding third-party binaries, that is provenance rather than
+    # builder data; scanning it only hides actionable first-party findings.
+    */lib/*|*/toolchain/*|*llvm-mingw*|*/Externals/*|*/LICENSES/*) continue ;;
     # Disc- and save-derived blobs are rejected by name above; running text
     # patterns over their binary content only produces gibberish matches.
     *.gci|*.iso|*.raw|*.sav|*.dol|*.uidcache) continue ;;

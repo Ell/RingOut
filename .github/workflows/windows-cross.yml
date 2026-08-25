@@ -7,7 +7,7 @@ on:
         description: Release version used for the validation package
         required: true
         type: string
-        default: v1.2.1-ell.3
+        default: v1.2.1-ell.4
   push:
     tags:
       - 'v*-ell.*'
@@ -81,6 +81,9 @@ jobs:
             pkg-config \
             python3 \
             unzip \
+            wine \
+            xauth \
+            xvfb \
             zip
 
       # A default-branch dispatch can warm this exact SHA for its later tag;
@@ -190,6 +193,15 @@ jobs:
             --ninja-archive "$DOWNLOAD_DIR/$NINJA_ARCHIVE" \
             --python-archive "$DOWNLOAD_DIR/$PYTHON_ARCHIVE"
 
+      - name: Smoke-test packaged first-run toolchain under Wine
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(dist/out/RingOut-*-windows-x86_64.zip)
+          [[ ${#zips[@]} -eq 1 ]] || exit 1
+          xvfb-run -a .github/scripts/smoke-windows-package.sh \
+            "${zips[0]}" "$RUNNER_TEMP/ringout-windows-package-smoke"
+
       - name: Summarize validated package
         run: |
           set -euo pipefail
@@ -207,12 +219,16 @@ jobs:
             echo "SHA-256: \`$(sha256sum "${zips[0]}" | awk '{print $1}')\`"
             echo
             echo 'The package script verified PE imports, `bin/Sys`, the source and licence payload, the no-game-data policy, the manifest, and ZIP integrity.'
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+              echo
+              echo '> Manual runs are validation-only and have no retained download. Push a `v*-ell.*` tag to create draft-release assets.'
+            fi
           } >>"$GITHUB_STEP_SUMMARY"
 
-      - name: Create draft prerelease for tag push
+      - name: Publish immutable assets to source-bound draft prerelease
         if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
@@ -220,21 +236,9 @@ jobs:
           assets=(dist/out/RingOut-*-windows-x86_64.zip)
           [[ ${#assets[@]} -eq 1 ]] || exit 1
           assets+=("${assets[0]}.sha256")
-
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == true ]] || {
-              echo "refusing to replace assets on an already-published release" >&2
-              exit 1
-            }
-          else
-            gh release create "$RELEASE_TAG" \
-              --verify-tag \
-              --draft \
-              --prerelease \
-              --title "Ring Out $RELEASE_TAG for Windows (experimental)" \
-              --notes "Experimental Windows x86-64 cross-build. No game data is included. Read README.txt, SOURCE.txt, and THIRD-PARTY-NOTICES.txt inside the ZIP before publishing this draft."
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          .github/scripts/publish-tag-draft-assets.sh \
+            --tag "$RELEASE_TAG" \
+            "${assets[@]}"
 
       - name: Upload CMake diagnostics on failure
         if: failure()

@@ -156,7 +156,16 @@ public:
   ConfigChangeCallbackGuard();
   ~ConfigChangeCallbackGuard();
 
+  // Ends this guard without dispatching callbacks. This is for runtime
+  // teardown, where persisted values will be applied by the next init and
+  // invoking backend reconfiguration while those backends are stopping is
+  // both unnecessary and unsafe.
+  void DismissWithoutCallback();
+
   ConfigChangeCallbackGuard(const ConfigChangeCallbackGuard&) = delete;
   ConfigChangeCallbackGuard& operator=(const ConfigChangeCallbackGuard&) = delete;
+
+private:
+  bool m_active = true;
 };
 }  // namespace Config

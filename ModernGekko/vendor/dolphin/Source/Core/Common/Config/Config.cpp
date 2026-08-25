@@ -240,10 +240,22 @@ ConfigChangeCallbackGuard::ConfigChangeCallbackGuard()
 
 ConfigChangeCallbackGuard::~ConfigChangeCallbackGuard()
 {
+  if (!m_active)
+    return;
+
   if (--s_callback_guards)
     return;
 
   OnConfigChanged();
+}
+
+void ConfigChangeCallbackGuard::DismissWithoutCallback()
+{
+  if (!m_active)
+    return;
+
+  --s_callback_guards;
+  m_active = false;
 }
 
 }  // namespace Config

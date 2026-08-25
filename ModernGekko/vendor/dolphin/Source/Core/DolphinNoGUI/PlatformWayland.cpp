@@ -90,7 +90,7 @@ private:
   bool DispatchEvents();
   void HandleHotkey(xkb_keysym_t symbol);
   bool ModifierActive(const char* name) const;
-  void UpdateCursor();
+  void UpdateCursor(std::optional<bool> paused_override = std::nullopt);
   void DestroyKeyboard();
   void DestroyPointer();
 
@@ -166,6 +166,8 @@ constexpr wl_pointer_listener s_pointer_listener = {
 
 PlatformWayland::~PlatformWayland()
 {
+  RecompMenu::SetFullscreenCallback({});
+  RecompMenu::SetQuitCallback({});
   if (m_screensaver_inhibited)
     UICommon::InhibitScreenSaver(false);
   if (m_idle_inhibitor)
@@ -225,7 +227,7 @@ bool PlatformWayland::Init()
     m_window_fullscreen = !m_window_fullscreen;
     wl_surface_commit(m_surface);
   });
-  RecompMenu::SetQuitCallback([this] { RequestShutdown(); });
+  RecompMenu::SetQuitCallback([this] { Stop(); });
   m_xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
   m_display = wl_display_connect(nullptr);
   if (!m_display)
@@ -342,14 +344,18 @@ void PlatformWayland::MainLoop()
     if (!DispatchEvents())
       break;
     RecompMenu::HostTick();
-    // While the menu is up emulation is paused, so nothing drives presentation
-    // and the overlay would freeze. Redraw it here at roughly 60Hz instead.
-    if (RecompMenu::IsOpen())
+    // Offline the menu pauses emulation, so nothing drives presentation and
+    // the overlay would freeze. Active netplay stays running and uses ordinary
+    // video-thread frames instead.
+    if (RecompMenu::IsOpen() &&
+        Core::GetState(Core::System::GetInstance()) == Core::State::Paused)
     {
       RecompMenu::PumpFrame();
       std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
   }
+
+  RecompMenu::SetFastForward(false);
 }
 
 bool PlatformWayland::DispatchEvents()
@@ -499,9 +505,9 @@ void PlatformWayland::ToplevelConfigure(void* data, xdg_toplevel*, int32_t width
   }
 }
 
-void PlatformWayland::ToplevelClose(void* data, xdg_toplevel*)
+void PlatformWayland::ToplevelClose(void*, xdg_toplevel*)
 {
-  static_cast<PlatformWayland*>(data)->Stop();
+  RecompMenu::RequestQuit();
 }
 
 void PlatformWayland::SeatCapabilities(void* data, wl_seat* seat, uint32_t capabilities)
@@ -636,7 +642,8 @@ void PlatformWayland::KeyboardKey(void* data, wl_keyboard*, uint32_t, uint32_t, 
   if (symbol == XKB_KEY_Tab && !platform->ModifierActive(XKB_MOD_NAME_ALT))
   {
     // Hold Tab = unlimited speed. Alt+Tab stays the compositor's.
-    RecompMenu::SetFastForward(true);
+    if (!RecompMenu::IsOpen())
+      RecompMenu::SetFastForward(true);
     return;
   }
   platform->HandleHotkey(symbol);
@@ -666,13 +673,16 @@ void PlatformWayland::HandleHotkey(xkb_keysym_t symbol)
   // an immediate escape hatch.
   if (symbol == XKB_KEY_Escape)
   {
+    RecompMenu::SetFastForward(false);
     if (ModifierActive(XKB_MOD_NAME_SHIFT))
-      RequestShutdown();
+      RecompMenu::RequestQuit();
     else
       RecompMenu::OnEscape();
     UpdateCursor();
     return;
   }
+  if (RecompMenu::IsQuitting())
+    return;
   if (RecompMenu::IsOpen())
   {
     // Swallow navigation while the overlay owns input.
@@ -702,9 +712,7 @@ void PlatformWayland::HandleHotkey(xkb_keysym_t symbol)
 
   if (symbol == XKB_KEY_F10)
   {
-    const bool running = Core::GetState(system) == Core::State::Running;
-    Core::SetState(system, running ? Core::State::Paused : Core::State::Running);
-    UpdateCursor();
+    UpdateCursor(RecompMenu::TogglePause());
   }
   else if (symbol == XKB_KEY_Return && ModifierActive(XKB_MOD_NAME_ALT))
   {
@@ -729,11 +737,14 @@ void PlatformWayland::HandleHotkey(xkb_keysym_t symbol)
   }
   else if (symbol >= XKB_KEY_F1 && symbol <= XKB_KEY_F8)
   {
-    const int slot = static_cast<int>(symbol - XKB_KEY_F1) + 1;
-    if (ModifierActive(XKB_MOD_NAME_SHIFT))
-      State::Save(system, slot);
-    else
-      State::Load(system, slot);
+    if (!RecompMenu::IsNetplayActive())
+    {
+      const int slot = static_cast<int>(symbol - XKB_KEY_F1) + 1;
+      if (ModifierActive(XKB_MOD_NAME_SHIFT))
+        State::Save(system, slot);
+      else
+        State::Load(system, slot);
+    }
   }
   else if (symbol == XKB_KEY_F9)
   {
@@ -741,14 +752,18 @@ void PlatformWayland::HandleHotkey(xkb_keysym_t symbol)
   }
   else if (symbol == XKB_KEY_F11)
   {
-    State::LoadLastSaved(system);
+    if (!RecompMenu::IsNetplayActive())
+      State::LoadLastSaved(system);
   }
   else if (symbol == XKB_KEY_F12)
   {
-    if (ModifierActive(XKB_MOD_NAME_SHIFT))
-      State::UndoLoadState(system);
-    else
-      State::UndoSaveState(system);
+    if (!RecompMenu::IsNetplayActive())
+    {
+      if (ModifierActive(XKB_MOD_NAME_SHIFT))
+        State::UndoLoadState(system);
+      else
+        State::UndoSaveState(system);
+    }
   }
 }
 
@@ -771,14 +786,16 @@ void PlatformWayland::PointerLeave(void* data, wl_pointer*, uint32_t, wl_surface
     platform->m_pointer_inside = false;
 }
 
-void PlatformWayland::UpdateCursor()
+void PlatformWayland::UpdateCursor(std::optional<bool> paused_override)
 {
   if (!m_pointer || !m_pointer_inside)
     return;
 
+  const bool paused = paused_override.value_or(
+      Core::GetState(Core::System::GetInstance()) == Core::State::Paused);
   const bool hide = m_window_focus &&
                     Config::Get(Config::MAIN_SHOW_CURSOR) == Config::ShowCursor::Never &&
-                    Core::GetState(Core::System::GetInstance()) != Core::State::Paused;
+                    !paused;
   if (hide || !m_cursor_surface || !m_default_cursor || m_default_cursor->image_count == 0)
   {
     wl_pointer_set_cursor(m_pointer, m_pointer_serial, nullptr, 0, 0);

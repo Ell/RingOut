@@ -130,7 +130,7 @@ cmake -S "$HERE/module-src" -B "$HERE/work/build" -GNinja \
       -DGXRUNTIME_INC="$DEPS/gxruntime-include" \
       -DCHASSIS_ABI_DIR="$DEPS/chassis-abi" \
       -DMODULE_TEMPLATE="$DEPS/module-template"
-cmake --build "$HERE/work/build"
+cmake --build "$HERE/work/build" --parallel "$(nproc)"
 
 cp "$HERE/work/build/g${DISC_ID}_recomp.so" "$HERE/bin/"
 
@@ -176,18 +176,29 @@ python3 "$HERE/tools/gc-art.py" "$HERE" || true
 ICON="$HERE/art/icon.png"
 [ -f "$ICON" ] || ICON="$HERE/art/banner.png"
 if [ -f "$ICON" ]; then
+    if [[ "$HERE" == *$'\n'* || "$ICON" == *$'\n'* ]]; then
+        echo "    desktop entry skipped: install path contains a newline"
+    else
+        EXEC_VALUE="$HERE/RingOut"
+        EXEC_VALUE="${EXEC_VALUE//%/%%}"
+        EXEC_VALUE="${EXEC_VALUE//\\/\\\\}"
+        EXEC_VALUE="${EXEC_VALUE//\"/\\\"}"
+        EXEC_VALUE="${EXEC_VALUE//\$/\\\$}"
+        EXEC_VALUE="${EXEC_VALUE//\`/\\\`}"
+        ICON_VALUE="${ICON//\\/\\\\}"
     cat > "$HERE/RingOut.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Ring Out
 Comment=SOULCALIBUR II, statically recompiled
-Exec=$HERE/RingOut
-Icon=$ICON
+Exec="$EXEC_VALUE"
+Icon=$ICON_VALUE
 Terminal=false
 Categories=Game;
 DESKTOP
-    chmod +x "$HERE/RingOut.desktop"
-    echo "    RingOut.desktop -> $(basename "$ICON")"
+        chmod +x "$HERE/RingOut.desktop"
+        echo "    RingOut.desktop -> $(basename "$ICON")"
+    fi
 fi
 
 echo

@@ -1,0 +1,81 @@
+Ring Out Linux AppImage
+Credits, disclaimer, licensing, and source offer
+================================================
+
+DISCLAIMER
+----------
+
+This package was assembled from the Ring Out project maintained by Jack Poison
+with AI assistance. It is an unofficial fan project and is not affiliated with,
+endorsed by, or connected to Nintendo, Bandai Namco, Dolphin, AppImage, or the
+other projects named below.
+
+No game data or game code is included. You supply a GameCube disc image that
+you made and are entitled to use. Setup extracts it and builds a private native
+module on your machine. Do not redistribute that generated material.
+
+CREDIT WHERE IT IS DUE
+----------------------
+
+  Dolphin Emulator Project
+    Graphics, audio, input, save states, GameCube hardware emulation, and the
+    Vulkan renderer used by the runtime. GPL-2.0-or-later.
+    https://dolphin-emu.org
+
+  ExpansionPak - ModernGekko
+    The chassis that hosts a statically recompiled game inside Dolphin and the
+    StaticRecomp core that bridges native code and the emulator.
+    https://github.com/ExpansionPak/ModernGekko
+
+  ExpansionPak - DolRecomp
+    The static recompiler that translates GameCube PowerPC code into C.
+    GPL-3.0-or-later. https://github.com/ExpansionPak/DolRecomp
+
+  Dear ImGui, SDL, and the other vendored runtime dependencies
+    See LICENSES/Dolphin and the matching repository revision in SOURCE.txt.
+
+  AppImage project
+    The type-2 runtime that mounts or extracts this image. Its exact seven
+    static components, versions, sources, and notice paths are recorded in
+    APPIMAGE-RUNTIME-COMPONENTS.tsv. Full notices, including mimalloc and the
+    libfuse LGPL-2.1-only text, are under LICENSES/AppImage-runtime.
+
+  Debian
+    Redistributable support libraries are copied from the pinned Debian 12
+    build container. SYSTEM-LIBRARIES.tsv records each bundled DSO's binary and
+    source package version and a matching source URL. TOOLCHAIN-COMPONENTS.tsv
+    separately records glibc, GCC runtime, zlib, and libstdc++ incorporated via
+    static linkage into DolRecomp and moderngekko-run. Debian copyright notices
+    are included under LICENSES, with offline copies of the canonical texts
+    they reference under LICENSES/Debian-common-licenses.
+
+  Bandai Namco Entertainment
+    The original game, code, and assets. They are not included or redistributed
+    and remain the property of their respective owners.
+
+  Cheat-code authors and publishers
+    Action Replay codes are published community data (Codejunkies, via Almar's
+    Guides). None were authored by this project.
+
+LICENSING AND MATCHING SOURCE
+-----------------------------
+
+The runtime is Dolphin-derived GPL-2.0-or-later combined with GPL-3.0-or-later
+ModernGekko and DolRecomp code. The combined package is distributed under
+GPLv3-compatible terms. Individual third-party components retain their own
+compatible terms in LICENSES.
+
+SOURCE.txt records the Ring Out repository, commit-addressed tree, and source
+archive. For a publishable tagged build, that revision contains the matching
+full ModernGekko, Dolphin, DolRecomp, AppRun, packaging sources, and recorded
+rebuild workflow. An image whose SOURCE.txt says "Validation only: yes" was
+built from a local worktree and is QA evidence, not a redistributable release.
+The adjacent checksummed RingOut-*-appimage-runtime-sources.tar.zst asset is the
+designated same-release source/relink companion for the static AppImage prefix;
+it contains the exact type2-runtime tree, libfuse and squashfuse sources, mount
+patch, notices, and rebuild helper. Keep that bundle available with the image.
+BUILD-ENVIRONMENT.tsv lists the exact Debian packages and build-tool versions
+used for this artifact. Keep SOURCE.txt, CREDITS.txt, SYSTEM-LIBRARIES.tsv,
+TOOLCHAIN-COMPONENTS.tsv, APPIMAGE-RUNTIME-COMPONENTS.tsv,
+BUILD-ENVIRONMENT.tsv, LICENSES, and the corresponding-source bundle with the
+AppImage when redistributing it.

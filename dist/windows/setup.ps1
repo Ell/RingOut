@@ -215,6 +215,13 @@ if ($future.Count -gt 0) {
 }
 
 Write-Host "==> 3/3  Building the module"
+$cacheRoot = if ($env:LOCALAPPDATA) {
+    Join-Path $env:LOCALAPPDATA 'RingOut'
+} else {
+    Join-Path $Here 'cache'
+}
+$thinLtoCache = Join-Path $cacheRoot 'thinlto'
+New-Item -ItemType Directory -Force -Path $thinLtoCache | Out-Null
 & $Cmake -S (Join-Path $Here 'module-src') -B (Join-Path $Work 'build') -GNinja `
     "-DCMAKE_MAKE_PROGRAM=$Ninja" `
     -DCMAKE_BUILD_TYPE=Release `
@@ -226,10 +233,11 @@ Write-Host "==> 3/3  Building the module"
     "-DDOLRECOMP_SRC=$(Join-Path $Deps 'dolrecomp-src')" `
     "-DGXRUNTIME_INC=$(Join-Path $Deps 'gxruntime-include')" `
     "-DCHASSIS_ABI_DIR=$(Join-Path $Deps 'chassis-abi')" `
-    "-DMODULE_TEMPLATE=$(Join-Path $Deps 'module-template')"
+    "-DMODULE_TEMPLATE=$(Join-Path $Deps 'module-template')" `
+    "-DMODULE_LINK_CACHE=$thinLtoCache"
 if ($LASTEXITCODE -ne 0) { Die "Module configure failed." }
 
-& $Cmake --build (Join-Path $Work 'build')
+& $Cmake --build (Join-Path $Work 'build') --parallel $jobs
 if ($LASTEXITCODE -ne 0) { Die "Module build failed." }
 
 $dll = Join-Path $Work "build\g${DiscId}_recomp.dll"

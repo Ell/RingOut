@@ -68,13 +68,18 @@ private:
 
 PlatformX11::~PlatformX11()
 {
+  RecompMenu::SetFullscreenCallback({});
+  RecompMenu::SetQuitCallback({});
 #ifdef HAVE_XRANDR
   delete m_xrr_config;
 #endif
 
   if (m_display)
   {
-    if (Config::Get(Config::MAIN_SHOW_CURSOR) == Config::ShowCursor::Never)
+    // Runtime shuts Config down before Platform's member is destroyed. The
+    // cursor handle itself records whether Init created one, so teardown does
+    // not need to read Config here.
+    if (m_blank_cursor != X_None)
       XFreeCursor(m_display, m_blank_cursor);
 
     XCloseDisplay(m_display);
@@ -93,7 +98,7 @@ bool PlatformX11::Init()
 #endif
     UpdateWindowPosition();
   });
-  RecompMenu::SetQuitCallback([this] { RequestShutdown(); });
+  RecompMenu::SetQuitCallback([this] { Stop(); });
 
   XInitThreads();
   m_display = XOpenDisplay(nullptr);
@@ -176,9 +181,11 @@ void PlatformX11::MainLoop()
     UpdateWindowPosition();
 
     RecompMenu::HostTick();
-    // While the menu is up emulation is paused, so nothing drives presentation
-    // and the overlay would freeze. Redraw it here at roughly 60Hz instead.
-    if (RecompMenu::IsOpen())
+    // Offline the menu pauses emulation, so nothing drives presentation and
+    // the overlay would freeze. Active netplay stays running and uses ordinary
+    // video-thread frames instead.
+    if (RecompMenu::IsOpen() &&
+        Core::GetState(Core::System::GetInstance()) == Core::State::Paused)
     {
       RecompMenu::PumpFrame();
       std::this_thread::sleep_for(std::chrono::milliseconds(16));
@@ -188,6 +195,8 @@ void PlatformX11::MainLoop()
     // TODO: Is this sleep appropriate?
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
+
+  RecompMenu::SetFastForward(false);
 }
 
 WindowSystemInfo PlatformX11::GetWindowSystemInfo() const
@@ -226,22 +235,19 @@ void PlatformX11::ProcessEvents()
       break;
     case KeyPress:
       key = XLookupKeysym((XKeyEvent*)&event, 0);
-      if (key == XK_Tab && !(event.xkey.state & Mod1Mask))
-      {
-        // Hold Tab = unlimited speed; Alt+Tab stays the window manager's.
-        RecompMenu::SetFastForward(true);
-        break;
-      }
       // Escape opens the settings overlay (and pauses) rather than quitting;
       // Shift+Escape remains an immediate quit.
       if (key == XK_Escape)
       {
+        RecompMenu::SetFastForward(false);
         if (event.xkey.state & ShiftMask)
-          RequestShutdown();
+          RecompMenu::RequestQuit();
         else
           RecompMenu::OnEscape();
         break;
       }
+      if (RecompMenu::IsQuitting())
+        break;
       if (RecompMenu::IsOpen())
       {
         // Swallow navigation while the overlay owns input.
@@ -257,19 +263,21 @@ void PlatformX11::ProcessEvents()
           RecompMenu::OnKey(RecompMenu::Key::Activate);
         break;
       }
+      if (key == XK_Tab && !(event.xkey.state & Mod1Mask))
+      {
+        // Hold Tab = unlimited speed; Alt+Tab stays the window manager's.
+        RecompMenu::SetFastForward(true);
+        break;
+      }
       if (key == XK_F10)
       {
-        if (Core::GetState(Core::System::GetInstance()) == Core::State::Running)
+        const bool pausing = RecompMenu::TogglePause();
+        if (Config::Get(Config::MAIN_SHOW_CURSOR) == Config::ShowCursor::Never)
         {
-          if (Config::Get(Config::MAIN_SHOW_CURSOR) == Config::ShowCursor::Never)
+          if (pausing)
             XUndefineCursor(m_display, m_window);
-          Core::SetState(Core::System::GetInstance(), Core::State::Paused);
-        }
-        else
-        {
-          if (Config::Get(Config::MAIN_SHOW_CURSOR) == Config::ShowCursor::Never)
+          else
             XDefineCursor(m_display, m_window, m_blank_cursor);
-          Core::SetState(Core::System::GetInstance(), Core::State::Running);
         }
       }
       else if ((key == XK_Return) && (event.xkey.state & Mod1Mask))
@@ -292,22 +300,31 @@ void PlatformX11::ProcessEvents()
       }
       else if (key >= XK_F1 && key <= XK_F8)
       {
-        int slot_number = key - XK_F1 + 1;
-        if (event.xkey.state & ShiftMask)
-          State::Save(Core::System::GetInstance(), slot_number);
-        else
-          State::Load(Core::System::GetInstance(), slot_number);
+        if (!RecompMenu::IsNetplayActive())
+        {
+          const int slot_number = key - XK_F1 + 1;
+          if (event.xkey.state & ShiftMask)
+            State::Save(Core::System::GetInstance(), slot_number);
+          else
+            State::Load(Core::System::GetInstance(), slot_number);
+        }
       }
       else if (key == XK_F9)
         Core::SaveScreenShot();
       else if (key == XK_F11)
-        State::LoadLastSaved(Core::System::GetInstance());
+      {
+        if (!RecompMenu::IsNetplayActive())
+          State::LoadLastSaved(Core::System::GetInstance());
+      }
       else if (key == XK_F12)
       {
-        if (event.xkey.state & ShiftMask)
-          State::UndoLoadState(Core::System::GetInstance());
-        else
-          State::UndoSaveState(Core::System::GetInstance());
+        if (!RecompMenu::IsNetplayActive())
+        {
+          if (event.xkey.state & ShiftMask)
+            State::UndoLoadState(Core::System::GetInstance());
+          else
+            State::UndoSaveState(Core::System::GetInstance());
+        }
       }
       break;
     case FocusIn:
@@ -333,7 +350,7 @@ void PlatformX11::ProcessEvents()
     {
       if ((unsigned long)event.xclient.data.l[0] ==
           XInternAtom(m_display, "WM_DELETE_WINDOW", False))
-        Stop();
+        RecompMenu::RequestQuit();
     }
     break;
     case ConfigureNotify:

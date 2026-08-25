@@ -323,29 +323,56 @@ public:
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER,
                 window_system == WindowSystem::Wayland ? "wayland" : "x11");
 #endif
-    if (!SDL_Init(SDL_INIT_VIDEO))
+    // This lobby is reached from a controller-driven in-game menu, so dropping
+    // gamepad support during the restart would strand controller-only users at
+    // the very next screen.
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
       return false;
-    const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    const float scale = std::max(SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay()), 1.0f);
     m_window = SDL_CreateWindow("Ring Out — Netplay Lobby",
                                 static_cast<int>(760 * scale),
                                 static_cast<int>(520 * scale),
                                 SDL_WINDOW_RESIZABLE |
                                     SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    if (!m_window)
+    if (!m_window) {
+      SDL_Quit();
       return false;
+    }
     m_renderer = SDL_CreateRenderer(m_window, nullptr);
-    if (!m_renderer)
+    if (!m_renderer) {
+      SDL_DestroyWindow(m_window);
+      m_window = nullptr;
+      SDL_Quit();
       return false;
+    }
     SDL_SetRenderVSync(m_renderer, 1);
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard |
+                      ImGuiConfigFlags_NavEnableGamepad;
     io.IniFilename = nullptr;   // do not litter the user dir
     ImGui::StyleColorsDark();
     ImGui::GetStyle().ScaleAllSizes(scale);
-    ImGui_ImplSDL3_InitForSDLRenderer(m_window, m_renderer);
-    ImGui_ImplSDLRenderer3_Init(m_renderer);
+    if (!ImGui_ImplSDL3_InitForSDLRenderer(m_window, m_renderer)) {
+      ImGui::DestroyContext();
+      SDL_DestroyRenderer(m_renderer);
+      SDL_DestroyWindow(m_window);
+      m_renderer = nullptr;
+      m_window = nullptr;
+      SDL_Quit();
+      return false;
+    }
+    if (!ImGui_ImplSDLRenderer3_Init(m_renderer)) {
+      ImGui_ImplSDL3_Shutdown();
+      ImGui::DestroyContext();
+      SDL_DestroyRenderer(m_renderer);
+      SDL_DestroyWindow(m_window);
+      m_renderer = nullptr;
+      m_window = nullptr;
+      SDL_Quit();
+      return false;
+    }
     m_open = true;
     return true;
   }
@@ -372,6 +399,13 @@ public:
       ImGui_ImplSDL3_ProcessEvent(&event);
       if (event.type == SDL_EVENT_QUIT ||
           event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        return false;
+      if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+          event.key.key == SDLK_ESCAPE)
+        return false;
+      if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+          (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST ||
+           event.gbutton.button == SDL_GAMEPAD_BUTTON_BACK))
         return false;
     }
     ImGui_ImplSDLRenderer3_NewFrame();
@@ -726,6 +760,16 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   if (options.controllers.empty())
     return static_cast<int>(NetplayExitCode::InvalidConfiguration);
 
+  // NetPlayServer initializes ENet, but a direct join constructs only a
+  // NetPlayClient. On Windows that used to reach enet_host_create before
+  // WSAStartup and fail every manual-IP join. Initialize both roles at the
+  // lobby boundary; ENet/WinSock state lives for the rest of this process just
+  // as it does in Dolphin's server path and the in-game LAN scanner.
+  if (enet_initialize() != 0) {
+    Log("could not initialize ENet");
+    return static_cast<int>(NetplayExitCode::Failed);
+  }
+
   Log("initializing Dolphin services");
   UICommon::SetUserDirectory(runtime_config.user_directory.string());
   UICommon::Init();
@@ -770,7 +814,11 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, true);
   Config::SetBase(Config::NETPLAY_SAVEDATA_WRITE, true);
   Config::SetBase(Config::NETPLAY_SAVEDATA_SYNC_ALL_WII, false);
-  Config::SetBase(Config::NETPLAY_SYNC_CODES, false);
+  // The in-game menu persists the host's selected AR/Gecko codes before this
+  // lobby starts. Let Dolphin transfer that exact active codelist to every
+  // client; merely syncing EnableCheats while each peer loads its own local
+  // selections is a deterministic desync waiting to happen.
+  Config::SetBase(Config::NETPLAY_SYNC_CODES, true);
   Config::SetBase(Config::NETPLAY_STRICT_SETTINGS_SYNC, true);
   Config::SetBase(Config::NETPLAY_NETWORK_MODE, std::string("fixeddelay"));
   Config::SetBase(Config::NETPLAY_USE_INDEX, false);
@@ -785,6 +833,11 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
   Config::SetBase(Config::MAIN_OVERCLOCK, 1.0f);
   Config::SetBase(Config::MAIN_VI_OVERCLOCK_ENABLE, false);
   Config::SetBase(Config::MAIN_VI_OVERCLOCK, 1.0f);
+  // Emulation speed is local pacing rather than synchronized guest state. A
+  // persisted offline fast/slow value would make one peer chronically outrun
+  // the other and trip fixed-delay timeouts even though their emulated bytes
+  // still agree. Netplay hotkeys/menu changes are locked for the same reason.
+  Config::SetBase(Config::MAIN_EMULATION_SPEED, 1.0f);
 
   // Dolphin drops all input, pipe included, whenever the render window lacks
   // focus, and it defaults to off. That is wrong for netplay in two ways: a

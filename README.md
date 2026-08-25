@@ -24,10 +24,13 @@ compile step. Runs in both Desktop and Game Mode at 45–49 fps in a match.
 **Windows x86-64**: revived as an experimental portable package. The runtime
 and recompiler are cross-compiled with MinGW on Linux; first-run compilation
 uses the Windows-native LLVM, CMake, Ninja and Python tools bundled in the ZIP.
-The executables are Wine loader-tested, but gameplay still needs validation on
-real Windows hardware.
+Earlier prereleases have booted and reached gameplay on real Windows hardware;
+the release workflow now also runs the exact portable ZIP through Wine and
+builds/loads a synthetic recompilation module with its bundled tools. Physical
+Windows setup, menu, gameplay and two-peer netplay QA is still recommended
+before treating an experimental prerelease as stable.
 
-**Netplay**: working. Rollback over a deterministic dual-core setup, with a lobby
+**Netplay**: working. Fixed-delay play over a deterministic dual-core setup, with a lobby
 showing live ping and per-player game status; two peers stayed byte-identical
 over 6,470 frames.
 
@@ -41,7 +44,8 @@ Packages are available from the [Releases](../../releases) page:
 | --- | --- | --- |
 | `RingOut-1.2.1-linux-x86_64.zip` | desktop Linux | yes — compiles on your machine |
 | `RingOut-1.2.1-steamdeck-x86_64.zip` | Steam Deck / SteamOS | no — prebuilt |
-| `RingOut-1.2.1-ell.3-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
+| `RingOut-1.2.1-ell.4-linux-x86_64.AppImage` | Linux x86-64 (experimental) | yes — compiles on your machine |
+| `RingOut-1.2.1-ell.4-windows-x86_64.zip` | Windows 10/11 x86-64 (experimental) | no — toolchain bundled |
 
 The Deck package ships no module: build one on a desktop with the package below,
 then copy `game/` and `bin/gGRSEAF_recomp.so` across. Add `RingOut` to Steam as a
@@ -67,6 +71,22 @@ Do not run it from inside the ZIP or install it under `Program Files`: first-run
 setup creates `game/`, `work/`, and the private recompiled module beside the
 launcher.
 
+For the AppImage, make the download executable and run it:
+
+```sh
+chmod +x RingOut-1.2.1-ell.4-linux-x86_64.AppImage
+./RingOut-1.2.1-ell.4-linux-x86_64.AppImage
+```
+
+Its read-only image keeps generated files, saves and settings under
+`${XDG_DATA_HOME:-$HOME/.local/share}/ringout`. Set `RINGOUT_DATA_DIR` to choose
+another dedicated writable directory. On a system without FUSE, set
+`APPIMAGE_EXTRACT_AND_RUN=1`, or use `--appimage-extract` and run the extracted
+`AppRun`. Keep the adjacent checksummed
+`RingOut-1.2.1-ell.4-appimage-runtime-sources.tar.zst` release asset available
+with the AppImage; it contains the exact static-prefix source and libfuse
+relink materials named by the image's `SOURCE.txt`.
+
 ### Requirements
 
 - A GameCube disc image you already own
@@ -82,9 +102,11 @@ extraction. Its compiler toolchain is included; antivirus software can
 occasionally quarantine `clang.exe` or `lld.exe` and may need an exception for
 the extracted package folder.
 
-The release binary is built on **glibc 2.44**. For older hosts the launcher falls
-back to a bundled glibc in `libc-fallback/` — see [Known issues](#known-issues)
-before relying on that.
+The legacy desktop ZIP binary is built on **glibc 2.44**. For older hosts its
+launcher falls back to a bundled glibc in `libc-fallback/` — see
+[Known issues](#known-issues) before relying on that. The AppImage runtime is
+built on Debian 12 and validated with a **glibc 2.36** symbol-version ceiling;
+it does not replace the host's graphics drivers.
 
 ---
 
@@ -113,7 +135,9 @@ before relying on that.
 | --- | --- |
 | `Escape` | settings menu |
 | Arrow keys | navigate; Left/Right change a value or switch tab |
-| `Space` | confirm / activate |
+| `Space` / `Enter` | confirm / activate |
+| Controller Back/View (hold) | settings menu |
+| Controller D-pad / A / B | navigate / activate / back |
 | `Alt+W` | toggle widescreen |
 | `Alt+Enter` | fullscreen |
 | `F1`–`F8` / `Shift+F1`–`F8` | load / save state |
@@ -121,6 +145,22 @@ before relying on that.
 
 Free camera (enable in the Video tab): `Shift+WASD` move, `Shift+Q/E` down/up,
 `Shift+arrows` look, `Shift+Z/C` roll, `Shift+1/2` speed, `Shift+R` reset.
+
+### Netplay and cheats
+
+Open the settings menu and use the System tab to host or join. Both players need
+the same Ring Out release and compatible disc revision/module. The default port
+is UDP 2626; direct Internet hosting may require forwarding the selected port.
+Starting netplay restarts the runtime into its lobby, which is expected.
+During a match the overlay stays live without pausing either peer. Core-state
+controls (speed, pause, save/load/reset), controller rebinding, and cheats are
+locked; menu navigation is suppressed from the game while the overlay is open.
+
+Codes ship disabled. The host's enabled AR/Gecko codes are synchronized to the
+guest before boot. Choose any unlock codes before starting: the Cheats tab is
+read-only during a match so one peer cannot change deterministic state alone.
+Unlock codes alter live emulated memory and do not guarantee permanent
+memory-card progression.
 
 ---
 
@@ -182,8 +222,9 @@ back end is saturated at IPC 1.92. The workload is not inefficient, just large:
   OpenGL, Cubeb/OpenAL audio, and SDL input. Microsoft-SDK-only Direct3D,
   WASAPI, native Windows controller backends, and the native Bluetooth Wii
   Remote transport are omitted. QWave/DSCP traffic marking is also omitted;
-  netplay itself remains available. The release is cross-built and Wine-smoked,
-  not yet gameplay-verified on real Windows hardware.
+  netplay itself remains available. The release is cross-built and Wine-smoked;
+  physical Windows setup, gameplay, menu and two-peer netplay QA remains a
+  recommended follow-up for every experimental prerelease.
 - The `-march=native` build is machine-specific by design; setup compiles on your
   own machine, so this only matters if you copy a built folder to another CPU.
 
@@ -248,6 +289,8 @@ the sources shipped beside it.
 .github/scripts/package-deck.sh     # Steam Deck zip
 .github/scripts/package-dist.sh     # desktop Linux zip
 .github/scripts/package-windows-cross.sh --help
+.github/scripts/package-appimage.sh --help
+.github/scripts/package-appimage-runtime-sources.sh --help
 .github/scripts/regen-source.sh     # refresh the GPL source shipment
 ```
 
@@ -261,6 +304,7 @@ the sources shipped beside it.
 | `dist/RingOut-1.0-dist/` | the desktop redistributable: launcher, `setup.sh`, module build recipe |
 | `dist/RingOut-1.0-deck/` | the Steam Deck package scaffolding |
 | `dist/windows/` | version-neutral Windows launcher and first-run setup scaffolding |
+| `dist/appimage/` | version-neutral Linux AppImage entry point, metadata and documentation |
 | `dist/shared/gc-art.py` | extracts the game's banner and icon on the player's machine |
 | `.github/scripts/` | packaging, the privacy scan, the GPL source shipment, benchmarks |
 | `work/mg_userdir/GameSettings/GRSEAF.ini` | the verified cheat codes |

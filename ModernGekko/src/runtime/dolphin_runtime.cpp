@@ -40,6 +40,7 @@
 #include <cstdlib>
 #include <fmt/format.h>
 #include <mutex>
+#include <optional>
 #include <ranges>
 #include <thread>
 #include <utility>
@@ -80,7 +81,7 @@ std::string FormatWindowTitle(const std::string &title, double fps) {
 std::vector<std::string> Host_GetPreferredLocales() { return {}; }
 void Host_PPCSymbolsChanged() {}
 void Host_PPCBreakpointsChanged() {}
-bool Host_UIBlocksControllerState() { return false; }
+bool Host_UIBlocksControllerState() { return RecompMenu::CapturesGameInput(); }
 void Host_Message(HostMessageID id) {
   if (id == HostMessageID::WMUserStop && s_platform)
     s_platform->Stop();
@@ -138,6 +139,7 @@ struct Runtime::Impl {
   bool controllers_initialized = false;
   bool booted = false;
   std::atomic<bool> running{false};
+  std::atomic<bool> stop_requested{false};
 };
 
 namespace detail {
@@ -420,12 +422,18 @@ void ApplyModuleSourceToJit(const ModuleSource &module) {
 
 // Takes whatever boot session data a host (netplay) staged for this run; the
 // slot is one-shot, so it is cleared whether or not anything was there.
-std::unique_ptr<BootParameters> TakeBootParameters(const std::string &main_dol) {
+std::unique_ptr<BootParameters>
+TakeBootParameters(const std::string &main_dol,
+                   std::optional<std::string> auto_resume_path) {
   std::lock_guard lock(s_runtime_mutex);
   std::unique_ptr<BootParameters> boot;
   if (s_boot_session_data)
     boot = BootParameters::GenerateFromFile(main_dol,
                                             std::move(*s_boot_session_data));
+  else if (auto_resume_path)
+    boot = BootParameters::GenerateFromFile(
+        main_dol, BootSessionData(std::move(auto_resume_path),
+                                  DeleteSavestateAfterBoot::No));
   else
     boot = BootParameters::GenerateFromFile(main_dol);
   s_boot_session_data.reset();
@@ -504,6 +512,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
 
 Runtime::~Runtime() {
   RequestStop();
+  RecompMenu::PrepareForShutdown();
   if (m_impl->booted) {
     Core::Stop(Core::System::GetInstance());
     Core::Shutdown(Core::System::GetInstance());
@@ -526,8 +535,14 @@ RuntimeRunResult Runtime::Run() {
             RuntimeError{RuntimeErrorCode::InvalidState,
                          "runtime is already running"}};
 
-  std::unique_ptr<BootParameters> boot =
-      TakeBootParameters(m_impl->metadata.main_dol.string());
+  // Dolphin's native boot-session savestate path loads on the CPU thread while
+  // the core is Starting. Host-synchronized netplay session data, when staged,
+  // takes precedence inside TakeBootParameters over this local offline save.
+  std::optional<std::string> auto_resume_path;
+  if (!m_impl->config.headless)
+    auto_resume_path = RecompMenu::GetAutoResumePathForBoot();
+  std::unique_ptr<BootParameters> boot = TakeBootParameters(
+      m_impl->metadata.main_dol.string(), std::move(auto_resume_path));
   if (!boot) {
     m_impl->running = false;
     return {RuntimeExitReason::BootFailed,
@@ -541,20 +556,18 @@ RuntimeRunResult Runtime::Run() {
       });
   if (!BootManager::BootCore(Core::System::GetInstance(), std::move(boot),
                              m_impl->platform->GetWindowSystemInfo())) {
+    RecompMenu::PrepareForShutdown();
     m_impl->running = false;
     return {RuntimeExitReason::BootFailed,
             RuntimeError{RuntimeErrorCode::BootFailed,
                          "Dolphin could not boot sys/main.dol"}};
   }
   m_impl->booted = true;
-  // Continue-where-you-left-off (menu System > Auto-Resume). Headless runs are
-  // benchmarks/verification; loading a state there would corrupt them.
-  if (!m_impl->config.headless)
-    RecompMenu::ScheduleAutoResumeLoad();
   std::jthread title_thread;
   if (!m_impl->config.headless && m_impl->config.show_fps_in_title)
     title_thread = StartTitleThread();
   m_impl->platform->MainLoop();
+  RecompMenu::PrepareForShutdown();
   title_thread.request_stop();
   if (title_thread.joinable())
     title_thread.join();
@@ -567,22 +580,45 @@ RuntimeRunResult Runtime::Run() {
 }
 
 void Runtime::RequestStop() {
-  if (m_impl && m_impl->platform)
-    m_impl->platform->RequestShutdown();
+  if (!m_impl || !m_impl->platform)
+    return;
+  m_impl->stop_requested.store(true, std::memory_order_release);
+
+  // A UI runtime can be paused by either the overlay or F10. Direct platform
+  // shutdown joins the CPU thread and can therefore wedge forever while that
+  // thread is parked. Route live UI sessions through the overlay's tracked
+  // resume-then-stop path; headless runs, unsupported UI platforms, and the
+  // destructor after Run() retain the direct fallback.
+  const Core::State core_state = Core::GetState(Core::System::GetInstance());
+  const bool has_live_cpu = core_state == Core::State::Running ||
+                            core_state == Core::State::Paused;
+  if (m_impl->running.load(std::memory_order_acquire) && has_live_cpu &&
+      !m_impl->config.headless && RecompMenu::RequestQuit())
+    return;
+  // Graceful shutdown is serviced by the emulated CPU. If an API caller paused
+  // that CPU (or this platform has no menu callback), end the host loop now;
+  // PrepareForShutdown below will resume it before Core teardown.
+  if (core_state == Core::State::Paused) {
+    m_impl->platform->Stop();
+    return;
+  }
+  m_impl->platform->RequestShutdown();
 }
 
 std::optional<RuntimeError> Runtime::Pause() {
-  if (!m_impl->running)
+  if (!m_impl->running || m_impl->stop_requested.load(std::memory_order_acquire) ||
+      RecompMenu::IsQuitting() || NetPlay::IsNetPlayRunning())
     return RuntimeError{RuntimeErrorCode::InvalidState,
-                        "runtime is not running"};
+                        "runtime is not running, is stopping, or is in netplay"};
   Core::SetState(Core::System::GetInstance(), Core::State::Paused);
   return {};
 }
 
 std::optional<RuntimeError> Runtime::Resume() {
-  if (!m_impl->running)
+  if (!m_impl->running || m_impl->stop_requested.load(std::memory_order_acquire) ||
+      RecompMenu::IsQuitting() || NetPlay::IsNetPlayRunning())
     return RuntimeError{RuntimeErrorCode::InvalidState,
-                        "runtime is not running"};
+                        "runtime is not running, is stopping, or is in netplay"};
   Core::SetState(Core::System::GetInstance(), Core::State::Running);
   return {};
 }

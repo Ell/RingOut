@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# AppImage entry point.  The SquashFS mount is read-only, but Ring Out's first
+# run extracts a disc and builds a private module.  Keep that mutable state in
+# the user's data directory and expose the package-owned payload through links
+# that remain valid for the lifetime of this AppImage process.
+set -euo pipefail
+umask 077
+
+APPDIR="${APPDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+PAYLOAD="$APPDIR/usr/share/ringout"
+
+if [[ -n "${RINGOUT_DATA_DIR:-}" ]]; then
+  DATA_DIR=$RINGOUT_DATA_DIR
+elif [[ -n "${XDG_DATA_HOME:-}" ]]; then
+  DATA_DIR="$XDG_DATA_HOME/ringout"
+elif [[ -n "${HOME:-}" ]]; then
+  DATA_DIR="$HOME/.local/share/ringout"
+else
+  echo "Ring Out: HOME is unset; set RINGOUT_DATA_DIR to a writable directory." >&2
+  exit 1
+fi
+
+data_dir_created=0
+if [[ ! -e "$DATA_DIR" ]]; then
+  mkdir -p -m 700 "$DATA_DIR"
+  data_dir_created=1
+elif [[ ! -d "$DATA_DIR" ]]; then
+  echo "Ring Out: data path is not a directory: $DATA_DIR" >&2
+  exit 1
+fi
+DATA_DIR="$(cd "$DATA_DIR" && pwd -P)"
+if [[ ! -O "$DATA_DIR" ]]; then
+  echo "Ring Out: data directory is not owned by the current user: $DATA_DIR" >&2
+  exit 1
+fi
+if (( data_dir_created )); then
+  chmod 700 "$DATA_DIR"
+elif [[ "$(stat -c '%a' "$DATA_DIR")" != 700 ]]; then
+  echo "Ring Out: existing data directory must be private (mode 700): $DATA_DIR" >&2
+  echo "Run: chmod 700 \"$DATA_DIR\"" >&2
+  exit 1
+fi
+mkdir -p -m 700 "$DATA_DIR/bin" "$DATA_DIR/tools" \
+  "$DATA_DIR/userdata/GameSettings" "$DATA_DIR/.appimage-assets"
+chmod 700 "$DATA_DIR/bin" "$DATA_DIR/tools" "$DATA_DIR/userdata" \
+  "$DATA_DIR/userdata/GameSettings" "$DATA_DIR/.appimage-assets"
+case "$DATA_DIR/" in
+  "$APPDIR/"|"$APPDIR/"*)
+    echo "Ring Out: the data directory cannot be inside the read-only AppImage." >&2
+    exit 1
+    ;;
+esac
+
+# These names belong to the AppImage payload.  Refuse to erase an unrelated
+# real file/directory if somebody points RINGOUT_DATA_DIR at an existing ZIP
+# install; choosing a fresh data directory is safer than guessing ownership.
+link_payload() {
+  local source=$1 destination=$2
+  if [[ -e "$destination" && ! -L "$destination" ]]; then
+    echo "Ring Out: reserved AppImage path already exists: $destination" >&2
+    echo "Choose an empty RINGOUT_DATA_DIR or move that path aside." >&2
+    exit 1
+  fi
+  ln -sfnT "$source" "$destination"
+}
+
+# A graphical terminal can outlive the original AppImage process during first
+# run. Keep every immutable input used by setup in a versioned private copy, so
+# that process never depends on a transient FUSE mount. The completed directory
+# appears atomically; old versions remain valid for an in-flight setup after an
+# AppImage upgrade.
+ASSET_ID="$(sed -n '1p' "$PAYLOAD/VERSION")"
+[[ "$ASSET_ID" =~ ^[A-Za-z0-9._+-]+$ ]] || {
+  echo "Ring Out: invalid packaged asset version: $ASSET_ID" >&2
+  exit 1
+}
+ASSET_DIR="$DATA_DIR/.appimage-assets/$ASSET_ID"
+if [[ ! -f "$ASSET_DIR/.complete" ]]; then
+  if [[ -e "$ASSET_DIR" || -L "$ASSET_DIR" ]]; then
+    echo "Ring Out: incomplete versioned setup assets: $ASSET_DIR" >&2
+    echo "Remove that path and launch the AppImage again." >&2
+    exit 1
+  fi
+  ASSET_TMP="$DATA_DIR/.appimage-assets/.$ASSET_ID.tmp.$$"
+  rm -rf -- "$ASSET_TMP"
+  mkdir -m 700 "$ASSET_TMP"
+  install -m 700 "$APPDIR/usr/bin/dolrecomp" "$ASSET_TMP/dolrecomp"
+  install -m 700 "$PAYLOAD/gc-art.py" "$ASSET_TMP/gc-art.py"
+  cp -a "$PAYLOAD/module-src" "$ASSET_TMP/module-src"
+  cp -a "$PAYLOAD/LICENSES/AppImage-runtime" \
+    "$ASSET_TMP/AppImage-runtime-licenses"
+  chmod -R go-rwx "$ASSET_TMP"
+  printf '%s\n' "$ASSET_ID" >"$ASSET_TMP/.complete"
+  if ! mv -T "$ASSET_TMP" "$ASSET_DIR"; then
+    rm -rf -- "$ASSET_TMP"
+    [[ -f "$ASSET_DIR/.complete" ]] || {
+      echo "Ring Out: could not install versioned setup assets." >&2
+      exit 1
+    }
+  fi
+fi
+
+link_payload "$APPDIR/usr/bin/moderngekko-run" "$DATA_DIR/bin/moderngekko-run"
+link_payload "$ASSET_DIR/dolrecomp" "$DATA_DIR/tools/dolrecomp"
+link_payload "$ASSET_DIR/gc-art.py" "$DATA_DIR/tools/gc-art.py"
+link_payload "$ASSET_DIR/module-src" "$DATA_DIR/module-src"
+link_payload "$ASSET_DIR/AppImage-runtime-licenses" \
+  "$DATA_DIR/AppImage-runtime-licenses"
+link_payload "$PAYLOAD/shaders" "$DATA_DIR/shaders"
+link_payload "$APPDIR/usr/lib" "$DATA_DIR/lib"
+
+# Refresh version-owned scripts and documentation on every launch.  game/,
+# work/, userdata/, art/, and private g*_recomp.so modules are never touched.
+install -m 700 "$PAYLOAD/RingOut.payload" "$DATA_DIR/RingOut.payload"
+install -m 700 "$PAYLOAD/setup.sh" "$DATA_DIR/setup.sh"
+install -m 600 "$PAYLOAD/README.txt" "$DATA_DIR/README.txt"
+install -m 600 "$PAYLOAD/CREDITS.txt" "$DATA_DIR/CREDITS.txt"
+install -m 600 "$PAYLOAD/SOURCE.txt" "$DATA_DIR/SOURCE.txt"
+install -m 600 "$PAYLOAD/SYSTEM-LIBRARIES.tsv" \
+  "$DATA_DIR/SYSTEM-LIBRARIES.tsv"
+install -m 600 "$PAYLOAD/TOOLCHAIN-COMPONENTS.tsv" \
+  "$DATA_DIR/TOOLCHAIN-COMPONENTS.tsv"
+install -m 600 "$PAYLOAD/APPIMAGE-RUNTIME-COMPONENTS.tsv" \
+  "$DATA_DIR/APPIMAGE-RUNTIME-COMPONENTS.tsv"
+install -m 600 "$PAYLOAD/BUILD-ENVIRONMENT.tsv" \
+  "$DATA_DIR/BUILD-ENVIRONMENT.tsv"
+
+# Seed the authored code list once.  Never overwrite the local file: enabled
+# codes and any additions are user configuration after the first launch.
+if [[ ! -e "$DATA_DIR/userdata/GameSettings/GRSEAF.ini" ]]; then
+  install -m 600 "$PAYLOAD/GRSEAF.ini" \
+    "$DATA_DIR/userdata/GameSettings/GRSEAF.ini"
+fi
+
+# setup.sh writes a desktop entry pointing at <data>/RingOut.  Make that a
+# stable trampoline back to the AppImage, rather than to a transient mount.
+# APPIMAGE is supplied by the type-2 runtime; direct AppDir tests use AppRun.
+launch_target="${APPIMAGE:-$APPDIR/AppRun}"
+if [[ "$launch_target" == *$'\n'* ]]; then
+  echo "Ring Out: the AppImage path contains a newline and cannot be recorded." >&2
+  exit 1
+fi
+printf '%s\n' "$launch_target" >"$DATA_DIR/.appimage-path"
+cat >"$DATA_DIR/RingOut" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+target="$(sed -n '1p' "$here/.appimage-path")"
+[[ -n "$target" ]] || { echo "Ring Out: AppImage path is missing." >&2; exit 1; }
+exec "$target" "$@"
+WRAPPER
+chmod 700 "$DATA_DIR/RingOut"
+
+case "${1:-}" in
+  --ringout-data-dir)
+    printf '%s\n' "$DATA_DIR"
+    exit 0
+    ;;
+  --ringout-self-test)
+    [[ -x "$DATA_DIR/bin/moderngekko-run" ]]
+    [[ -x "$DATA_DIR/tools/dolrecomp" ]]
+    [[ -s "$DATA_DIR/module-src/CMakeLists.txt" ]]
+    [[ -s "$DATA_DIR/APPIMAGE-RUNTIME-COMPONENTS.tsv" ]]
+    [[ -s "$DATA_DIR/AppImage-runtime-licenses/SHA256SUMS" ]]
+    (
+      cd "$DATA_DIR/AppImage-runtime-licenses"
+      sha256sum -c SHA256SUMS >/dev/null
+    )
+    [[ -s "$APPDIR/usr/bin/Sys/GC/dsp_rom.bin" ]]
+    LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      "$DATA_DIR/bin/moderngekko-run" --help >/dev/null
+    "$DATA_DIR/tools/dolrecomp" --help >/dev/null
+    [[ ! -e "$DATA_DIR/game" ]]
+    if find "$DATA_DIR/bin" -maxdepth 1 -type f \
+         \( -name 'g*_recomp.so' -o -name 'g*_recomp.dll' \) -print -quit |
+       grep -q .; then
+      echo "Ring Out: self-test data directory unexpectedly contains a module." >&2
+      exit 1
+    fi
+    echo "Ring Out AppImage self-test passed"
+    exit 0
+    ;;
+esac
+
+exec "$DATA_DIR/RingOut.payload" "$@"

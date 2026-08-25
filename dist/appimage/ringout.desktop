@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ring Out
+Comment=GameCube static-recompilation frontend
+Exec=RingOut %f
+Icon=ringout
+Terminal=true
+Categories=Game;Emulator;
+StartupNotify=true

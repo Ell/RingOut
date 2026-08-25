@@ -69,6 +69,9 @@
 /build-dist-native/
 /build-dolrecomp-static/
 /build-dolrecomp/
+# Debian 12 runtime/recompiler trees used by the AppImage workflow.
+/build-appimage/
+/build-dolrecomp-appimage/
 # Linux-to-Windows CMake trees used by the cross-build workflow and local QA.
 /build-windows-cross*/
 # root-level ccache/CMake cache written by those trees -- 700 MB+ and never
@@ -97,6 +100,11 @@ compile_commands.json
 # ignored /dist/out/ directory; only these launcher/setup sources are tracked.
 !/dist/windows/
 !/dist/windows/**
+# Version-neutral AppImage entry point, metadata, icon and documentation.
+# Built .AppImage files and runtime source/relink companions remain under the
+# ignored /dist/out/ directory.
+!/dist/appimage/
+!/dist/appimage/**
 # redistributable: ship the scaffolding, never the built payload
 /dist/RingOut-1.0-dist/bin/
 /dist/RingOut-1.0-dist/lib/
@@ -131,6 +139,10 @@ compile_commands.json
 # Local / personal
 # ---------------------------------------------------------------------------
 /.claude/
+# Generated Python bytecode is never source, including caches produced by the
+# release smoke tests themselves.
+__pycache__/
+*.py[cod]
 *.log
 # Core dumps -- ROOT ONLY. Unanchored, "core" matches every directory named
 # core (SDL's src/core/, ...) and "core.*" matches core.h / core.c, which
