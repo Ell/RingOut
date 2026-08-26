@@ -336,12 +336,20 @@ translation, then CMake inherited the image's Debian 12 `LD_LIBRARY_PATH` and
 failed because its host executables require `GLIBCXX_3.4.32` and
 `CXXABI_1.3.15`. This does not invalidate the source-bound artifacts or Windows
 package, but it is a player-blocking AppImage integration defect. The release
-is preserved for provenance and will be marked superseded rather than having
+is preserved for provenance and is marked superseded rather than having
 its immutable source-bound assets silently replaced.
 
-### v1.2.1-ell.10 — Linux replacement candidate
+### v1.2.1-ell.10 — published Linux replacement
 
 Implementation checkpoint: `b10380d6` (2026-08-25).
+
+Release source: `df76814a0e05655dcbf1efec05620bc02dad0f48`.
+
+Annotated tag object: `67fa2bf50854a215fe85af2fce2848a1d125825c`.
+
+Public prerelease: [v1.2.1-ell.10](https://github.com/Ell/RingOut/releases/tag/v1.2.1-ell.10),
+published 2026-08-26 00:04:16 UTC. `.ell.9` remains available with a prominent
+superseded warning; its assets were not deleted or replaced.
 
 The candidate preserves the caller's pre-AppImage library environment and
 restores it only for host build tools. It also requires compiler probes to exit
@@ -367,21 +375,36 @@ The final validation-only candidate was
 SHA-256
 `be32ed25094307d23fda6d14360815a43819ce23217a319c8de6102f93699082`.
 It is dirty-tree QA evidence, not the release artifact. Publication remains
-conditional on clean tagged Windows and Linux workflow results.
+separate from that local digest.
+
+Both clean, source-bound tag workflows passed:
+
+- Windows [32912875418](https://github.com/Ell/RingOut/actions/runs/32912875418)
+  rebuilt and packaged the portable ZIP, then passed its exact-package Wine
+  first-run toolchain/module smoke before joining the source-bound draft.
+- Linux [32912875400](https://github.com/Ell/RingOut/actions/runs/32912875400)
+  passed 45/45 runtime tests, the static DolRecomp suite, the new contaminated-
+  environment/failing-clang module smoke, the AppImage self-test, and the clean
+  Ubuntu 24.04 no-FUSE smoke before joining the same draft.
+
+All three public payloads were downloaded after both uploads, matched their
+adjacent `.sha256` files and GitHub asset digests, and embedded source commit
+`df76814a0e05655dcbf1efec05620bc02dad0f48`. The AppImage `SOURCE.txt` also
+names the exact same-release runtime source/relink archive and digest.
 
 ## What the current release pipeline actually tests
 
-| Layer | `.9` evidence | Important boundary |
+| Layer | `.10` evidence | Important boundary |
 | --- | --- | --- |
 | Linux runtime build/tests | Debian 12 container builds runtime, module inspector, and tests; `ctest` reports 45/45. | This is host-side unit/integration coverage, not a real game session. |
 | Static DolRecomp | Separately configured static executable; 14/14 tests pass and `readelf` rejects an ELF interpreter. | Uses project-authored fixtures/synthetic input, not distributed game data. |
 | Windows cross-build | MinGW Release runtime and DolRecomp compile; tests are explicitly off. | Successful PE compilation is not native Windows execution. |
 | Windows whole-package smoke | Exact ZIP is extracted into a fresh Wine prefix; its bundled Python creates a synthetic DOL, bundled DolRecomp translates it, bundled CMake/Ninja/Clang/`lld` builds a ThinLTO DLL, and Windows Python loads/checks the ABI and gather-pipe export. | The smoke exits before real game data or a graphics device; it does not cover GPU/audio/controller behavior. |
-| AppImage module smoke | Exact extracted AppImage payload translates a synthetic DOL, builds an x86-64 ELF module, `dlopen`s it, and checks ABI/entry metadata. | Does not exercise a real disc or gameplay. |
+| AppImage module smoke | Exact extracted AppImage payload runs the packaged setup helper with an intentionally contaminated library path and broken `clang`, restores the host environment, falls back to GCC, translates a synthetic DOL, builds an x86-64 ELF module, `dlopen`s it, and checks ABI/entry metadata. | Does not exercise gameplay; the separate local real-disc build is host-specific evidence. |
 | AppImage clean-host smoke | Exact AppImage runs `--ringout-self-test` as uid 65534 in a digest-pinned Ubuntu 24.04 container with no network, no capabilities, no FUSE, and `no-new-privileges`. | Proves extraction/startup self-test, not desktop integration, rendering, sound, or input. |
 | Package policy | Both packages validate manifests, exact source/provenance, licence payload, privacy, and absence of disc/save/generated-module data. Windows also validates PE import closure and ZIP timestamps; AppImage validates DSO/source closure and glibc floor. | Policy checks cannot prove runtime correctness. |
-| Netplay protocol test | `moderngekko.netplay_protocol` is one test in the 36-test Linux runtime tree. | It is localhost/protocol coverage, not Internet traversal, adverse-network simulation, cross-platform interoperability, or two physical peers. |
-| Release publication | Publisher tests simulate tag/source checks, draft creation/joining, races, and immutable digest comparisons. Public `.9` API metadata and sidecars match. | Publication integrity does not add gameplay evidence. |
+| Netplay protocol test | `moderngekko.netplay_protocol` is one test in the 45-test Linux runtime tree. | It is localhost/protocol coverage, not Internet traversal, adverse-network simulation, cross-platform interoperability, or two physical peers. |
+| Release publication | Publisher tests simulate tag/source checks, draft creation/joining, races, and immutable digest comparisons. Public `.10` API metadata and sidecars match. | Publication integrity does not add gameplay evidence. |
 
 Source anchors for those claims:
 
@@ -419,6 +442,9 @@ downloaded `.sha256` sidecars on 2026-08-25.
 | `RingOut-1.2.1-ell.9-windows-x86_64.zip` | 221,073,074 | `d1b360fffd1d1d4c077db441399656c769e746557dde5f248e56f15857e88e30` |
 | `RingOut-1.2.1-ell.9-linux-x86_64.AppImage` | 34,163,192 | `4039cc29eef1decde221e21a41d08fa920e8a1a0f7380fa40ba456d5c052d5db` |
 | `RingOut-1.2.1-ell.9-appimage-runtime-sources.tar.zst` | 4,741,097 | `e0de41d231475521e3c82d1a6692137637f96c09e2cdf7d5a096581256320111` |
+| `RingOut-1.2.1-ell.10-windows-x86_64.zip` | 221,109,204 | `fb5274be369aeffedfa718fe37076eb12b336a5dd6115e46b0386c10c9cbab23` |
+| `RingOut-1.2.1-ell.10-linux-x86_64.AppImage` | 34,163,192 | `6dc3db976e6c1db044bc7eaa3a77fc3861757f61a17f8c73564d57bb7d55f8df` |
+| `RingOut-1.2.1-ell.10-appimage-runtime-sources.tar.zst` | 4,741,081 | `7a8db4b8dcfad9a545a8e317020bf3904993ad761623eee72f999372dd0651bc` |
 
 The checkout retains byte-identical local copies of the published `.1`, `.2`,
 and `.3` ZIPs under `dist/out/`; their hashes and internal `SOURCE.txt` commits

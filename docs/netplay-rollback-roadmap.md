@@ -32,7 +32,7 @@ Recommended product wording until the staged plan is complete:
 > not available in releases.
 
 That wording is the historical recommendation for the audited commit. Public
-prerelease `v1.2.1-ell.9` now exposes the implemented rollback path as a beta;
+prerelease `v1.2.1-ell.10` now exposes the implemented rollback path as a beta;
 the remaining physical/cross-platform and adverse-network gaps below still
 apply.
 
