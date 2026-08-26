@@ -384,7 +384,7 @@ verify_hook_profiles() {
         fail "$peer did not enable the full-emulator SC2 engine replay probe"
       grep -Fq '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' "$log" ||
         fail "$peer did not execute the symmetric SC2 engine replay sequence"
-      grep -Eq '^\[sc2-engine-external\] result reads=[0-9]+ writes=[0-9]+ read_sites=[0-9]+ write_sites=[0-9]+ fallback_instructions=[0-9]+ overflow=no complete=yes$' "$log" ||
+      grep -Eq '^\[sc2-engine-external\] result reads=[0-9]+ writes=[0-9]+ read_sites=[0-9]+ write_sites=[0-9]+ read_block_sites=[0-9]+ write_block_sites=[0-9]+ fallback_instructions=[0-9]+ overflow=no complete=yes$' "$log" ||
         fail "$peer did not complete the SC2 engine external-effect profile"
       result="$(grep -F '[sc2-engine-replay] full-state-result ' "$log" | tail -1)"
       [ -n "$result" ] || fail "$peer produced no SC2 engine replay result"

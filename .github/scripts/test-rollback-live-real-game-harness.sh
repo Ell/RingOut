@@ -68,7 +68,7 @@ cp -a "$WORK/hook-profile" "$WORK/engine-replay"
 for peer in host guest; do
   printf '%s\n' \
     '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628' \
-    '[sc2-engine-external] result reads=4 writes=0 read_sites=2 write_sites=0 fallback_instructions=0 overflow=no complete=yes' \
+    '[sc2-engine-external] result reads=4 writes=0 read_sites=2 write_sites=0 read_block_sites=2 write_block_sites=0 fallback_instructions=0 overflow=no complete=yes' \
     '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' \
     '[sc2-engine-replay] full-state-result state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=4 external_profile_complete=yes endpoint_bytes=49360152 replay_bytes=49360152 differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=34063786066743458 replay_tb=34063786066743458' \
     >> "$WORK/engine-replay/$peer/log.txt"

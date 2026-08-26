@@ -656,6 +656,8 @@ void StaticRecompCore::ObserveSc2EngineExternalAccess(const bool write, const u3
 
   constexpr std::size_t MAX_SITES = 256;
   auto& sites = write ? m_sc2_engine_external_writes : m_sc2_engine_external_reads;
+  auto& block_sites =
+      write ? m_sc2_engine_external_write_blocks : m_sc2_engine_external_read_blocks;
   u64& total = write ? m_sc2_engine_external_write_count : m_sc2_engine_external_read_count;
   ++total;
   const u64 key = (static_cast<u64>(address) << 8) | size;
@@ -672,6 +674,22 @@ void StaticRecompCore::ObserveSc2EngineExternalAccess(const bool write, const u3
   {
     m_sc2_engine_external_profile_overflow = true;
   }
+
+  constexpr std::size_t MAX_BLOCK_SITES = 2048;
+  const u64 block_key = (static_cast<u64>(m_guest.pc) << 32) | address;
+  const auto existing_block = block_sites.find(block_key);
+  if (existing_block != block_sites.end())
+  {
+    ++existing_block->second;
+  }
+  else if (block_sites.size() < MAX_BLOCK_SITES)
+  {
+    block_sites.emplace(block_key, 1);
+  }
+  else
+  {
+    m_sc2_engine_external_profile_overflow = true;
+  }
 }
 
 void StaticRecompCore::ReportSc2EngineExternalProfile()
@@ -683,10 +701,13 @@ void StaticRecompCore::ReportSc2EngineExternalProfile()
       m_hook_fallback_instructions - m_sc2_engine_external_entry_fallback_count;
   std::fprintf(stderr,
                "[sc2-engine-external] result reads=%llu writes=%llu read_sites=%zu "
-               "write_sites=%zu fallback_instructions=%llu overflow=%s complete=%s\n",
+               "write_sites=%zu read_block_sites=%zu write_block_sites=%zu "
+               "fallback_instructions=%llu overflow=%s complete=%s\n",
                static_cast<unsigned long long>(m_sc2_engine_external_read_count),
                static_cast<unsigned long long>(m_sc2_engine_external_write_count),
                m_sc2_engine_external_reads.size(), m_sc2_engine_external_writes.size(),
+               m_sc2_engine_external_read_blocks.size(),
+               m_sc2_engine_external_write_blocks.size(),
                static_cast<unsigned long long>(fallback_delta),
                m_sc2_engine_external_profile_overflow ? "yes" : "no",
                m_sc2_engine_external_profile_overflow ? "no" : "yes");
@@ -706,6 +727,17 @@ void StaticRecompCore::ReportSc2EngineExternalProfile()
   };
   report_sites("read", m_sc2_engine_external_reads);
   report_sites("write", m_sc2_engine_external_writes);
+  const auto report_blocks = [](const char* const kind, const std::map<u64, u64>& sites) {
+    for (const auto& [key, count] : sites)
+    {
+      std::fprintf(stderr,
+                   "[sc2-engine-external] %s-block pc=0x%08x address=0x%08x count=%llu\n",
+                   kind, static_cast<u32>(key >> 32), static_cast<u32>(key),
+                   static_cast<unsigned long long>(count));
+    }
+  };
+  report_blocks("read", m_sc2_engine_external_read_blocks);
+  report_blocks("write", m_sc2_engine_external_write_blocks);
   std::fflush(stderr);
   m_sc2_engine_external_profile_complete = true;
 }
@@ -778,6 +810,8 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
       NetPlay::BeginSc2EngineInputCapture();
       m_sc2_engine_external_reads.clear();
       m_sc2_engine_external_writes.clear();
+      m_sc2_engine_external_read_blocks.clear();
+      m_sc2_engine_external_write_blocks.clear();
       m_sc2_engine_external_read_count = 0;
       m_sc2_engine_external_write_count = 0;
       m_sc2_engine_external_entry_fallback_count = m_hook_fallback_instructions;
