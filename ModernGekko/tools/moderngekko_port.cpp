@@ -20,7 +20,12 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/wait.h>
 #endif
 
@@ -94,14 +99,19 @@ std::string HostToolEnvironmentPrefix() {
   return {};
 }
 
-std::string CompilerProbeCommand(const std::string &host_environment,
-                                 const std::string &compiler) {
+struct Command {
+  std::vector<std::string> arguments;
+  std::string shell_prefix;
+};
+
+Command CompilerProbeCommand(const std::string &host_environment,
+                             const std::string &compiler) {
 #if defined(__linux__)
   // A broken compiler shim must not leave first-run setup waiting forever.
   // coreutils timeout is part of the supported Linux host prerequisites.
-  return host_environment + "timeout 5s " + compiler + " --version 2>&1";
+  return {{"timeout", "5s", compiler, "--version"}, host_environment};
 #else
-  return host_environment + compiler + " --version 2>&1";
+  return {{compiler, "--version"}, host_environment};
 #endif
 }
 
@@ -289,31 +299,142 @@ struct CommandOutput {
   bool succeeded = false;
 };
 
-CommandOutput ReadCommand(const std::string &command) {
+std::string PrintableCommand(const Command &command) {
+  std::string result = command.shell_prefix;
+  for (const std::string &argument : command.arguments) {
+    if (!result.empty() && result.back() != ' ')
+      result += ' ';
+    result += Quote(fs::path(argument));
+  }
+  return result;
+}
+
 #if defined(_WIN32)
-  FILE *pipe = _popen(command.c_str(), "r");
-#else
-  FILE *pipe = popen(command.c_str(), "r");
+std::string WindowsCommandLineArgument(std::string_view argument) {
+  if (!argument.empty() &&
+      argument.find_first_of(" \t\n\v\"") == std::string_view::npos)
+    return std::string(argument);
+
+  std::string result = "\"";
+  std::size_t backslashes = 0;
+  for (const char c : argument) {
+    if (c == '\\') {
+      ++backslashes;
+      continue;
+    }
+    if (c == '"') {
+      result.append(backslashes * 2 + 1, '\\');
+      result += c;
+    } else {
+      result.append(backslashes, '\\');
+      result += c;
+    }
+    backslashes = 0;
+  }
+  result.append(backslashes * 2, '\\');
+  result += '"';
+  return result;
+}
+
+CommandOutput RunWindowsCommand(const Command &command, bool echo_output) {
+  CommandOutput output;
+  if (command.arguments.empty())
+    return output;
+
+  std::string command_line;
+  for (const std::string &argument : command.arguments) {
+    if (!command_line.empty())
+      command_line += ' ';
+    command_line += WindowsCommandLineArgument(argument);
+  }
+  std::vector<char> mutable_command(command_line.begin(), command_line.end());
+  mutable_command.push_back('\0');
+
+  SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+  HANDLE read_pipe = nullptr;
+  HANDLE write_pipe = nullptr;
+  if (!CreatePipe(&read_pipe, &write_pipe, &security, 0) ||
+      !SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0)) {
+    if (read_pipe)
+      CloseHandle(read_pipe);
+    if (write_pipe)
+      CloseHandle(write_pipe);
+    output.text = "could not create child-process output pipe\n";
+    if (echo_output)
+      std::cerr << output.text;
+    return output;
+  }
+
+  STARTUPINFOA startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = write_pipe;
+  startup.hStdError = write_pipe;
+  PROCESS_INFORMATION process{};
+  const BOOL created = CreateProcessA(
+      nullptr, mutable_command.data(), nullptr, nullptr, TRUE,
+      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+  CloseHandle(write_pipe);
+  if (!created) {
+    const DWORD error = GetLastError();
+    CloseHandle(read_pipe);
+    output.text = "could not start child process (Windows error " +
+                  std::to_string(error) + ")\n";
+    if (echo_output)
+      std::cerr << output.text;
+    return output;
+  }
+
+  std::array<char, 4096> buffer{};
+  DWORD count = 0;
+  while (ReadFile(read_pipe, buffer.data(), static_cast<DWORD>(buffer.size()),
+                  &count, nullptr) &&
+         count > 0) {
+    output.text.append(buffer.data(), count);
+    if (echo_output) {
+      std::cout.write(buffer.data(), count);
+      std::cout.flush();
+    }
+  }
+  CloseHandle(read_pipe);
+  WaitForSingleObject(process.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  output.succeeded = GetExitCodeProcess(process.hProcess, &exit_code) &&
+                     exit_code == 0;
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return output;
+}
 #endif
+
+CommandOutput ReadCommand(const Command &command) {
+#if defined(_WIN32)
+  return RunWindowsCommand(command, false);
+#else
+  const std::string shell_command = PrintableCommand(command) + " 2>&1";
+  FILE *pipe = popen(shell_command.c_str(), "r");
   if (!pipe)
     return {};
   CommandOutput output;
   char buffer[512];
   while (fgets(buffer, sizeof(buffer), pipe))
     output.text += buffer;
-#if defined(_WIN32)
-  output.succeeded = _pclose(pipe) == 0;
-#else
   const int status = pclose(pipe);
   output.succeeded = status != -1 && WIFEXITED(status) &&
                      WEXITSTATUS(status) == 0;
-#endif
   return output;
+#endif
 }
 
-bool RunCommand(const std::string &command) {
-  std::cout << "+ " << command << '\n';
-  return std::system(command.c_str()) == 0;
+bool RunCommand(const Command &command) {
+  std::cout << "+ " << PrintableCommand(command) << '\n';
+#if defined(_WIN32)
+  const CommandOutput output = RunWindowsCommand(command, true);
+  return output.succeeded;
+#else
+  return std::system(PrintableCommand(command).c_str()) == 0;
+#endif
 }
 
 fs::path SiblingExecutable(const char *argv0, std::string name) {
@@ -496,7 +617,7 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
     const fs::path bundled_clang =
         packaged_toolchain / "bin" / "clang.exe";
     if (fs::is_regular_file(bundled_clang)) {
-      compiler = Quote(bundled_clang);
+      compiler = bundled_clang.string();
       compiler_kind = "clang";
     } else {
       compiler = "cl";
@@ -697,15 +818,25 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
   }
   const fs::path dolrecomp = SiblingExecutable(argv0, "dolrecomp");
   EmitSetupPhase(options, "translate");
-  std::string generate =
-      Quote(dolrecomp) + " -j" +
-      std::to_string(std::max(1u, std::thread::hardware_concurrency())) + " ";
-  if (game.platform == moderngekko::GamePlatform::GameCube)
-    generate += "--cpu gekko --gamecube " + Quote(recomp_dol) +
-                " --idle-pc 0x80185DEC " + Quote(generated_parent);
-  else
-    generate += "--cpu broadway " + Quote(recomp_dol) + " " + game.disc_id +
-                " " + Quote(generated_parent);
+  Command generate{{
+      dolrecomp.string(),
+      "-j" +
+          std::to_string(std::max(1u, std::thread::hardware_concurrency())),
+      "--cpu",
+      game.platform == moderngekko::GamePlatform::GameCube ? "gekko"
+                                                           : "broadway",
+  }};
+  if (game.platform == moderngekko::GamePlatform::GameCube) {
+    generate.arguments.emplace_back("--gamecube");
+    generate.arguments.emplace_back(recomp_dol.string());
+    generate.arguments.emplace_back("--idle-pc");
+    generate.arguments.emplace_back("0x80185DEC");
+    generate.arguments.emplace_back(generated_parent.string());
+  } else {
+    generate.arguments.emplace_back(recomp_dol.string());
+    generate.arguments.emplace_back(game.disc_id);
+    generate.arguments.emplace_back(generated_parent.string());
+  }
   if (!RunCommand(generate))
     return std::nullopt;
 
@@ -756,36 +887,53 @@ std::optional<fs::path> Build(const char *argv0, const fs::path &root,
       {packaged_toolchain / "python/python.exe"});
 #endif
   const std::string cmake_command =
-      cmake_program.empty() ? "cmake" : Quote(cmake_program);
-  std::string configure =
-      host_tool_environment + cmake_command +
-      " -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 " +
-      cmake_command + " -S " +
-      Quote(module_source) + " -B " + Quote(module_build) +
-      " -G Ninja -DCMAKE_BUILD_TYPE=Release" +
-      " -DCMAKE_C_COMPILER=" + compiler + " -DGAME_ID=" + game.disc_id +
-      " -DGENERATED_DIR=" + Quote(generated) +
-      " -DDOLRECOMP_SRC=" + Quote(module_dependencies / "dolrecomp-src") +
-      " -DGXRUNTIME_INC=" + Quote(module_dependencies / "gxruntime-include") +
-      " -DCHASSIS_ABI_DIR=" + Quote(module_dependencies / "chassis-abi") +
-      " -DMODULE_TEMPLATE=" + Quote(module_dependencies / "module-template");
+      cmake_program.empty() ? "cmake" : cmake_program.string();
+  Command configure{{
+                        cmake_command,
+                        "-E",
+                        "env",
+                        "CMAKE_NINJA_FORCE_RESPONSE_FILE=1",
+                        cmake_command,
+                        "-S",
+                        module_source.string(),
+                        "-B",
+                        module_build.string(),
+                        "-G",
+                        "Ninja",
+                        "-DCMAKE_BUILD_TYPE=Release",
+                        "-DCMAKE_C_COMPILER=" + compiler,
+                        "-DGAME_ID=" + game.disc_id,
+                        "-DGENERATED_DIR=" + generated.string(),
+                        "-DDOLRECOMP_SRC=" +
+                            (module_dependencies / "dolrecomp-src").string(),
+                        "-DGXRUNTIME_INC=" +
+                            (module_dependencies / "gxruntime-include").string(),
+                        "-DCHASSIS_ABI_DIR=" +
+                            (module_dependencies / "chassis-abi").string(),
+                        "-DMODULE_TEMPLATE=" +
+                            (module_dependencies / "module-template").string(),
+                    },
+                    host_tool_environment};
   if (!ninja_program.empty())
-    configure += " -DCMAKE_MAKE_PROGRAM=" + Quote(ninja_program);
+    configure.arguments.emplace_back("-DCMAKE_MAKE_PROGRAM=" +
+                                     ninja_program.string());
   if (!python_program.empty())
-    configure += " -DPython3_EXECUTABLE=" + Quote(python_program);
+    configure.arguments.emplace_back("-DPython3_EXECUTABLE=" +
+                                     python_program.string());
   if (compiler_kind != "msvc")
-    configure += " -DCMAKE_C_FLAGS=-march=native";
+    configure.arguments.emplace_back("-DCMAKE_C_FLAGS=-march=native");
   if (fs::is_regular_file(module_source / "module.profdata") &&
       compiler_identity.find("clang") != std::string::npos)
-    configure +=
-        " -DMODULE_PGO_PROFILE=" + Quote(module_source / "module.profdata");
+    configure.arguments.emplace_back(
+        "-DMODULE_PGO_PROFILE=" +
+        (module_source / "module.profdata").string());
   EmitSetupPhase(options, "configure");
   if (!RunCommand(configure))
     return std::nullopt;
   EmitSetupPhase(options, "compile");
-  if (!RunCommand(host_tool_environment + cmake_command + " --build " +
-                  Quote(module_build) + " -j" +
-                  std::to_string(compile_jobs)))
+  if (!RunCommand({{cmake_command, "--build", module_build.string(),
+                    "-j" + std::to_string(compile_jobs)},
+                   host_tool_environment}))
     return std::nullopt;
 
   if (!fs::is_regular_file(built)) {

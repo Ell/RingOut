@@ -24,6 +24,20 @@ def make_dol(destination: Path) -> None:
         raise AssertionError("synthetic DOL has the wrong size")
 
 
+def make_game(destination: Path) -> None:
+    sys_dir = destination / "sys"
+    sys_dir.mkdir(parents=True)
+    (destination / "files").mkdir()
+    make_dol(sys_dir / "main.dol")
+
+    boot = bytearray(0x60)
+    boot[0:6] = b"GRSEAF"
+    struct.pack_into(">I", boot, 0x1C, 0xC2339F3D)
+    title = b"RingOut synthetic Windows package smoke"
+    boot[0x20 : 0x20 + len(title)] = title
+    (sys_dir / "boot.bin").write_bytes(boot)
+
+
 class DescriptorPrefix(ctypes.Structure):
     _fields_ = [
         ("abi_version", ctypes.c_uint32),
@@ -47,7 +61,7 @@ def check_module(module_path: Path) -> None:
     assert descriptor.abi_version == 3, descriptor.abi_version
     assert descriptor.cpu_abi_version > 0, descriptor.cpu_abi_version
     assert descriptor.cpu_state_size > 0, descriptor.cpu_state_size
-    assert game_id == b"TST001", game_id
+    assert game_id == b"GRSEAF", game_id
     assert descriptor.entry_point == 0x80003100, hex(descriptor.entry_point)
     print(
         "module ABI OK: "
@@ -58,17 +72,17 @@ def check_module(module_path: Path) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 3 or sys.argv[1] not in {"make-dol", "check-module"}:
+    if len(sys.argv) != 3 or sys.argv[1] not in {"make-game", "check-module"}:
         print(
             "usage: windows-package-smoke.py "
-            "<make-dol|check-module> <path>",
+            "<make-game|check-module> <path>",
             file=sys.stderr,
         )
         return 2
 
     path = Path(sys.argv[2])
-    if sys.argv[1] == "make-dol":
-        make_dol(path)
+    if sys.argv[1] == "make-game":
+        make_game(path)
     else:
         check_module(path)
     return 0

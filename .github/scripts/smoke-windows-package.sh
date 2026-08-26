@@ -42,7 +42,7 @@ else
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/ringout-windows-smoke.XXXXXXXX")"
 fi
 
-EXTRACT="$WORK/extracted"
+EXTRACT="$WORK/extracted package"
 PREFIX="$WORK/wine-prefix"
 mkdir -p "$EXTRACT" "$PREFIX"
 
@@ -116,62 +116,45 @@ grep -Fq 'usage: moderngekko-run' "$runtime_help" || \
 grep -Fq -- '--netplay-host' "$runtime_help" || \
   die "packaged runtime help lacks netplay options"
 
-DOL="$WORK/synthetic-legal.dol"
-GENERATED_ROOT="$WORK/generated-root"
-GENERATED="$GENERATED_ROOT/generated"
-MODULE_BUILD="$WORK/module-build"
-LINK_CACHE="$WORK/thinlto-cache"
+GAME="$WORK/synthetic game"
+PORT_OUTPUT="$WORK/port output"
+PORT_LOG="$WORK/port-build.log"
 
-printf '==> generating project-authored 0x108-byte DOL with bundled Python\n'
-"${WINE[@]}" "$PYTHON" "$(windows_path "$HELPER")" make-dol "$(windows_path "$DOL")"
-[[ $(wc -c <"$DOL") -eq 264 ]] || die "synthetic DOL is not 0x108 bytes"
+printf '==> generating project-authored extracted game with bundled Python\n'
+"${WINE[@]}" "$PYTHON" "$(windows_path "$HELPER")" make-game \
+  "$(windows_path "$GAME")"
+[[ $(wc -c <"$GAME/sys/main.dol") -eq 264 ]] || \
+  die "synthetic DOL is not 0x108 bytes"
 
-printf '==> running bundled Windows DolRecomp\n'
-"${WINE[@]}" "$DOLRECOMP" --gamecube "$(windows_path "$DOL")" \
-  "-j$(nproc)" "$(windows_path "$GENERATED_ROOT")"
+# Exercise the exact player path rather than invoking each packaged tool
+# independently. The package, game, and output paths deliberately contain
+# spaces. This catches Windows cmd.exe's leading-quote corruption and proves
+# moderngekko-port directly launches sibling DolRecomp plus bundled
+# CMake/Ninja/clang/lld/Python through native argument vectors.
+printf '==> running packaged setup helper end to end\n'
+"${WINE[@]}" "$PORT" build "$(windows_path "$GAME")" \
+  --output "$(windows_path "$PORT_OUTPUT")" --setup-progress \
+  2>&1 | tee "$PORT_LOG"
+for phase in inspect translate configure compile publish; do
+  grep -Fq "[ringout-setup] phase=$phase" "$PORT_LOG" || \
+    die "packaged setup helper did not reach phase: $phase"
+done
+grep -Fq 'module: linking with lld' "$PORT_LOG" || \
+  die "module configure did not select the bundled lld"
+
+MODULE="$(find "$PORT_OUTPUT" -type f -name 'gGRSEAF_recomp.dll' -print -quit)"
+[[ -n "$MODULE" && -s "$MODULE" ]] || die "gGRSEAF_recomp.dll was not produced"
+ARTIFACT="$(dirname "$MODULE")"
+GENERATED="$ARTIFACT/dolrecomp-output/generated"
+MODULE_BUILD="$ARTIFACT/module-build"
 [[ -s "$GENERATED/generated.h" ]] || die "DolRecomp did not produce generated.h"
 if grep -R -q 'ppc_fallback_instruction' "$GENERATED/chunks"; then
   die "known synthetic instructions reached the fallback"
 fi
-install -m 600 /dev/null "$GENERATED/generated_smc.txt"
-install -m 600 "$DOL" "$GENERATED/main.dol"
-
-printf '==> configuring module with packaged CMake/clang/lld/Ninja/Python\n'
-configure_log="$WORK/configure.log"
-"${WINE[@]}" "$CMAKE" \
-  -S "$(windows_path "$MODULE_SOURCE")" \
-  -B "$(windows_path "$MODULE_BUILD")" \
-  -GNinja \
-  "-DCMAKE_MAKE_PROGRAM=$(windows_path "$NINJA")" \
-  -DCMAKE_BUILD_TYPE=Release \
-  "-DCMAKE_C_COMPILER=$(windows_path "$CLANG")" \
-  "-DPython3_EXECUTABLE=$(windows_path "$PYTHON")" \
-  -DMODULE_LTO=ON \
-  -DMODULE_LLD=ON \
-  "-DMODULE_LINK_CACHE=$(windows_path "$LINK_CACHE")" \
-  -DGAME_ID=TST001 \
-  "-DGENERATED_DIR=$(windows_path "$GENERATED")" \
-  "-DDOLRECOMP_SRC=$(windows_path "$MODULE_SOURCE/deps/dolrecomp-src")" \
-  "-DGXRUNTIME_INC=$(windows_path "$MODULE_SOURCE/deps/gxruntime-include")" \
-  "-DCHASSIS_ABI_DIR=$(windows_path "$MODULE_SOURCE/deps/chassis-abi")" \
-  "-DMODULE_TEMPLATE=$(windows_path "$MODULE_SOURCE/deps/module-template")" \
-  2>&1 | tee "$configure_log"
-grep -Fq 'module: linking with lld' "$configure_log" || \
-  die "module configure did not select the bundled lld"
-grep -Eq 'module: ThinLTO cache at .*thinlto-cache' "$configure_log" || \
-  die "module configure did not select the temporary ThinLTO cache"
-
-printf '==> building generated Windows module\n'
-build_log="$WORK/build.log"
-"${WINE[@]}" "$CMAKE" --build "$(windows_path "$MODULE_BUILD")" \
-  --parallel "$(nproc)" --verbose 2>&1 | tee "$build_log"
-grep -Eq -- '-fuse-ld=lld|ld\.lld' "$build_log" || \
-  die "module link command did not exercise lld"
-[[ -n "$(find "$LINK_CACHE" -mindepth 1 -type f -print -quit)" ]] || \
-  die "lld did not populate the temporary ThinLTO cache"
-
-MODULE="$MODULE_BUILD/gTST001_recomp.dll"
-[[ -s "$MODULE" ]] || die "gTST001_recomp.dll was not produced"
+grep -Fq 'MODULE_LTO:BOOL=ON' "$MODULE_BUILD/CMakeCache.txt" || \
+  die "shipped setup path did not enable module LTO"
+grep -Fq -- '-flto=thin' "$MODULE_BUILD/build.ninja" || \
+  die "shipped setup path did not generate ThinLTO flags"
 pe_report="$WORK/module-pe.txt"
 x86_64-w64-mingw32-objdump -p "$MODULE" | tee "$pe_report" >/dev/null
 grep -Fq 'staticrecomp_get_module' "$pe_report" || \
@@ -188,5 +171,5 @@ if command -v wineserver >/dev/null 2>&1; then
 elif command -v wineserver-stable >/dev/null 2>&1; then
   wineserver-stable -w
 fi
-printf 'Windows ZIP synthetic DOL -> DolRecomp -> clang/lld module smoke passed\n'
+printf 'Windows ZIP packaged setup helper -> DolRecomp -> clang/lld module smoke passed\n'
 printf 'Smoke work directory: %s\n' "$WORK"
