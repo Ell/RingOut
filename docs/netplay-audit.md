@@ -23,8 +23,11 @@ Performance-architecture update 2026-08-26: branch
 `d5fd9426`, begins the game-specific path needed for Slippi-class performance.
 It adds bounded once-per-frame SC2 hook discovery and a preallocated
 selective-region checkpoint ring, but neither is selected by live netplay yet.
-No SC2 hook or region profile is certified. See [SC2 game-specific
-rollback](sc2-slippi-rollback.md).
+Follow-up commit `7ad94d48` used the owned USA image to pass a 600-frame
+continuous restore/replay oracle and machine-verify `0x8001ba3c` as the 30 Hz
+engine-iteration boundary on both peers. State regions and side-effect hooks
+remain uncertified, so live netplay still uses whole-emulator checkpoints. See
+[SC2 game-specific rollback](sc2-slippi-rollback.md).
 
 The executive verdict below remains the historical result for audited commit
 `ff0ad952`. It must not be read as a description of the current

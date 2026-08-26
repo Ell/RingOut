@@ -62,6 +62,16 @@ frames after both local processes exit. Ordinary players neither write nor
 transmit this evidence
 (`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClientRollback.cpp:171-228`).
 
+Game-specific performance work on `codex/sc2-slippi-rollback` reached
+implementation commit `7ad94d48` on 2026-08-26. Against the owned USA image,
+the full-state one-frame-every-frame oracle passed 600 consecutive corrected
+frames. Phase-armed profiles on both peers also identified SC2's 30 Hz engine
+iteration at `0x8001ba3c`, called by the outer-loop edge at `0x8002d624` with
+LR `0x8002d628`. This is a certified update-boundary measurement, not a live
+selective rollback path: memory-region ownership and render/audio/persistence
+suppression remain open. Exact hashes and reproduction commands are in
+`docs/sc2-slippi-rollback.md`.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values

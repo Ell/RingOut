@@ -2,8 +2,10 @@
 
 Status: active implementation research on `codex/sc2-slippi-rollback`, based on
 GPU-safety commit `d5fd9426`. The discovery, selective-storage, hook-chassis,
-and continuous-sync slice is implementation commit `514f77e6`, recorded
-2026-08-26. No release is certified by this document.
+and continuous-sync slice is implementation commit `514f77e6`. Phase-armed
+hook discovery and the first machine-verified SC2 engine boundary are
+implementation commit `7ad94d48`. Both were recorded 2026-08-26. No release is
+certified by this document.
 
 ## Outcome and claim boundary
 
@@ -27,9 +29,10 @@ Slippi-level performance for SC2 therefore means a game-specific path:
 6. refuse production activation unless the exact DOL profile and module
    fingerprint match a continuously verified profile.
 
-The first branch slice implements the discovery and storage primitives. It does
-**not** yet select the region store in live netplay and does not claim that the
-exact SC2 update PC or safe memory region set is known.
+The branch implements the discovery and storage primitives and now identifies
+an exact-DOL engine-iteration boundary. It does **not** yet select the region
+store in live netplay and does not claim that the safe memory region set or
+side-effect hooks are known.
 
 ## Primary-source comparison
 
@@ -59,18 +62,37 @@ or prove that Melee's selected regions are safe for SC2.
 ### Bounded game-frame hook discovery
 
 `FrameDispatchProfiler` records statically recompiled dispatch PCs only when
-`RINGOUT_SC2_HOOK_PROFILE=1`. It discards 120 warmup video frames, samples 600,
-and reports only PCs executed exactly once in every sampled frame as strict
-candidates. The table is bounded in time and absent from the normal player
-path. A complete result is printed immediately at frame 720, so intentional
-harness shutdown cannot lose it.
+`RINGOUT_SC2_HOOK_PROFILE=1`. Warmup and sample lengths are bounded and
+configurable; the defaults remain 120 and 600 video frames. An optional marker
+file arms both peers only after the harness reaches the requested gameplay or
+two-peer idle route. The marker boundary itself is not counted, so sample zero
+is the first complete post-arm frame. A complete result is printed immediately
+at the configured bound, so intentional harness shutdown cannot lose it.
+
+The profiler retains per-PC hit counts, first/last dispatch ordinals, caller
+LR, preceding dispatch PC, and even/odd profiled-video-frame coverage. Strict
+candidates still execute exactly once in every sample frame. Bounded diagnostic
+output also retains always-multiple and partial-coverage PCs because the SC2
+logical loop advances on only one of the two 60 Hz video-frame parities. The
+real-game verifier requires identical strict PC sets on both peers and rejects
+an incomplete, asymmetric, or misconfigured profile.
+Implementation anchors at `7ad94d48` are
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/FrameDispatchProfiler.cpp:18-139`
+for aggregation/parity/context,
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp:218-244,438-519`
+for bounded configuration, phase arming, and reporting, and
+`.github/scripts/rollback-live-real-game.sh:281-321` for the two-peer and exact
+engine-edge gates.
 
 The two-peer harness accepts `--hook-profile`, binds evidence to the supported
 GRSEAF revision-0 DOL SHA-256
 `0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5`,
 and requires complete, stable evidence on both peers. A candidate is only a
 frequency result. It must still be disassembled and classified as update,
-input, render, or an unrelated once-per-frame function before use.
+input, render, or an unrelated periodic function before use.
+`--expect-sc2-engine-boundary` additionally requires the exact measured
+outer-loop edge and parity on both peers; it does not certify state regions or
+side-effect suppression.
 
 `Sc2RollbackProfile` separately records that exact disc/DOL identity as
 `DiscoveryOnly`. Its live-certification predicate also requires every update,
@@ -82,8 +104,85 @@ RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
   .github/scripts/rollback-live-real-game.sh \
   --package /path/to/private/package \
   --work /tmp/ringout-live-rollback.sc2-profile \
-  --production --hook-profile --play-seconds 20 --port 28842
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 300 --hook-diagnostic-limit 4096 \
+  --expect-sc2-engine-boundary --play-seconds 24 --port 28842
 ```
+
+### Owned-image results and engine boundary
+
+The user-provided USA RVZ was exercised locally on 2026-08-26 without adding
+the image, extracted game, generated C, or compiled game module to Git. Private
+identity for reproducing these measurements is:
+
+| artifact | SHA-256 |
+| --- | --- |
+| `Soulcalibur II (USA).rvz` | `4b53a6013cc762c31d7a18283dc419969e89e6286864633a66213cb1e7a0fe3b` |
+| extracted `sys/main.dol` | `0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5` |
+| generated `gGRSEAF_recomp.so` | `3ab206bfa8ab10e0fb15aa24646d13e137578b813b76aa26e4e15e453ecc53b5` |
+
+The continuous one-frame oracle warmed through 600 logical frames and then
+restored/replayed 600 consecutive frames. It retained 1,801 physical hash rows
+with no mismatch. The whole-emulator checkpoint was 69,839,907 bytes (66.60
+MiB) and used the single-core GPU transaction barrier. Evidence is retained at
+`/tmp/ringout-continuous-sync.sc2-real`; `result.env`, `runtime.log`, and
+`frames.log` hash respectively to
+`436ac2fdddfb6d80e35a6ff965ac694e0fa15325de3e24ab3b407d45743233c7`,
+`6968db0c51b0779e15c84940939af7c6aa4e43a8bbc9282258c28fc98c4eca4d`,
+and `1728af16af613283bc8daa570dd61c06cad388732affd11d06d6f6f232f7d37b`.
+
+Phase-armed two-peer profiles show the SC2 engine advances at 30 logical ticks
+per second inside 60 Hz video boundaries. Generated disassembly for the exact
+DOL shows the outer function at `0x8002d5e8`: after an engine iteration returns,
+the back-edge at `0x8002d624` calls `0x8001ba3c`, receives LR `0x8002d628`, and
+loops while the return status requests another iteration. On the final 60-frame
+idle-control validation, both peers measured `0x8001ba3c` exactly 30 times,
+once on parity `30/0`, with stable caller LR `0x8002d628` and stable predecessor
+`0x8002d624`. The wrapper now machine-checks this exact edge. The synchronized
+route retained 366 physical rows and six matching confirmed-state checkpoints;
+no GPU/FIFO failure was present. Evidence is retained at
+`/tmp/ringout-live-rollback.sc2-parity-idle`. The profiled runtime SHA-256 is
+`88d45786cef2f96d98fd6d1a821ba17744f62db781cbb5f095913a1f2cbe76ef`;
+`rollback-result.env`, `host/log.txt`, and `guest/log.txt` hash respectively to
+`e52cb78462b1bf3ba44f1d9c958f2929a09a0d2d21ad718d80ad1a0ee652c37e`,
+`c7103f1d68d138259ff93a2b0388a7917e522205c044de98537032c8adca00df`,
+and `d25b4bb68b3cc522849a58f7e54c46bcdf4192b842e7bc5b5d779e0647aee188`.
+
+Exact local reproduction commands were:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-continuous-sync.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --start 600 --pairs 600 \
+  --work /tmp/ringout-continuous-sync.sc2-real
+
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-parity-idle \
+  --production --hook-profile --hook-idle-control \
+  --hook-warmup-frames 0 --hook-sample-frames 60 \
+  --hook-diagnostic-limit 4096 --play-seconds 20 --port 28853
+
+.github/scripts/rollback-live-real-game.sh \
+  --verify-existing /tmp/ringout-live-rollback.sc2-parity-idle \
+  --production --hook-profile --hook-idle-control \
+  --hook-warmup-frames 0 --hook-sample-frames 60 \
+  --hook-diagnostic-limit 4096 --expect-sc2-engine-boundary
+```
+
+Earlier frequency candidates were explicitly rejected: `0x8002bc3c` is a
+60 Hz runtime/VI chain; `0x8002a694` is controller conversion and was exposed by
+a one-controller/two-controller confound; `0x801419a4` is an inner event-record
+path; and `0x8001af10` is one virtual object handler called by a wider object
+loop. None is used as the engine hook.
+
+The evidence certifies `0x8001ba3c` as the exact-DOL engine-iteration boundary
+for continued research. It does **not** yet make selective replay safe: the
+game-owned memory regions, controller-renewal point, render/audio suppression,
+persistence suppression, and corrected-frontier publication still need to be
+derived and tested before this PC can drive live netplay.
 
 ### Preallocated selective checkpoint ring
 
@@ -181,12 +280,13 @@ bash -n .github/scripts/rollback-live-real-game.sh \
   .github/scripts/rollback-continuous-sync.sh
 ```
 
-The complete Linux build passed all 48 registered CTest tests. The same source
-also built the Windows release target (`moderngekko-launcher`, producing
-`RingOut.exe`) with the repository MinGW toolchain and the workflow-equivalent
-release options. These are compile and asset-free regression results; neither
-substitutes for the private-game continuous-sync and renderer-backed gates.
-
-The owned SC2 image previously used by the real-game harness was not available
-in this worktree on 2026-08-26, so no hook candidate, SC2 region size, or live
-selective replay result is recorded yet.
+The complete Linux build at implementation commit `7ad94d48` passed all 48
+registered CTest tests. The asset-free log-contract harness includes negative
+cases for incomplete samples, wrong caller/predecessor edges, and asymmetric
+peer candidate sets. The earlier source also built the Windows release target
+(`moderngekko-launcher`, producing `RingOut.exe`) with the repository MinGW
+toolchain and workflow-equivalent release options. The private-image commands
+above additionally passed the 600-frame continuous-sync oracle and two-peer
+engine-boundary gate. Selective state size, Windows behavior at `7ad94d48`,
+renderer-backed replay, and live selective replay remain unverified and are not
+claimed.
