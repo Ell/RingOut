@@ -63,6 +63,10 @@ struct RuntimeConfig
   GraphicsSettings graphics;
   AudioSettings audio;
   InputSettings input;
+  // When set, this caller owns the CPU/GPU threading policy. Netplay uses the
+  // override so Runtime::Create cannot silently replace the policy that was
+  // advertised and synchronized in the lobby with an environment default.
+  std::optional<bool> cpu_gpu_dual_core;
   WindowSystem window_system = WindowSystem::Default;
   bool headless = false;
   bool allow_interpreter = false;

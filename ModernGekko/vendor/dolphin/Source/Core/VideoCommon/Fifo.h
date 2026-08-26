@@ -70,6 +70,11 @@ public:
 
   void FlushGpu();
   void RunGpu();
+  // Async video requests (including savestate DoState) must be serviced even
+  // while emulation is deliberately paused.  RunGpu's deterministic-thread
+  // path advances emulated FIFO timing on the CPU and therefore does not wake
+  // the host GPU thread itself.
+  void WakeGpuThreadForAsyncRequest();
   void GpuMaySleep();
   void RunGpuLoop();
   void ExitGpuLoop();

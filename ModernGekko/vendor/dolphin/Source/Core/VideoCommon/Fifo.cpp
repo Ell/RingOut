@@ -443,6 +443,12 @@ void FifoManager::RunGpu()
   }
 }
 
+void FifoManager::WakeGpuThreadForAsyncRequest()
+{
+  if (m_system.IsDualCoreMode())
+    m_gpu_mainloop.Wakeup();
+}
+
 int FifoManager::RunGpuOnCpu(int ticks)
 {
   auto& command_processor = m_system.GetCommandProcessor();

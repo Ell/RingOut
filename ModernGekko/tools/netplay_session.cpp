@@ -1078,44 +1078,38 @@ int RunNetplayLobby(RuntimeConfig runtime_config, ConfigResult frontend_config,
     }
   }
 
-  // Netplay used to force single-core, reasoning that a dual-core split lets
-  // the CPU and GPU threads interleave differently on each peer. Dolphin's own
-  // answer to that problem is not single-core but a DETERMINISTIC GPU thread
-  // (Fifo.cpp, UpdateWantDeterminism), which pre-processes the FIFO so the CPU
-  // thread's view does not depend on interleaving. Its enabling condition ends
-  // with `gpu_thread && IsDualCoreMode()`, so forcing single-core switched off
-  // the very mechanism built to make dual-core safe.
+  // StaticRecomp has produced live GFX FIFO unknown-opcode failures in
+  // dual-core play.  A short byte-identical netplay soak did not exercise
+  // repeated full-machine rollback restores and was not a sufficient release
+  // gate: player sessions later reproduced the same FIFO failure during live
+  // rollback.  Keep rollback on the conservative single-core path until the
+  // renderer-backed correction stress matrix proves the guarded dual-core path
+  // on every release platform. Fixed-delay retains its historical default.
   //
-  // Measured on the Deck over a real PC-to-Deck match: 41 -> 46 fps (+12%),
-  // no desync. Offline was already dual-core, so netplay was the only mode
-  // paying for this. Also clean over a ~6.5 min two-peer soak and a shorter
-  // run.
-  //
-  // Dual-core with a deterministic GPU thread. Netplay used to force
-  // single-core, but Dolphin's answer to CPU/GPU interleaving is not
-  // single-core
-  // -- it is the deterministic GPU thread (Fifo.cpp, UpdateWantDeterminism),
-  // whose enabling condition ends `gpu_thread && IsDualCoreMode()`. Forcing
-  // single-core switched off the very mechanism built to make dual-core safe.
-  //
-  // Measured on the Deck over a real PC-to-Deck match: 41 -> 46 fps (+12%).
-  // Verified byte-identical across two peers over 6083 and 8847 frames with
-  // RINGOUT_DETERMINISM_DUALCORE=1, and reproducible run-to-run over 600.
-  //
-  // This was reverted once: opening the in-game menu mid-session fired
-  // "SyncGPUCallback event scheduled from the wrong thread". That is fixed --
-  // RunGpu now schedules with FromThread::ANY, since AsyncRequests::QueueEvent
-  // calls it from off the CPU thread -- but the original assert was never
-  // reproduced locally, so the fix rests on reading the one path that schedules
-  // that event. RINGOUT_NETPLAY_SINGLECORE=1 restores the old shape and is the
-  // first thing to try if a peer ever asserts or desyncs.
-  const bool single_core = std::getenv("RINGOUT_NETPLAY_SINGLECORE") != nullptr;
+  // RINGOUT_ROLLBACK_DUALCORE=1 is deliberately an experimental harness seam,
+  // not a launcher option. RINGOUT_NETPLAY_SINGLECORE=1 remains an overriding
+  // diagnostic for either mode.
+  const bool rollback_dual_core_experiment =
+      options.mode == NetplayMode::Rollback &&
+      std::getenv("RINGOUT_ROLLBACK_DUALCORE") != nullptr;
+  const bool single_core =
+      std::getenv("RINGOUT_NETPLAY_SINGLECORE") != nullptr ||
+      (options.mode == NetplayMode::Rollback && !rollback_dual_core_experiment);
+  runtime_config.cpu_gpu_dual_core = !single_core;
   Config::SetBase(Config::MAIN_CPU_THREAD, !single_core);
-  if (!single_core)
-    Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE,
-                    std::string("fake-completion"));
-  Log(single_core ? "netplay: single-core (forced)"
-                  : "netplay: dual-core with a deterministic GPU thread");
+  Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE,
+                  single_core ? std::string("auto")
+                              : std::string("fake-completion"));
+  if (single_core) {
+    Log(options.mode == NetplayMode::Rollback
+            ? "netplay: single-core (rollback-safe default)"
+            : "netplay: single-core (forced diagnostic)");
+  } else {
+    Log(rollback_dual_core_experiment
+            ? "netplay: dual-core rollback experiment with a deterministic GPU "
+              "thread"
+            : "netplay: dual-core with a deterministic GPU thread");
+  }
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   Config::SetBase(Config::NETPLAY_SAVEDATA_LOAD, true);
   // Rollback restores speculative frames. Save reads and host-to-peer sync are

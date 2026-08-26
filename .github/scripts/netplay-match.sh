@@ -106,6 +106,11 @@ ensure_peers_alive() {
   done
 }
 
+gpu_fifo_failure_seen() {
+  grep -Eqa 'GFX FIFO|Unknown Opcode|FIFOs linked but out of sync|Desynced read pointers|Aux FIFO|Negative fifo\.|FIFO out of bounds|SIG(SEGV|ILL|ABRT)|AddressSanitizer' \
+    "$W"/*/log.txt 2>/dev/null
+}
+
 # WINDOWED=1 shows both peers, so the run can be confirmed by looking at it.
 # Headless proves the two peers agree with each other, which is NOT the same as
 # proving they reached a match -- two peers agreeing on a menu screen would look
@@ -299,6 +304,30 @@ if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ] ||
     exit 1
   fi
   echo "live rollback active on both peers after ${waited_active}s"
+  if [ -n "${RINGOUT_ROLLBACK_DUALCORE:-}" ]; then
+    threading_marker='netplay: dual-core rollback experiment with a deterministic GPU thread'
+    barrier_marker='gpu_transaction_barrier=dual-core-quiesced'
+  else
+    threading_marker='netplay: single-core (rollback-safe default)'
+    barrier_marker='gpu_transaction_barrier=single-core-quiesced'
+  fi
+  grep -Fqa "$threading_marker" "$W/host/log.txt" || {
+    echo "host did not use the requested rollback threading policy"
+    exit 1
+  }
+  grep -Fqa "$threading_marker" "$W/guest/log.txt" || {
+    echo "guest did not use the requested rollback threading policy"
+    exit 1
+  }
+  grep -Fqa "$barrier_marker" "$W/host/log.txt" || {
+    echo "host did not checkpoint behind the rollback GPU transaction barrier"
+    exit 1
+  }
+  grep -Fqa "$barrier_marker" "$W/guest/log.txt" || {
+    echo "guest did not checkpoint behind the rollback GPU transaction barrier"
+    exit 1
+  }
+  echo "rollback threading policy verified: $threading_marker"
 fi
 
 if [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
@@ -372,6 +401,10 @@ while [ $slept -lt "$PLAY" ]; do
   press host  X 0.5
   press guest A 0.5
   slept=$((slept + 4))
+  if gpu_fifo_failure_seen; then
+    echo "GPU/FIFO consistency failure after ${slept}s of play"
+    break
+  fi
   if grep -qa "DESYNC" "$W"/*/log.txt 2>/dev/null; then
     echo "DESYNC after ${slept}s of play"; break
   fi
@@ -421,6 +454,12 @@ else
 fi
 
 if grep -qa "DESYNC" "$W"/*/log.txt 2>/dev/null; then
+  result=1
+fi
+if gpu_fifo_failure_seen; then
+  echo "FAIL: a peer reported a GPU/FIFO consistency failure"
+  grep -Eha 'GFX FIFO|Unknown Opcode|FIFOs linked but out of sync|Desynced read pointers|Aux FIFO|Negative fifo\.|FIFO out of bounds|SIG(SEGV|ILL|ABRT)|AddressSanitizer' \
+    "$W"/*/log.txt | tail -20
   result=1
 fi
 

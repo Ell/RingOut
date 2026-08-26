@@ -141,6 +141,15 @@ if "$HARNESS" --verify-existing "$WORK/desync" >/dev/null 2>&1; then
   exit 1
 fi
 
+make_case gpu-fifo-failure
+printf '%s\n' '[rollback live] correction committed' \
+  '[alert] Error: GFX FIFO: Unknown Opcode (0x00)' \
+  >> "$WORK/gpu-fifo-failure/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/gpu-fifo-failure" >/dev/null 2>&1; then
+  echo "GPU FIFO failure unexpectedly passed" >&2
+  exit 1
+fi
+
 make_case expected-digest-mismatch
 printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
   'netplay: DESYNC at frame 60' \

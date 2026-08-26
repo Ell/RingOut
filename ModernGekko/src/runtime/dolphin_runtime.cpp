@@ -293,7 +293,8 @@ std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
   return nullptr;
 }
 
-void ApplyCoreSettings(const GameMetadata &metadata) {
+void ApplyCoreSettings(const RuntimeConfig &config,
+                       const GameMetadata &metadata) {
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   // Correctness first: this recomp core has produced live GFX FIFO desyncs in
   // offline dual-core mode (the resulting alert itself recommends disabling
@@ -311,16 +312,23 @@ void ApplyCoreSettings(const GameMetadata &metadata) {
   const bool determinism_dual_core =
       RecompDeterminism::IsActive() &&
       std::getenv("RINGOUT_DETERMINISM_DUALCORE") != nullptr;
-  const bool use_dual_core = RecompDeterminism::IsActive()
-                                 ? determinism_dual_core
-                                 : std::getenv("RINGOUT_DUAL_CORE") != nullptr;
+  const bool use_dual_core =
+      config.cpu_gpu_dual_core.has_value()
+          ? *config.cpu_gpu_dual_core
+          : RecompDeterminism::IsActive()
+                ? determinism_dual_core
+                : std::getenv("RINGOUT_DUAL_CORE") != nullptr;
   Config::SetBase(Config::MAIN_CPU_THREAD, use_dual_core);
   Config::SetBase(Config::MAIN_GPU_DETERMINISM_MODE,
                   use_dual_core ? std::string("fake-completion")
                                 : std::string("auto"));
-  std::fprintf(stderr, "cpu/gpu threading: %s\n",
-               use_dual_core ? "dual-core (explicit opt-in)"
-                             : "single-core (safe default)");
+  const char* const threading_source =
+      config.cpu_gpu_dual_core.has_value() ? "caller policy"
+      : use_dual_core                      ? "explicit opt-in"
+                                           : "safe default";
+  std::fprintf(stderr, "cpu/gpu threading: %s (%s)\n",
+               use_dual_core ? "dual-core" : "single-core",
+               threading_source);
   if (RecompDeterminism::IsActive()) {
     // Pin the clock the same way NetPlayServer does (NetPlayServer.cpp:2088):
     // the RTC is converted to timebase ticks at boot, so two runs started
@@ -496,7 +504,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   RebindPadsToPresentDevices();
   impl->platform->SetTitle(impl->title);
 
-  ApplyCoreSettings(impl->metadata);
+  ApplyCoreSettings(impl->config, impl->metadata);
   ApplyGraphicsSettings(impl->config.graphics, impl->config.headless);
   ApplyAudioSettings(impl->config.audio, impl->config.headless);
   Config::SetBase(Config::MAIN_INPUT_BACKGROUND_INPUT,

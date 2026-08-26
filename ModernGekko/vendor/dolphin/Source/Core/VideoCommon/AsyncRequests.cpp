@@ -35,6 +35,12 @@ void AsyncRequests::QueueEvent(Event&& event)
   m_queue.Push(std::move(event));
 
   auto& system = Core::System::GetInstance();
+  // A rollback snapshot holds emulated GPU execution paused across the whole
+  // state transaction.  VideoBackendBase::DoState is still an async request
+  // which must run on the host GPU thread while paused.  Deterministic FIFO
+  // mode intentionally does not wake that thread from RunGpu(), so wake it
+  // explicitly before waiting on a blocking request.
+  system.GetFifo().WakeGpuThreadForAsyncRequest();
   system.GetFifo().RunGpu();
 }
 

@@ -13,6 +13,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          --package <private-package> --fault-script <schedule> \
          [--work <empty-output-dir>] [--play-seconds <seconds>] \
          [--port <udp-port>] [--expect-horizon] [--production] \
+         [--windowed] [--dual-core] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -38,6 +39,11 @@ acknowledgement injects late input without selecting the isolated test gate.
 --expect-digest-mismatch uses the isolated gate and corrupts only the guest's
 periodic diagnostic report at the requested 60-frame checkpoint. Both peers
 must report that exact desync and stop; guest RAM is never modified.
+
+--windowed runs both peers through a real host renderer. It is the required
+GPU/FIFO regression path; headless remains useful for faster protocol checks.
+--dual-core opts into the guarded deterministic-GPU rollback experiment. The
+player default stays single-core until this route passes the platform matrix.
 EOF
   exit 2
 }
@@ -58,6 +64,8 @@ VERIFY_EXISTING=""
 VALIDATE_ONLY=""
 PRODUCTION=0
 DIGEST_MISMATCH_FRAME=""
+WINDOWED_RUN=0
+DUAL_CORE_RUN=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -68,6 +76,8 @@ while [ "$#" -gt 0 ]; do
     --port) [ "$#" -ge 2 ] || usage; PORT="$2"; shift 2 ;;
     --expect-horizon) EXPECT_HORIZON=1; shift ;;
     --production) PRODUCTION=1; shift ;;
+    --windowed) WINDOWED_RUN=1; shift ;;
+    --dual-core) DUAL_CORE_RUN=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -130,6 +140,10 @@ verify_logs() {
   if grep -Eqi 'DESYNC|\[rollback live\].*(failed|fatal|aborted|faulted|cancelled|diverged|refused)' \
       "$host_log" "$guest_log"; then
     fail "peer reported a desync or rollback failure"
+  fi
+  if grep -Eqi 'GFX FIFO|Unknown Opcode|FIFOs linked but out of sync|Desynced read pointers|Aux FIFO|Negative fifo\.|FIFO out of bounds|SIG(SEGV|ILL|ABRT)|AddressSanitizer' \
+      "$host_log" "$guest_log"; then
+    fail "peer reported a GPU/FIFO consistency failure or process crash"
   fi
 
   verify_confirmed_state_logs "$evidence"
@@ -288,6 +302,12 @@ elif [ -n "$DIGEST_MISMATCH_FRAME" ]; then
 else
   run_env=(env PKG="$PACKAGE" RINGOUT_ROLLBACK_FAULT_SCRIPT="$FAULT_SCRIPT")
 fi
+if [ "$WINDOWED_RUN" -eq 1 ]; then
+  run_env+=(WINDOWED=1)
+fi
+if [ "$DUAL_CORE_RUN" -eq 1 ]; then
+  run_env+=(RINGOUT_ROLLBACK_DUALCORE=1)
+fi
 if ! "${run_env[@]}" bash "$REPO/.github/scripts/netplay-match.sh" \
     "$WORK" "$PLAY" "$PORT"; then
   fail "two-peer VS route failed; evidence retained in $WORK"
@@ -310,6 +330,8 @@ fi
   echo "port=$PORT"
   echo "expect_horizon=$EXPECT_HORIZON"
   echo "production_path=$PRODUCTION"
+  echo "renderer_path=$([ "$WINDOWED_RUN" -eq 1 ] && echo windowed || echo headless)"
+  echo "threading_path=$([ "$DUAL_CORE_RUN" -eq 1 ] && echo dual-core-experiment || echo rollback-safe-default)"
   if [ -n "$DIGEST_MISMATCH_FRAME" ]; then
     echo "expected_digest_mismatch_frame=$DIGEST_MISMATCH_FRAME"
   fi
