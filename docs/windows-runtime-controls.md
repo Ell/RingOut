@@ -25,6 +25,28 @@ output-teardown, and corrected-frontier fault fixes. That does not validate the
 Windows artifact path. Do not apply the branch instructions below to the
 published `ell.6` ZIP.
 
+### 2026-08-26 controller-remapping update
+
+Implementation checkpoint `869faa0e1747052d795cf192a94af1d1de0bb362`
+adds controller remapping to the integrated C++ launcher intended for
+`v1.2.1-ell.12`. In **Settings**, choose an SDL gamepad, select **Use this
+controller**, then **Configure buttons**. Selecting any of the 20 GameCube
+controls starts direct button/axis capture from that selected device; accepted
+changes are written immediately and apply to solo and netplay.
+
+The save path preserves unrelated `GCPadNew.ini` fields and sections, writes
+through a temporary file, and retains the preceding file as
+`GCPadNew.ini.bak`. **Reset to defaults** requires confirmation. The mapping
+logic and profile-preservation tests are at
+`ModernGekko/tests/frontend_config_test.cpp`; the implementation is at
+`ModernGekko/tools/frontend_config.cpp:504-673` and the SDL event capture is at
+`ModernGekko/tools/moderngekko_launcher.cpp:1028-1077`.
+
+This checkpoint passed the native 45/45 CTest suite and a live Linux launcher
+smoke with an attached DualSense Edge. It does not by itself prove SDL device
+enumeration, capture, or profile loading on physical Windows; the tagged ZIP's
+Wine/package gates and a physical-Windows controller check remain required.
+
 ## Executive answers
 
 | Question | Answer at the audited commit |

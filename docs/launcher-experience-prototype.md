@@ -35,6 +35,46 @@ No disc image or extracted content is tracked by Git.
 The user-facing copy calls this “preparing” and “translating,” not
 decompilation. The implementation is static recompilation.
 
+## Controller and visual integration update
+
+Implementation checkpoint `869faa0e1747052d795cf192a94af1d1de0bb362`
+(2026-08-26) adds launcher-native GameCube controller remapping. Settings now
+loads all 20 GameCube bindings from `GCPadNew.ini`, captures SDL gamepad buttons
+and axes from the selected device, writes each accepted input immediately, and
+can restore the default profile after confirmation. Saving updates only the
+known Pad 1 binding fields, preserves comments, calibration, rumble, unknown
+settings, and other controller sections, and retains the previous profile as
+`GCPadNew.ini.bak` (`ModernGekko/tools/frontend_config.cpp:504-673`).
+
+The remapping modal is centered and responsive, with a padded header, a
+scrolling mapping table, and fixed status/actions. At the 900x600 minimum the
+modal footer remains visible. The launcher also loads a real-alpha character
+cutout from `art/launcher-character.png` as its one expressive visual element.
+The artwork scales down before it can reduce the text lane below 440 pixels,
+is hidden while the remapping modal is open, and page dividers stop at the
+content boundary (`ModernGekko/tools/moderngekko_launcher.cpp:1186-1226` and
+`:1659-1806`). Both release packagers require and stage the asset, while the
+non-graphical launcher self-test now rejects a package that omits it.
+
+Validation from the implementation checkout:
+
+```bash
+cmake --build /tmp/ringout-launcher-remap -j2
+/tmp/ringout-launcher-remap/RingOut --ringout-self-test
+ctest --test-dir /tmp/ringout-launcher-remap --output-on-failure -j2
+```
+
+The build and asset-aware self-test passed; CTest passed 45/45 including the
+localhost two-peer netplay protocol test. A connected DualSense Edge was
+detected as `SDL/0/DualSense Edge Wireless Controller`, the launcher wrote the
+expected profile, and the final 900x600 Game files, Settings, and remapping
+captures hashed respectively to
+`9b5e8a87f8348cec2cbb80d79d086ad4dab80de86b605cac43e88c05570cf705`,
+`bb31f3f88bf90af3f5680c9d6d8e09c5e61051aaeb16f2f35441013c609740a1`,
+and `3351f929f79dd654d7e50ebea87e6bfa0d275180c152be2d2f5677fffb85675f`.
+These are local compositor/UI evidence, not Windows rendering or physical
+two-player gameplay evidence.
+
 ## Source evidence
 
 - Launcher setup state, child-process output capture, and progress mapping:

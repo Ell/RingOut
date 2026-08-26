@@ -38,6 +38,15 @@ the helper still depends on source-tree-owned module inputs. Unless explicitly
 marked otherwise, the component inventory below describes the audited
 `ff0ad952` baseline; the proposed release stages remain future work.
 
+Later implementation supersedes that packaging-gap conclusion. The integrated
+C++ launcher shipped in `v1.2.1-ell.11`, and checkpoint
+`869faa0e1747052d795cf192a94af1d1de0bb362` prepares `v1.2.1-ell.12` with
+launcher-native controller remapping, packaged character artwork, responsive
+900x600 content/art separation, and an asset-aware self-test. See
+[Launcher experience prototype](launcher-experience-prototype.md) for the
+implementation and current validation boundary; the remaining sections below
+are retained as the dated `ff0ad952` research record.
+
 ## Baseline RingOut Components
 
 ### Existing graphical launcher
