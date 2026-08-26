@@ -3,6 +3,7 @@
 
 #include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 
 #include <cstdio>
@@ -56,6 +57,26 @@ void UninstallStaticRecompDispatchHook(StaticRecompDispatchHook* const hook)
 
 namespace
 {
+u64 ReadBoundedFrameCount(const char* const name, const u64 fallback, const u64 minimum,
+                          const u64 maximum)
+{
+  const char* const text = std::getenv(name);
+  if (!text)
+    return fallback;
+
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long long parsed = std::strtoull(text, &end, 10);
+  if (errno != 0 || end == text || *end != '\0' || parsed < minimum || parsed > maximum)
+  {
+    std::fprintf(stderr, "[sc2-hook-profile] ignored invalid %s=%s (allowed %llu..%llu)\n", name,
+                 text, static_cast<unsigned long long>(minimum),
+                 static_cast<unsigned long long>(maximum));
+    return fallback;
+  }
+  return static_cast<u64>(parsed);
+}
+
 bool RangesAreSorted(const StaticRecompRange* ranges, u32 count)
 {
   if (!ranges || count == 0)
@@ -196,10 +217,31 @@ void StaticRecompCore::Init()
   m_gqr_log = std::getenv("STATICRECOMP_GQRLOG") != nullptr;
   if (std::getenv("RINGOUT_SC2_HOOK_PROFILE"))
   {
-    m_frame_dispatch_profiler = std::make_unique<PowerPC::FrameDispatchProfiler>();
+    const u64 warmup_frames = ReadBoundedFrameCount(
+        "RINGOUT_SC2_HOOK_PROFILE_WARMUP_FRAMES", 120, 0, 36000);
+    const u64 sample_frames = ReadBoundedFrameCount(
+        "RINGOUT_SC2_HOOK_PROFILE_SAMPLE_FRAMES", 600, 60, 3600);
+    m_frame_dispatch_diagnostic_limit = ReadBoundedFrameCount(
+        "RINGOUT_SC2_HOOK_PROFILE_DIAGNOSTIC_LIMIT", 0, 0, 4096);
+    m_frame_dispatch_profiler =
+        std::make_unique<PowerPC::FrameDispatchProfiler>(warmup_frames, sample_frames);
+    if (const char* const arm_file = std::getenv("RINGOUT_SC2_HOOK_PROFILE_ARM_FILE");
+        arm_file && *arm_file)
+    {
+      m_frame_dispatch_profile_arm_file = arm_file;
+    }
+    else
+    {
+      m_frame_dispatch_profile_armed = true;
+    }
     std::fprintf(stderr, "[sc2-hook-profile] enabled expected_dol_sha256="
                          "0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 "
-                         "warmup_frames=120 sample_frames=600\n");
+                         "warmup_frames=%llu sample_frames=%llu diagnostic_limit=%llu "
+                         "arm=%s\n",
+                 static_cast<unsigned long long>(warmup_frames),
+                 static_cast<unsigned long long>(sample_frames),
+                 static_cast<unsigned long long>(m_frame_dispatch_diagnostic_limit),
+                 m_frame_dispatch_profile_armed ? "immediate" : "file");
   }
 
   // The "interpreter fallback" is really Dolphin's JIT whenever one exists, so
@@ -397,6 +439,19 @@ void StaticRecompCore::NotifyVideoFrameBoundary()
 {
   if (m_frame_dispatch_profiler)
   {
+    if (!m_frame_dispatch_profile_armed)
+    {
+      if (!File::Exists(m_frame_dispatch_profile_arm_file))
+        return;
+      m_frame_dispatch_profile_armed = true;
+      std::fprintf(stderr, "[sc2-hook-profile] armed file=%s\n",
+                   m_frame_dispatch_profile_arm_file.c_str());
+      // The marker is observed at the boundary ending the pre-arm frame. Do
+      // not count that empty partial interval as sample frame zero; recording
+      // begins immediately after this return and the next boundary closes the
+      // first complete profiled frame.
+      return;
+    }
     m_frame_dispatch_profiler->EndVideoFrame();
     if (m_frame_dispatch_profiler->IsComplete())
       ReportFrameDispatchProfile();
@@ -420,15 +475,45 @@ void StaticRecompCore::ReportFrameDispatchProfile()
   {
     std::fprintf(stderr,
                  "[sc2-hook-profile] candidate pc=0x%08x frames=%llu once=%llu "
-                 "hits=%llu min=%u max=%u first_ordinal=%llu..%llu "
-                 "last_ordinal=%llu..%llu\n",
+                 "hits=%llu min=%u max=%u parity=%llu/%llu first_ordinal=%llu..%llu "
+                 "last_ordinal=%llu..%llu caller_lr=0x%08x caller_lr_stable=%s "
+                 "predecessor_pc=0x%08x predecessor_stable=%s\n",
                  candidate.pc, static_cast<unsigned long long>(candidate.frames_with_hits),
                  static_cast<unsigned long long>(candidate.exactly_once_frames),
                  static_cast<unsigned long long>(candidate.total_hits), candidate.min_hits,
-                 candidate.max_hits, static_cast<unsigned long long>(candidate.first_ordinal_min),
+                 candidate.max_hits,
+                 static_cast<unsigned long long>(candidate.even_frames_with_hits),
+                 static_cast<unsigned long long>(candidate.odd_frames_with_hits),
+                 static_cast<unsigned long long>(candidate.first_ordinal_min),
                  static_cast<unsigned long long>(candidate.first_ordinal_max),
                  static_cast<unsigned long long>(candidate.last_ordinal_min),
-                 static_cast<unsigned long long>(candidate.last_ordinal_max));
+                 static_cast<unsigned long long>(candidate.last_ordinal_max), candidate.caller_lr,
+                 candidate.caller_lr_stable ? "yes" : "no", candidate.predecessor_pc,
+                 candidate.predecessor_pc_stable ? "yes" : "no");
+  }
+  const std::size_t diagnostic_count =
+      std::min<std::size_t>(diagnostic.size(), m_frame_dispatch_diagnostic_limit);
+  for (std::size_t i = 0; i < diagnostic_count; ++i)
+  {
+    const auto& candidate = diagnostic[i];
+    std::fprintf(stderr,
+                 "[sc2-hook-profile] diagnostic rank=%zu pc=0x%08x frames=%llu once=%llu "
+                 "hits=%llu min=%u max=%u parity=%llu/%llu first_ordinal=%llu..%llu "
+                 "last_ordinal=%llu..%llu caller_lr=0x%08x caller_lr_stable=%s "
+                 "predecessor_pc=0x%08x predecessor_stable=%s\n",
+                 i + 1, candidate.pc,
+                 static_cast<unsigned long long>(candidate.frames_with_hits),
+                 static_cast<unsigned long long>(candidate.exactly_once_frames),
+                 static_cast<unsigned long long>(candidate.total_hits), candidate.min_hits,
+                 candidate.max_hits,
+                 static_cast<unsigned long long>(candidate.even_frames_with_hits),
+                 static_cast<unsigned long long>(candidate.odd_frames_with_hits),
+                 static_cast<unsigned long long>(candidate.first_ordinal_min),
+                 static_cast<unsigned long long>(candidate.first_ordinal_max),
+                 static_cast<unsigned long long>(candidate.last_ordinal_min),
+                 static_cast<unsigned long long>(candidate.last_ordinal_max), candidate.caller_lr,
+                 candidate.caller_lr_stable ? "yes" : "no", candidate.predecessor_pc,
+                 candidate.predecessor_pc_stable ? "yes" : "no");
   }
   std::fflush(stderr);
   m_frame_dispatch_profile_reported = true;

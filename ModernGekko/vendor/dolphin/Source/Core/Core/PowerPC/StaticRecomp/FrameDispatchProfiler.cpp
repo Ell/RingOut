@@ -15,7 +15,8 @@ FrameDispatchProfiler::FrameDispatchProfiler(const std::uint64_t warmup_frames,
 {
 }
 
-void FrameDispatchProfiler::RecordDispatch(const std::uint32_t pc)
+void FrameDispatchProfiler::RecordDispatch(const std::uint32_t pc,
+                                           const std::uint32_t caller_lr)
 {
   if (IsComplete())
     return;
@@ -29,10 +30,15 @@ void FrameDispatchProfiler::RecordDispatch(const std::uint32_t pc)
   }
   auto& hit = found->second;
   if (hit.count == 0)
+  {
     hit.first_ordinal = ordinal;
+    hit.first_caller_lr = caller_lr;
+    hit.first_predecessor_pc = m_previous_dispatch_pc;
+  }
   hit.last_ordinal = ordinal;
   if (hit.count != std::numeric_limits<std::uint32_t>::max())
     ++hit.count;
+  m_previous_dispatch_pc = pc;
 }
 
 void FrameDispatchProfiler::EndVideoFrame()
@@ -42,15 +48,18 @@ void FrameDispatchProfiler::EndVideoFrame()
   {
     m_current_hits.clear();
     m_current_dispatch_ordinal = 0;
+    m_previous_dispatch_pc = 0;
     return;
   }
   if (IsComplete())
   {
     m_current_hits.clear();
     m_current_dispatch_ordinal = 0;
+    m_previous_dispatch_pc = 0;
     return;
   }
 
+  const bool even_profiled_frame = (m_profiled_frames & 1) == 0;
   ++m_profiled_frames;
   for (const auto& [pc, hit] : m_current_hits)
   {
@@ -64,6 +73,10 @@ void FrameDispatchProfiler::EndVideoFrame()
     Candidate& candidate = found->second;
     candidate.pc = pc;
     ++candidate.frames_with_hits;
+    if (even_profiled_frame)
+      ++candidate.even_frames_with_hits;
+    else
+      ++candidate.odd_frames_with_hits;
     candidate.exactly_once_frames += hit.count == 1 ? 1 : 0;
     candidate.total_hits += hit.count;
     candidate.min_hits =
@@ -73,6 +86,8 @@ void FrameDispatchProfiler::EndVideoFrame()
     {
       candidate.first_ordinal_min = candidate.first_ordinal_max = hit.first_ordinal;
       candidate.last_ordinal_min = candidate.last_ordinal_max = hit.last_ordinal;
+      candidate.caller_lr = hit.first_caller_lr;
+      candidate.predecessor_pc = hit.first_predecessor_pc;
     }
     else
     {
@@ -80,10 +95,14 @@ void FrameDispatchProfiler::EndVideoFrame()
       candidate.first_ordinal_max = std::max(candidate.first_ordinal_max, hit.first_ordinal);
       candidate.last_ordinal_min = std::min(candidate.last_ordinal_min, hit.last_ordinal);
       candidate.last_ordinal_max = std::max(candidate.last_ordinal_max, hit.last_ordinal);
+      candidate.caller_lr_stable &= candidate.caller_lr == hit.first_caller_lr;
+      candidate.predecessor_pc_stable &=
+          candidate.predecessor_pc == hit.first_predecessor_pc;
     }
   }
   m_current_hits.clear();
   m_current_dispatch_ordinal = 0;
+  m_previous_dispatch_pc = 0;
 }
 
 std::vector<FrameDispatchProfiler::Candidate>
@@ -93,8 +112,6 @@ FrameDispatchProfiler::GetCandidates(const bool require_every_frame) const
   result.reserve(m_candidates.size());
   for (const auto& [pc, candidate] : m_candidates)
   {
-    if (candidate.exactly_once_frames == 0)
-      continue;
     if (require_every_frame && (candidate.frames_with_hits != m_profiled_frames ||
                                 candidate.exactly_once_frames != m_profiled_frames))
     {
@@ -102,13 +119,23 @@ FrameDispatchProfiler::GetCandidates(const bool require_every_frame) const
     }
     result.push_back(candidate);
   }
-  std::sort(result.begin(), result.end(), [](const Candidate& lhs, const Candidate& rhs) {
-    if (lhs.exactly_once_frames != rhs.exactly_once_frames)
-      return lhs.exactly_once_frames > rhs.exactly_once_frames;
-    if (lhs.frames_with_hits != rhs.frames_with_hits)
-      return lhs.frames_with_hits > rhs.frames_with_hits;
-    return lhs.pc < rhs.pc;
-  });
+  std::sort(result.begin(), result.end(),
+            [require_every_frame](const Candidate& lhs, const Candidate& rhs) {
+              // The strict list is about exactly-once confidence. Diagnostics
+              // are about coverage first: a real update loop may dispatch the
+              // same PC twice per video frame and therefore have zero
+              // exactly-once frames. Dropping or ranking those last hid the
+              // most important game-loop candidates behind runtime callbacks.
+              if (!require_every_frame && lhs.frames_with_hits != rhs.frames_with_hits)
+                return lhs.frames_with_hits > rhs.frames_with_hits;
+              if (lhs.exactly_once_frames != rhs.exactly_once_frames)
+                return lhs.exactly_once_frames > rhs.exactly_once_frames;
+              if (require_every_frame && lhs.frames_with_hits != rhs.frames_with_hits)
+                return lhs.frames_with_hits > rhs.frames_with_hits;
+              if (!require_every_frame && lhs.total_hits != rhs.total_hits)
+                return lhs.total_hits > rhs.total_hits;
+              return lhs.pc < rhs.pc;
+            });
   return result;
 }
 

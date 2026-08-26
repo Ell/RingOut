@@ -24,6 +24,11 @@ public:
   {
     std::uint32_t pc = 0;
     std::uint64_t frames_with_hits = 0;
+    // Coverage split by zero-based profiled-video-frame parity. SC2 advances
+    // its logical engine at 30 Hz while VI/video boundaries occur at 60 Hz;
+    // retaining the split makes that alternating cadence directly testable.
+    std::uint64_t even_frames_with_hits = 0;
+    std::uint64_t odd_frames_with_hits = 0;
     std::uint64_t exactly_once_frames = 0;
     std::uint64_t total_hits = 0;
     std::uint32_t min_hits = 0;
@@ -32,12 +37,20 @@ public:
     std::uint64_t first_ordinal_max = 0;
     std::uint64_t last_ordinal_min = 0;
     std::uint64_t last_ordinal_max = 0;
+    // Context at the first occurrence of this PC in each video frame.  For an
+    // exactly-once candidate these identify the guest callsite and the native
+    // dispatch immediately preceding it, which is considerably more useful
+    // than frequency alone when runtime/VI callbacks dominate the result.
+    std::uint32_t caller_lr = 0;
+    std::uint32_t predecessor_pc = 0;
+    bool caller_lr_stable = true;
+    bool predecessor_pc_stable = true;
   };
 
   explicit FrameDispatchProfiler(std::uint64_t warmup_frames = 120,
                                  std::uint64_t maximum_frames = 600);
 
-  void RecordDispatch(std::uint32_t pc);
+  void RecordDispatch(std::uint32_t pc, std::uint32_t caller_lr);
   void EndVideoFrame();
 
   std::uint64_t GetObservedFrames() const { return m_observed_frames; }
@@ -58,8 +71,11 @@ private:
     std::uint32_t count = 0;
     std::uint64_t first_ordinal = 0;
     std::uint64_t last_ordinal = 0;
+    std::uint32_t first_caller_lr = 0;
+    std::uint32_t first_predecessor_pc = 0;
   };
   std::uint64_t m_current_dispatch_ordinal = 0;
+  std::uint32_t m_previous_dispatch_pc = 0;
   std::unordered_map<std::uint32_t, FrameHit> m_current_hits;
   std::unordered_map<std::uint32_t, Candidate> m_candidates;
 };

@@ -805,8 +805,8 @@ void StaticRecompCore::Run()
           const u32 dispatch_from = s_dispatchlog ? m_guest.pc : 0;
 
           const u32 dbg_pc_before = m_guest.pc;
-          if (m_frame_dispatch_profiler)
-            m_frame_dispatch_profiler->RecordDispatch(m_guest.pc);
+          if (m_frame_dispatch_profiler && m_frame_dispatch_profile_armed)
+            m_frame_dispatch_profiler->RecordDispatch(m_guest.pc, m_guest.lr);
           if (m_dispatch_hook && std::binary_search(m_dispatch_hook_pcs.begin(),
                                                     m_dispatch_hook_pcs.end(), m_guest.pc))
           {

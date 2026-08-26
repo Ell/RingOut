@@ -292,6 +292,9 @@ private:
   bool m_gqr_log = false;
   std::unique_ptr<PowerPC::FrameDispatchProfiler> m_frame_dispatch_profiler;
   bool m_frame_dispatch_profile_reported = false;
+  u64 m_frame_dispatch_diagnostic_limit = 0;
+  std::string m_frame_dispatch_profile_arm_file;
+  bool m_frame_dispatch_profile_armed = false;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;
 

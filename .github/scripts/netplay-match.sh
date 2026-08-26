@@ -123,9 +123,13 @@ launch() {
   local -a rollback_mode_args=()
   local -a rollback_oracle_env=()
   local -a diagnostic_args=()
+  local -a hook_profile_env=()
   [ "${WINDOWED:-0}" = "1" ] && mode=()
   [ "${RINGOUT_NETPLAY_DIAGNOSTICS:-0}" = "1" ] &&
     diagnostic_args=(--netplay-diagnostics)
+  if [ -n "${RINGOUT_SC2_HOOK_PROFILE_ARM_ROUTE:-}" ]; then
+    hook_profile_env=("RINGOUT_SC2_HOOK_PROFILE_ARM_FILE=$d/hook-profile.arm")
+  fi
   if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ] ||
      [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||
      [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
@@ -171,6 +175,7 @@ launch() {
       -u RINGOUT_ROLLBACK_FAULT_SCRIPT \
       -u RINGOUT_ROLLBACK_DIGEST_FAULT_FRAME \
       RINGOUT_DETERMINISM_LOG="$d/hash.log" \
+      "${hook_profile_env[@]}" \
       "${rollback_oracle_env[@]}" \
       "${rollback_test_env[@]}" \
       ./bin/moderngekko-run "${mode[@]}" --user-dir "$d/user" --game ./game \
@@ -365,50 +370,67 @@ press() {  # $1 = host|guest  $2 = button  [$3 = settle seconds]
   printf 'RELEASE %s\n' "$2" > "$p"; sleep "${3:-1.2}"
 }
 
-# The intro movie plays automatically and is long; press START until the game
-# leaves it. Extra presses on MODE SELECT are harmless (START is not Confirm).
-echo "skipping intro ..."
-for i in $(seq 1 25); do press host START 1.0; done
+arm_hook_profile() {
+  [ -n "${RINGOUT_SC2_HOOK_PROFILE_ARM_ROUTE:-}" ] || return 0
+  touch "$W/host/hook-profile.arm" "$W/guest/hook-profile.arm"
+  echo "SC2 hook profile armed for ${RINGOUT_SC2_HOOK_PROFILE_ARM_ROUTE}"
+}
 
-echo "MODE SELECT -> VS Battle ..."
-press host A 1.5          # enter the Original mode list
-press host D_DOWN 1.2     # Arcade -> VS Battle
-press host A 3.0          # -> CHARACTER SELECT
+if [ "${RINGOUT_NETPLAY_IDLE_ROUTE:-0}" = "1" ]; then
+  # Research control for dispatch-profile subtraction. Both peers remain in
+  # the synchronized intro/menu path with the same two-controller mapping,
+  # rollback policy, and runtime configuration as the gameplay route. This is
+  # deliberately env-gated and never selected by players.
+  arm_hook_profile
+  echo "leaving both peers idle for ${PLAY}s ..."
+  sleep "$PLAY"
+else
+  # The intro movie plays automatically and is long; press START until the game
+  # leaves it. Extra presses on MODE SELECT are harmless (START is not Confirm).
+  echo "skipping intro ..."
+  for i in $(seq 1 25); do press host START 1.0; done
 
-# Character select, health and stage are all "A" on one side or the other, and
-# each screen has an entry animation that eats input arriving too soon. Settles
-# are deliberately generous: the earlier version used 1.5s and the presses were
-# swallowed, leaving both peers sitting at character select in perfect sync.
-echo "character select -> health -> stage ..."
-for round in 1 2 3; do
-  press host  A 3.0       # lock 1P / confirm 1P health
-  press guest A 3.0       # lock 2P / confirm 2P health / pick stage
-done
+  echo "MODE SELECT -> VS Battle ..."
+  press host A 1.5          # enter the Original mode list
+  press host D_DOWN 1.2     # Arcade -> VS Battle
+  press host A 3.0          # -> CHARACTER SELECT
 
-echo "loading match, then playing for ${PLAY}s ..."
-sleep 20
-slept=0
-while [ $slept -lt "$PLAY" ]; do
-  # Trade attacks so both peers actually contribute input during gameplay.
-  #
-  # NEVER press B here. In this game's menus B is Back, so a loop alternating A
-  # and B locks and immediately unlocks the character -- which is exactly how
-  # the first version of this script got stuck at character select forever while
-  # both peers stayed byte-identical and reported no desync. A and X are safe:
-  # attacks in a match, and harmless confirms if a menu is somehow still up.
-  press host  A 0.5
-  press guest X 0.5
-  press host  X 0.5
-  press guest A 0.5
-  slept=$((slept + 4))
-  if gpu_fifo_failure_seen; then
-    echo "GPU/FIFO consistency failure after ${slept}s of play"
-    break
-  fi
-  if grep -qa "DESYNC" "$W"/*/log.txt 2>/dev/null; then
-    echo "DESYNC after ${slept}s of play"; break
-  fi
-done
+  # Character select, health and stage are all "A" on one side or the other, and
+  # each screen has an entry animation that eats input arriving too soon. Settles
+  # are deliberately generous: the earlier version used 1.5s and the presses were
+  # swallowed, leaving both peers sitting at character select in perfect sync.
+  echo "character select -> health -> stage ..."
+  for round in 1 2 3; do
+    press host  A 3.0       # lock 1P / confirm 1P health
+    press guest A 3.0       # lock 2P / confirm 2P health / pick stage
+  done
+
+  echo "loading match, then playing for ${PLAY}s ..."
+  sleep 20
+  arm_hook_profile
+  slept=0
+  while [ $slept -lt "$PLAY" ]; do
+    # Trade attacks so both peers actually contribute input during gameplay.
+    #
+    # NEVER press B here. In this game's menus B is Back, so a loop alternating A
+    # and B locks and immediately unlocks the character -- which is exactly how
+    # the first version of this script got stuck at character select forever while
+    # both peers stayed byte-identical and reported no desync. A and X are safe:
+    # attacks in a match, and harmless confirms if a menu is somehow still up.
+    press host  A 0.5
+    press guest X 0.5
+    press host  X 0.5
+    press guest A 0.5
+    slept=$((slept + 4))
+    if gpu_fifo_failure_seen; then
+      echo "GPU/FIFO consistency failure after ${slept}s of play"
+      break
+    fi
+    if grep -qa "DESYNC" "$W"/*/log.txt 2>/dev/null; then
+      echo "DESYNC after ${slept}s of play"; break
+    fi
+  done
+fi
 
 if ! ensure_peers_alive; then
   echo "FAIL: a netplay peer exited before intentional shutdown"

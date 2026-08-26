@@ -54,21 +54,61 @@ printf '%s\n' '[rollback live] correction committed' \
 make_case hook-profile
 for peer in host guest; do
   printf '%s\n' \
-    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600' \
+    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600 diagnostic_limit=0' \
     '[sc2-hook-profile] result observed_frames=720 profiled_frames=600 strict_candidates=1 diagnostic_candidates=12 complete=yes' \
-    '[sc2-hook-profile] candidate pc=0x80012340 frames=600 once=600 hits=600 min=1 max=1 first_ordinal=12..14 last_ordinal=12..14' \
+    '[sc2-hook-profile] candidate pc=0x80012340 frames=600 once=600 hits=600 min=1 max=1 parity=300/300 first_ordinal=12..14 last_ordinal=12..14 caller_lr=0x80045678 caller_lr_stable=yes predecessor_pc=0x80023450 predecessor_stable=yes' \
     >> "$WORK/hook-profile/$peer/log.txt"
 done
 printf '%s\n' '[rollback live] correction committed' \
   >> "$WORK/hook-profile/guest/log.txt"
 "$HARNESS" --verify-existing "$WORK/hook-profile" --hook-profile >/dev/null
 
+make_case engine-boundary
+for peer in host guest; do
+  printf '%s\n' \
+    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600 diagnostic_limit=4096' \
+    '[sc2-hook-profile] result observed_frames=720 profiled_frames=600 strict_candidates=1 diagnostic_candidates=1200 complete=yes' \
+    '[sc2-hook-profile] candidate pc=0x80012340 frames=600 once=600 hits=600 min=1 max=1 parity=300/300 first_ordinal=12..14 last_ordinal=12..14 caller_lr=0x80045678 caller_lr_stable=yes predecessor_pc=0x80023450 predecessor_stable=yes' \
+    '[sc2-hook-profile] diagnostic rank=200 pc=0x8001ba3c frames=300 once=300 hits=300 min=1 max=1 parity=300/0 first_ordinal=70000..73000 last_ordinal=70000..73000 caller_lr=0x8002d628 caller_lr_stable=yes predecessor_pc=0x8002d624 predecessor_stable=yes' \
+    >> "$WORK/engine-boundary/$peer/log.txt"
+done
+printf '%s\n' '[rollback live] correction committed' \
+  >> "$WORK/engine-boundary/guest/log.txt"
+"$HARNESS" --verify-existing "$WORK/engine-boundary" --hook-profile \
+  --hook-diagnostic-limit 4096 --expect-sc2-engine-boundary >/dev/null
+
+sed -i 's/predecessor_pc=0x8002d624/predecessor_pc=0x8002d620/' \
+  "$WORK/engine-boundary/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/engine-boundary" --hook-profile \
+    --hook-diagnostic-limit 4096 --expect-sc2-engine-boundary >/dev/null 2>&1; then
+  echo "wrong SC2 engine boundary unexpectedly passed" >&2
+  exit 1
+fi
+
+make_case asymmetric-hook-profile
+for peer in host guest; do
+  pc=80012340
+  [ "$peer" = host ] || pc=80012344
+  printf '%s\n' \
+    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600 diagnostic_limit=0' \
+    '[sc2-hook-profile] result observed_frames=720 profiled_frames=600 strict_candidates=1 diagnostic_candidates=12 complete=yes' \
+    "[sc2-hook-profile] candidate pc=0x${pc} frames=600 once=600 hits=600 min=1 max=1 parity=300/300 first_ordinal=12..14 last_ordinal=12..14 caller_lr=0x80045678 caller_lr_stable=yes predecessor_pc=0x80023450 predecessor_stable=yes" \
+    >> "$WORK/asymmetric-hook-profile/$peer/log.txt"
+done
+printf '%s\n' '[rollback live] correction committed' \
+  >> "$WORK/asymmetric-hook-profile/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/asymmetric-hook-profile" --hook-profile \
+    >/dev/null 2>&1; then
+  echo "asymmetric SC2 hook profile unexpectedly passed" >&2
+  exit 1
+fi
+
 make_case incomplete-hook-profile
 for peer in host guest; do
   printf '%s\n' \
-    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600' \
+    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600 diagnostic_limit=0' \
     '[sc2-hook-profile] result observed_frames=719 profiled_frames=599 strict_candidates=1 diagnostic_candidates=12 complete=no' \
-    '[sc2-hook-profile] candidate pc=0x80012340 frames=599 once=599 hits=599 min=1 max=1 first_ordinal=12..14 last_ordinal=12..14' \
+    '[sc2-hook-profile] candidate pc=0x80012340 frames=599 once=599 hits=599 min=1 max=1 parity=300/299 first_ordinal=12..14 last_ordinal=12..14 caller_lr=0x80045678 caller_lr_stable=yes predecessor_pc=0x80023450 predecessor_stable=yes' \
     >> "$WORK/incomplete-hook-profile/$peer/log.txt"
 done
 printf '%s\n' '[rollback live] correction committed' \

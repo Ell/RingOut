@@ -14,7 +14,9 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--work <empty-output-dir>] [--play-seconds <seconds>] \
          [--port <udp-port>] [--expect-horizon] [--production] \
          [--windowed] [--dual-core] \
-         [--hook-profile] \
+         [--hook-profile] [--hook-warmup-frames <frames>] \
+         [--hook-sample-frames <frames>] [--hook-diagnostic-limit <count>] \
+         [--hook-idle-control] [--expect-sc2-engine-boundary] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -46,10 +48,22 @@ GPU/FIFO regression path; headless remains useful for faster protocol checks.
 --dual-core opts into the guarded deterministic-GPU rollback experiment. The
 player default stays single-core until this route passes the platform matrix.
 
---hook-profile enables the bounded SC2 dispatch profiler on both peers. It
-requires a complete 600-frame sample and at least one PC that dispatched
+--hook-profile enables the bounded SC2 dispatch profiler on both peers. The
+warmup and sample windows are configurable so a script can profile menus or
+actual gameplay; the defaults are 120 and 600 video frames. Diagnostic output
+is disabled by default and bounded to at most 4096 ranked PCs when requested.
+The verifier requires a complete sample and at least one PC that dispatched
 exactly once in every sampled video frame. The result is discovery evidence,
 not permission to enable a hook in production.
+
+--hook-idle-control leaves two synchronized peers in the intro/menu route for
+--play-seconds. It holds the two-controller/netplay configuration constant for
+subtraction against a gameplay profile and requires --hook-profile.
+
+--expect-sc2-engine-boundary requires the exact GRSEAF outer-loop call edge
+0x8002d624 -> 0x8001ba3c -> LR 0x8002d628 to execute once on exactly one
+video-frame parity. It requires an even sample and diagnostic limit 4096. This
+certifies the measured 30 Hz engine boundary, not selective rollback safety.
 EOF
   exit 2
 }
@@ -73,6 +87,11 @@ DIGEST_MISMATCH_FRAME=""
 WINDOWED_RUN=0
 DUAL_CORE_RUN=0
 HOOK_PROFILE=0
+HOOK_PROFILE_WARMUP=120
+HOOK_PROFILE_SAMPLE=600
+HOOK_PROFILE_DIAGNOSTIC_LIMIT=0
+HOOK_IDLE_CONTROL=0
+EXPECT_SC2_ENGINE_BOUNDARY=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -86,6 +105,23 @@ while [ "$#" -gt 0 ]; do
     --windowed) WINDOWED_RUN=1; shift ;;
     --dual-core) DUAL_CORE_RUN=1; shift ;;
     --hook-profile) HOOK_PROFILE=1; shift ;;
+    --hook-warmup-frames)
+      [ "$#" -ge 2 ] || usage
+      HOOK_PROFILE_WARMUP="$2"
+      shift 2
+      ;;
+    --hook-sample-frames)
+      [ "$#" -ge 2 ] || usage
+      HOOK_PROFILE_SAMPLE="$2"
+      shift 2
+      ;;
+    --hook-diagnostic-limit)
+      [ "$#" -ge 2 ] || usage
+      HOOK_PROFILE_DIAGNOSTIC_LIMIT="$2"
+      shift 2
+      ;;
+    --hook-idle-control) HOOK_IDLE_CONTROL=1; shift ;;
+    --expect-sc2-engine-boundary) EXPECT_SC2_ENGINE_BOUNDARY=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -97,6 +133,30 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
+
+if [ "$HOOK_PROFILE" -eq 1 ]; then
+  [[ "$HOOK_PROFILE_WARMUP" =~ ^[0-9]+$ ]] || fail "hook warmup must be an integer"
+  [[ "$HOOK_PROFILE_SAMPLE" =~ ^[0-9]+$ ]] || fail "hook sample must be an integer"
+  [[ "$HOOK_PROFILE_DIAGNOSTIC_LIMIT" =~ ^[0-9]+$ ]] ||
+    fail "hook diagnostic limit must be an integer"
+  HOOK_PROFILE_WARMUP=$((10#$HOOK_PROFILE_WARMUP))
+  HOOK_PROFILE_SAMPLE=$((10#$HOOK_PROFILE_SAMPLE))
+  HOOK_PROFILE_DIAGNOSTIC_LIMIT=$((10#$HOOK_PROFILE_DIAGNOSTIC_LIMIT))
+  [ "$HOOK_PROFILE_WARMUP" -le 36000 ] || fail "hook warmup must be at most 36000"
+  [ "$HOOK_PROFILE_SAMPLE" -ge 60 ] && [ "$HOOK_PROFILE_SAMPLE" -le 3600 ] ||
+    fail "hook sample must be between 60 and 3600"
+  [ "$HOOK_PROFILE_DIAGNOSTIC_LIMIT" -le 4096 ] ||
+    fail "hook diagnostic limit must be at most 4096"
+fi
+[ "$HOOK_IDLE_CONTROL" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
+  fail "--hook-idle-control requires --hook-profile"
+[ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 0 ] || {
+  [ "$HOOK_PROFILE" -eq 1 ] || fail "--expect-sc2-engine-boundary requires --hook-profile"
+  [ $((HOOK_PROFILE_SAMPLE % 2)) -eq 0 ] ||
+    fail "SC2 engine-boundary evidence requires an even hook sample"
+  [ "$HOOK_PROFILE_DIAGNOSTIC_LIMIT" -eq 4096 ] ||
+    fail "SC2 engine-boundary evidence requires --hook-diagnostic-limit 4096"
+}
 
 validate_fault_script() {
   local schedule="$1"
@@ -220,18 +280,45 @@ verify_confirmed_state_logs() {
 
 verify_hook_profiles() {
   local evidence="$1"
-  local peer log result
+  local peer log result expected_observed strict_count actual_count
+  expected_observed=$((HOOK_PROFILE_WARMUP + HOOK_PROFILE_SAMPLE))
+  canonical_strict_candidates() {
+    grep -E '^\[sc2-hook-profile\] candidate pc=0x[0-9a-f]{8} ' "$1" |
+      sed -E 's/^\[sc2-hook-profile\] candidate pc=(0x[0-9a-f]{8}).*/\1/' |
+      sort -u
+  }
   for peer in host guest; do
     log="$evidence/$peer/log.txt"
-    grep -Fq '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5' "$log" ||
+    grep -Fq "[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=${HOOK_PROFILE_WARMUP} sample_frames=${HOOK_PROFILE_SAMPLE} diagnostic_limit=${HOOK_PROFILE_DIAGNOSTIC_LIMIT}" "$log" ||
       fail "$peer did not profile the supported GRSEAF revision"
     result="$(grep -F '[sc2-hook-profile] result ' "$log" | tail -1)"
     [ -n "$result" ] || fail "$peer produced no hook profile result"
-    printf '%s\n' "$result" | grep -Eq 'profiled_frames=600 .*strict_candidates=[1-9][0-9]* .*complete=yes' ||
+    printf '%s\n' "$result" | grep -Eq "observed_frames=${expected_observed} profiled_frames=${HOOK_PROFILE_SAMPLE} strict_candidates=[1-9][0-9]* .*complete=yes" ||
       fail "$peer hook profile is incomplete or has no strict candidate"
-    grep -Eq '^\[sc2-hook-profile\] candidate pc=0x[0-9a-f]{8} frames=600 once=600 hits=600 min=1 max=1 first_ordinal=[0-9]+\.\.[0-9]+ last_ordinal=[0-9]+\.\.[0-9]+$' "$log" ||
+    grep -Eq "^\[sc2-hook-profile\] candidate pc=0x[0-9a-f]{8} frames=${HOOK_PROFILE_SAMPLE} once=${HOOK_PROFILE_SAMPLE} hits=${HOOK_PROFILE_SAMPLE} min=1 max=1 parity=[0-9]+/[0-9]+ first_ordinal=[0-9]+\.\.[0-9]+ last_ordinal=[0-9]+\.\.[0-9]+ caller_lr=0x[0-9a-f]{8} caller_lr_stable=(yes|no) predecessor_pc=0x[0-9a-f]{8} predecessor_stable=(yes|no)$" "$log" ||
       fail "$peer produced no stable once-per-frame candidate"
+    strict_count="$(printf '%s\n' "$result" |
+      sed -E 's/.* strict_candidates=([0-9]+) .*/\1/')"
+    actual_count="$(canonical_strict_candidates "$log" | wc -l)"
+    [ "$actual_count" -eq "$strict_count" ] ||
+      fail "$peer strict candidate count does not match its result"
   done
+  local difference
+  if ! difference="$(diff -u \
+      <(canonical_strict_candidates "$evidence/host/log.txt") \
+      <(canonical_strict_candidates "$evidence/guest/log.txt"))"; then
+    fail "peer strict hook candidate sets differ: $difference"
+  fi
+
+  if [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 1 ]; then
+    local half_sample=$((HOOK_PROFILE_SAMPLE / 2)) parity
+    parity="(${half_sample}/0|0/${half_sample})"
+    for peer in host guest; do
+      log="$evidence/$peer/log.txt"
+      grep -Eq "^\[sc2-hook-profile\] diagnostic rank=[0-9]+ pc=0x8001ba3c frames=${half_sample} once=${half_sample} hits=${half_sample} min=1 max=1 parity=${parity} first_ordinal=[0-9]+\.\.[0-9]+ last_ordinal=[0-9]+\.\.[0-9]+ caller_lr=0x8002d628 caller_lr_stable=yes predecessor_pc=0x8002d624 predecessor_stable=yes$" "$log" ||
+        fail "$peer did not reproduce the SC2 30 Hz engine boundary"
+    done
+  fi
 }
 
 # Asset-free parser/orchestration tests use this path with synthetic logs. It
@@ -341,7 +428,14 @@ if [ "$DUAL_CORE_RUN" -eq 1 ]; then
   run_env+=(RINGOUT_ROLLBACK_DUALCORE=1)
 fi
 if [ "$HOOK_PROFILE" -eq 1 ]; then
-  run_env+=(RINGOUT_SC2_HOOK_PROFILE=1)
+  run_env+=(RINGOUT_SC2_HOOK_PROFILE=1
+    RINGOUT_SC2_HOOK_PROFILE_WARMUP_FRAMES="$HOOK_PROFILE_WARMUP"
+    RINGOUT_SC2_HOOK_PROFILE_SAMPLE_FRAMES="$HOOK_PROFILE_SAMPLE"
+    RINGOUT_SC2_HOOK_PROFILE_DIAGNOSTIC_LIMIT="$HOOK_PROFILE_DIAGNOSTIC_LIMIT"
+    RINGOUT_SC2_HOOK_PROFILE_ARM_ROUTE="$([ "$HOOK_IDLE_CONTROL" -eq 1 ] && echo idle-control || echo gameplay)")
+fi
+if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
+  run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)
 fi
 if ! "${run_env[@]}" bash "$REPO/.github/scripts/netplay-match.sh" \
     "$WORK" "$PLAY" "$PORT"; then
@@ -371,6 +465,13 @@ fi
   echo "renderer_path=$([ "$WINDOWED_RUN" -eq 1 ] && echo windowed || echo headless)"
   echo "threading_path=$([ "$DUAL_CORE_RUN" -eq 1 ] && echo dual-core-experiment || echo rollback-safe-default)"
   echo "sc2_hook_profile=$([ "$HOOK_PROFILE" -eq 1 ] && echo complete || echo disabled)"
+  if [ "$HOOK_PROFILE" -eq 1 ]; then
+    echo "sc2_hook_profile_warmup_frames=$HOOK_PROFILE_WARMUP"
+    echo "sc2_hook_profile_sample_frames=$HOOK_PROFILE_SAMPLE"
+    echo "sc2_hook_profile_diagnostic_limit=$HOOK_PROFILE_DIAGNOSTIC_LIMIT"
+    echo "sc2_hook_profile_route=$([ "$HOOK_IDLE_CONTROL" -eq 1 ] && echo idle-control || echo gameplay)"
+    echo "sc2_engine_boundary=$([ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 1 ] && echo verified-30hz || echo unchecked)"
+  fi
   if [ -n "$DIGEST_MISMATCH_FRAME" ]; then
     echo "expected_digest_mismatch_frame=$DIGEST_MISMATCH_FRAME"
   fi
