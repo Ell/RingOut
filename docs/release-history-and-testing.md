@@ -1,6 +1,6 @@
 # Ell fork release history and test boundary
 
-Audit date: 2026-08-25 (America/Chicago)
+Audit date: 2026-08-26 (America/Chicago)
 
 Repository: `https://github.com/Ell/RingOut`
 
@@ -40,7 +40,7 @@ build instructions in `README.md` or the two release workflows.
 
 ## Immutable tag ledger
 
-All eleven tags are annotated. The raw tag objects and peeled commits below were
+All twelve tags are annotated. The raw tag objects and peeled commits below were
 verified both locally and with `git ls-remote --tags origin` on the audit date.
 
 | Tag | Annotated tag object | Peeled source commit | Commit subject |
@@ -56,6 +56,7 @@ verified both locally and with `git ls-remote --tags origin` on the audit date.
 | `v1.2.1-ell.9` | `c092e9f6ab81338aa038f1ff077d300d647e1c13` | `94cd55df6ab53b974a41c9d27c124cd0b99e68f2` | Fix launcher identity validation |
 | `v1.2.1-ell.10` | `67fa2bf50854a215fe85af2fce2848a1d125825c` | `df76814a0e05655dcbf1efec05620bc02dad0f48` | Prepare v1.2.1-ell.10 replacement release |
 | `v1.2.1-ell.11` | `fed2f692b1e50c45b0a4114334e1c2a301207134` | `a24a0cd5e0372d724a053992c11b56c1a554b087` | Add Windows two-peer netplay smoke |
+| `v1.2.1-ell.12` | `82d315c399d7f1b568edd9a4e05081f427e89b7c` | `47d73ab70a72860170dbe6b83fba720b5221c875` | Document launcher remapping validation |
 
 The `.1` through `.3` public release objects report `target_commitish: main`
 because the original `gh release create` path did not source-bind that release
@@ -497,9 +498,55 @@ its adjacent sidecar and GitHub SHA-256 digest. Windows and AppImage
 the AppImage marker also names runtime source/relink digest
 `237f83e26fd6de08fbecfaa143a7e554169886aecdc74caec5c911d8e15867fc`.
 
+### v1.2.1-ell.12 — launcher controller remapping and visual refinement
+
+Implementation checkpoint: `869faa0e1747052d795cf192a94af1d1de0bb362`
+(2026-08-26).
+
+Release source: `47d73ab70a72860170dbe6b83fba720b5221c875`.
+
+Annotated tag object: `82d315c399d7f1b568edd9a4e05081f427e89b7c`.
+
+Public prerelease: [v1.2.1-ell.12](https://github.com/Ell/RingOut/releases/tag/v1.2.1-ell.12),
+published 2026-08-26 02:31:58 UTC.
+
+The integrated launcher now remaps all 20 GameCube controls by capturing SDL
+buttons and axes from the selected device. It saves each accepted binding
+immediately, preserves unrelated Dolphin profile fields/sections, retains a
+`.bak`, and confirms a full default reset. The release also adds a real-alpha
+character cutout and protects a minimum 440-pixel content lane so copy and
+dividers cannot cross it. At 900x600 the remapping table scrolls independently
+while the modal footer stays fixed and visible. Both packagers and the launcher
+self-test require the artwork; the staged PNG SHA-256 is
+`972a1217692c81db8a13ca614adf40a78dda61e347f6142fd9a48fe04ad3eb0c`.
+
+Local release-candidate validation passed the native build, the asset-aware
+launcher self-test, all 45 CTests, a MinGW launcher/runtime/helper build, and
+live 900x600 Game files, Settings, and remapping-modal smokes with an attached
+DualSense Edge. This validates the Linux UI path and profile generation, not
+physical-Windows input capture.
+
+Both source-bound tag workflows passed:
+
+- Windows [32922551729](https://github.com/Ell/RingOut/actions/runs/32922551729)
+  cross-built the launcher/runtime/helper/recompiler, assembled and validated
+  the exact ZIP, then passed the packaged first-run
+  DolRecomp/CMake/Ninja/Clang/LLD module build/load smoke under Wine.
+- Linux [32922551716](https://github.com/Ell/RingOut/actions/runs/32922551716)
+  passed 45/45 runtime tests, static DolRecomp tests, exact AppImage assembly,
+  and the clean Ubuntu 24.04 no-FUSE self-test.
+
+All six draft assets were downloaded before publication. Their payloads
+matched adjacent sidecars and GitHub digests. The Windows ZIP and AppImage name
+release source `47d73ab70a72860170dbe6b83fba720b5221c875`; the exact downloaded
+AppImage also passed a local `APPIMAGE_EXTRACT_AND_RUN=1` self-test with an
+isolated `RINGOUT_DATA_DIR`. No exact `.ell.12` physical two-machine or
+cross-platform netplay session was run; the `.ell.11` Wine two-peer evidence
+remains the latest retained package-level gameplay handshake.
+
 ## What the current release pipeline actually tests
 
-| Layer | `.11` evidence | Important boundary |
+| Layer | `.12` evidence | Important boundary |
 | --- | --- | --- |
 | Linux runtime build/tests | Debian 12 container builds runtime, module inspector, and tests; `ctest` reports 45/45. | This is host-side unit/integration coverage, not a real game session. |
 | Static DolRecomp | Separately configured static executable; 14/14 tests pass and `readelf` rejects an ELF interpreter. | Uses project-authored fixtures/synthetic input, not distributed game data. |
@@ -537,7 +584,7 @@ Source anchors for those claims:
 ## Published artifact provenance
 
 Payload SHA-256 values were checked against the public release assets and their
-downloaded `.sha256` sidecars on 2026-08-25.
+downloaded `.sha256` sidecars through 2026-08-26.
 
 | Release asset | Bytes | Payload SHA-256 |
 | --- | ---: | --- |
@@ -556,6 +603,9 @@ downloaded `.sha256` sidecars on 2026-08-25.
 | `RingOut-1.2.1-ell.11-windows-x86_64.zip` | 221,113,234 | `dd8de026114a3020258256c919da94837bfd51f84f81d3b4a3c0a1417d305b95` |
 | `RingOut-1.2.1-ell.11-linux-x86_64.AppImage` | 34,167,288 | `e812fedd2c9c357dd281f5157be37ab49a95f321cf75b77ec2771a137cbba4c5` |
 | `RingOut-1.2.1-ell.11-appimage-runtime-sources.tar.zst` | 4,741,076 | `237f83e26fd6de08fbecfaa143a7e554169886aecdc74caec5c911d8e15867fc` |
+| `RingOut-1.2.1-ell.12-windows-x86_64.zip` | 221,422,893 | `736c060f710d1b342787d25c0efaf8d429049548b4fc128f9d15e36e9e6ac352` |
+| `RingOut-1.2.1-ell.12-linux-x86_64.AppImage` | 34,470,392 | `39aced1c99bc87f8b4f76bf49e78ea48c89ede720248eca90d032ab02621eb7d` |
+| `RingOut-1.2.1-ell.12-appimage-runtime-sources.tar.zst` | 4,741,081 | `54b76b80b8eb0c21731213d5caadbdc91a103f4eadee06b02a000ebe596399a0` |
 
 The checkout retains byte-identical local copies of the published `.1`, `.2`,
 and `.3` ZIPs under `dist/out/`; their hashes and internal `SOURCE.txt` commits
