@@ -6,6 +6,15 @@ real-game correction run, recorded 2026-08-25 at implementation commit
 confirmed-state convergence evidence for the tested Linux/source path, not a
 tagged player-ready release artifact.
 
+Update 2026-08-26: player reports of `GFX FIFO: Unknown Opcode` and crashes
+invalidate the older run as a GPU/renderer safety gate. Implementation commit
+`35c09137` on branch `codex/rollback-gpu-state` now holds the GPU quiesced across
+each complete rollback snapshot/load, defaults rollback sessions to single-core,
+and extends this harness with `--windowed`, `--dual-core`, threading/barrier
+provenance, and fatal GPU/FIFO marker rejection. The older result remains
+input-correction and confirmed-memory evidence only. See
+`docs/rollback-emulation-gpu-state.md`.
+
 ## Coverage and claim boundary
 
 `moderngekko.rollback_live_contract` is an executable model which uses the
@@ -39,6 +48,13 @@ mode requires the exact `correction committed` marker. `--expect-horizon`
 instead requires both a hard-horizon marker and a later `horizon resumed`
 marker, followed by successful route completion. A stall without recovery
 fails the harness.
+
+`--windowed` is the renderer-backed GPU/FIFO gate. `--dual-core` opts into the
+guarded deterministic-GPU experiment; ordinary rollback qualification omits it
+and must log the single-core rollback-safe default. Both paths must log the
+matching `gpu_transaction_barrier` marker on both peers. The evidence gate also
+rejects unknown GPU opcodes, linked/desynced/negative/out-of-bounds FIFO
+markers, process-signal markers, and sanitizer failures.
 
 `--production` exercises the ordinary player activation path. It passes
 `--netplay-mode rollback` to both peers, explicitly removes the isolated-test

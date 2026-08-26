@@ -367,10 +367,13 @@ desync stop behavior.
 necessary on Windows because a direct join otherwise reaches `enet_host_create`
 before `WSAStartup` (`ModernGekko/tools/netplay_session.cpp:757-771`).
 
-The session then configures Dolphin for strict synchronized fixed-delay play,
-stock clocks and 100% speed, deterministic dual-core GPU processing by default,
-and background input
-(`ModernGekko/tools/netplay_session.cpp:778-853`).
+The session then configures Dolphin for strict synchronized play, stock clocks
+and 100% speed, and background input. Fixed-delay retains deterministic
+dual-core GPU processing by default; rollback defaults to single-core after the
+2026-08-26 player FIFO/crash report and uses a whole-snapshot GPU transaction
+barrier (`docs/rollback-emulation-gpu-state.md`)
+(`ModernGekko/tools/netplay_session.cpp:1081-1131`, implementation commit
+`35c09137`).
 
 At historical audit commit `ff0ad952`, this was the only topology. It remains
 available unchanged as Advanced Direct IP:

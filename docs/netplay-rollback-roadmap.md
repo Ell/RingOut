@@ -76,6 +76,17 @@ through 660.
 The matching confirmed files hash to
 `4969a73790008801a05a27522d2508a7ffceb32d181a55be1b2f5d14caec9795`.
 
+This 2026-08-25 run is no longer GPU-safety evidence. Player sessions later
+reported repeated `GFX FIFO: Unknown Opcode` failures and crashes. The audit on
+2026-08-26 found that netplay forced dual-core despite the offline
+StaticRecomp FIFO-safe default, and full rollback state serialization did not
+hold the GPU stopped between its GPU-thread video section and CPU-thread
+machine sections. Implementation commit `35c09137` on branch
+`codex/rollback-gpu-state` adds whole-transaction GPU quiescence, makes rollback
+single-core by default, and requires a real-renderer stress route. See
+`docs/rollback-emulation-gpu-state.md`; do not promote a new release from the
+older headless/private evidence alone.
+
 That rerun closes the three previously recorded fault-path blockers for the
 tested Linux/source route. Clean production, isolated one-frame horizon
 stall/resume, isolated frame-60 mismatch/stop, and a 2,958-row fixed-delay

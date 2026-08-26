@@ -407,18 +407,22 @@ cpu/gpu threading: single-core (safe default)
 cpu/gpu threading: dual-core (explicit opt-in)
 ```
 
-The selection is at `ModernGekko/src/runtime/dolphin_runtime.cpp:296-323`.
+The selection is at `ModernGekko/src/runtime/dolphin_runtime.cpp:296-331`.
 `RINGOUT_DUAL_CORE=1` is an experiment; leave it unset for normal offline play.
 If an old `ell.2` build reports `Unknown Opcode`/GFX FIFO desync, updating to a
 current clean extraction is the first fix.
 
-Netplay is intentionally different. It uses dual-core plus Dolphin's
-deterministic GPU-thread mode by default. Historical two-peer runs stayed
-byte-identical, but one reported scheduling assertion was fixed by source
-inspection rather than locally reproduced. `RINGOUT_NETPLAY_SINGLECORE=1`
-restores the conservative netplay path and is the first diagnostic if a current
-peer asserts, desyncs, or reports a FIFO error
-(`ModernGekko/tools/netplay_session.cpp:778-812`). In PowerShell:
+Rollback netplay is no longer intentionally different. Player reports on
+2026-08-26 reproduced `GFX FIFO: Unknown Opcode` failures and crashes, and
+source review found the full rollback snapshot/load was not one atomic GPU/CPU
+transaction. Implementation commit `35c09137` on branch
+`codex/rollback-gpu-state` therefore makes rollback single-core by default and
+holds the GPU quiesced across every complete state operation. Fixed-delay keeps
+its historical dual-core default.
+`RINGOUT_NETPLAY_SINGLECORE=1` remains an overriding diagnostic. The guarded
+dual-core rollback route is test-only through `RINGOUT_ROLLBACK_DUALCORE=1` and
+must not be recommended to players until its renderer-backed platform matrix
+passes. See `docs/rollback-emulation-gpu-state.md`. In PowerShell:
 
 ```powershell
 $env:RINGOUT_NETPLAY_SINGLECORE = '1'

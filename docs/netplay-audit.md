@@ -6,6 +6,18 @@ This is the durable index for the current netplay research. It distinguishes wha
 
 ## Later branch implementation checkpoint (2026-08-25)
 
+GPU-safety update 2026-08-26: player reports of repeated `GFX FIFO: Unknown
+Opcode` failures and crashes invalidate the retained 2026-08-25 runs as a
+renderer/FIFO release gate. Source review found that the lobby forced rollback
+back to dual-core after offline play had already adopted a single-core safety
+default, and the full savestate path did not quiesce the GPU across the whole
+multi-threaded state transaction. Implementation commit `35c09137` on branch
+`codex/rollback-gpu-state` changes the rollback default, adds whole-snapshot GPU
+quiescence, and adds a real-renderer stress gate. Until that new gate passes
+with a private game package, the older results below prove input correction and
+confirmed memory convergence only.
+See [rollback GPU-state research](rollback-emulation-gpu-state.md).
+
 The executive verdict below remains the historical result for audited commit
 `ff0ad952`. It must not be read as a description of the current
 `codex/rollback-netplay` worktree. At implementation commit `6518db52` on
@@ -83,6 +95,7 @@ diagnostics checkpoint is commit
 - [Rollback and test roadmap](netplay-rollback-roadmap.md): current fixed-delay algorithm, rollback experiments and measurements, test evidence, performance constraints, and a staged hybrid rollback design.
 - [Rollback implementation handoff](rollback-netplay-implementation.md): the later branch-local live implementation, safety policy, evidence, and blockers.
 - [Live rollback test harness](rollback-live-test-harness.md): exact real-game commands and confirmed logical-state comparison.
+- [Rollback GPU-state research](rollback-emulation-gpu-state.md): emulated-versus-host GPU state boundary, FIFO crash root cause, transaction barrier, and renderer-backed gate.
 
 ## Historical executive verdict at `ff0ad952`
 
