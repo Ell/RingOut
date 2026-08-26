@@ -421,7 +421,45 @@ Local validation on 2026-08-25 passed:
   used bundled DolRecomp, Python, CMake, Ninja, Clang 22.1.8 and LLD; generated
   and loaded a GRSEAF module with ABI 3 / CPU ABI 3;
 - the exact Debian 12 Linux build and all 45 CTests after the shared command
-  representation refactor.
+  representation refactor;
+- an asset-private exact-ZIP Windows-to-Windows direct rollback smoke under
+  Wine. The packaged helper built the real `GRSEAF` module from DOL SHA-256
+  `0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5`;
+  both packaged runtimes connected, negotiated generation 1 with base delay 2
+  and horizon 8, completed StartGame, activated the live scheduler, remained
+  alive for the eight-second observation window, and reported no desync.
+
+The direct run used Windows candidate SHA-256
+`4e50de781e30ead2a1484567513b15638e0aa8d95ec8318c88e09bc4d40de5b8`
+and produced Windows module SHA-256
+`fa7603e96cf5829c44ea0be0459442b10d04c46ec4a254703e22fb15a1b932c8`.
+The exact retained command was:
+
+```bash
+RINGOUT_WINDOWS_NETPLAY_ROUTES=direct \
+RINGOUT_WINDOWS_NETPLAY_SECONDS=8 \
+RINGOUT_WINDOWS_NETPLAY_MODULE='/tmp/ringout-ell11-windows-netplay-direct/module output/GRSEAF/0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5-7d3876bbc2d37502/gGRSEAF_recomp.dll' \
+xvfb-run -a .github/scripts/smoke-windows-netplay.sh \
+  .cache/ell11-windows-qa-final/RingOut-1.2.1-ell.11-windows-x86_64.zip \
+  /tmp/ringout-rvz-e2e-20260825/data/ringout/games/GRSEAF \
+  /tmp/ringout-ell11-windows-netplay-direct-session3
+```
+
+The same two packaged Windows runtimes also reached Dolphin's hosted service:
+the host registered room `31252e1a` and the guest performed a room-code join,
+but the guest could not punch back to the host through this machine's own NAT.
+That same-public-IP attempt is a failed full-traversal test, not a passing
+Internet gameplay claim. The separate live traversal protocol smoke passed
+`Hello`, room lookup, `PleaseSendPacket`, and `ConnectReady`, while explicitly
+reporting `same-host-punch-received=no`:
+
+```bash
+python3 .github/scripts/test-dolphin-traversal-live.py
+```
+
+Full hosted traversal still requires two peers behind distinct NATs (or a
+controlled two-NAT lab). The committed harness keeps both routes available and
+does not contain, copy, or publish game data or the derived module.
 
 The first validation-only Windows candidate was
 `.cache/ell11-windows-qa/RingOut-1.2.1-ell.11-windows-x86_64.zip`, SHA-256
@@ -432,12 +470,13 @@ exact-package smoke.
 
 ## What the current release pipeline actually tests
 
-| Layer | `.10` evidence | Important boundary |
+| Layer | `.11` candidate evidence | Important boundary |
 | --- | --- | --- |
 | Linux runtime build/tests | Debian 12 container builds runtime, module inspector, and tests; `ctest` reports 45/45. | This is host-side unit/integration coverage, not a real game session. |
 | Static DolRecomp | Separately configured static executable; 14/14 tests pass and `readelf` rejects an ELF interpreter. | Uses project-authored fixtures/synthetic input, not distributed game data. |
 | Windows cross-build | MinGW Release runtime and DolRecomp compile; tests are explicitly off. | Successful PE compilation is not native Windows execution. |
 | Windows whole-package smoke | Exact ZIP is extracted into a fresh Wine prefix; its bundled Python creates a synthetic DOL, bundled DolRecomp translates it, bundled CMake/Ninja/Clang/`lld` builds a ThinLTO DLL, and Windows Python loads/checks the ABI and gather-pipe export. | The smoke exits before real game data or a graphics device; it does not cover GPU/audio/controller behavior. |
+| Windows two-peer rollback smoke | The exact ZIP builds the private real module, then two packaged Windows runtimes under Wine complete direct StartGame, negotiate and activate rollback, remain alive, and report no desync. | One host/Wine environment is not physical Windows, cross-platform interoperability, scripted VS gameplay, adverse-network behavior, or Internet traversal across two NATs. |
 | AppImage module smoke | Exact extracted AppImage payload runs the packaged setup helper with an intentionally contaminated library path and broken `clang`, restores the host environment, falls back to GCC, translates a synthetic DOL, builds an x86-64 ELF module, `dlopen`s it, and checks ABI/entry metadata. | Does not exercise gameplay; the separate local real-disc build is host-specific evidence. |
 | AppImage clean-host smoke | Exact AppImage runs `--ringout-self-test` as uid 65534 in a digest-pinned Ubuntu 24.04 container with no network, no capabilities, no FUSE, and `no-new-privileges`. | Proves extraction/startup self-test, not desktop integration, rendering, sound, or input. |
 | Package policy | Both packages validate manifests, exact source/provenance, licence payload, privacy, and absence of disc/save/generated-module data. Windows also validates PE import closure and ZIP timestamps; AppImage validates DSO/source closure and glibc floor. | Policy checks cannot prove runtime correctness. |
@@ -453,6 +492,8 @@ Source anchors for those claims:
 - Windows synthetic DOL through real packaged `lld` and loader:
   `.github/scripts/smoke-windows-package.sh:97-179` and
   `.github/scripts/windows-package-smoke.py:37-53`.
+- Asset-private exact-ZIP Windows two-peer rollback gate:
+  `.github/scripts/smoke-windows-netplay.sh:1-254`.
 - AppImage synthetic module loader:
   `.github/scripts/smoke-appimage-module.sh:1-140`.
 - Windows provenance/import/privacy/manifest/timestamp gates:
@@ -527,10 +568,12 @@ been completed (`.github/workflows/windows-cross.yml:214-238`;
    drove `.3`, proving some physical-Windows startup and game execution. The
    exact `.6` ZIP has not completed the documented fresh-folder, real-disc,
    GPU/audio/controller/menu/gameplay matrix on physical Windows.
-2. **Cross-platform netplay:** no retained test proves Windows-to-Linux,
-   Windows-to-Windows, or Linux-to-Linux play between two physical machines.
-   No adverse latency, jitter, loss, disconnect/reconnect, NAT, or port-forward
-   matrix is part of release CI.
+2. **Cross-platform netplay:** the `.ell.11` candidate has a retained
+   Windows-to-Windows direct two-process rollback smoke under Wine, but no test
+   proves Windows-to-Linux, Windows-to-Windows, or Linux-to-Linux play between
+   two physical machines. No adverse latency, jitter, loss,
+   disconnect/reconnect, two-NAT traversal, or port-forward matrix is part of
+   release CI.
 3. **Rollback:** published `ell.6` netplay is fixed-delay lockstep. The later
    source worktree has branch-local live rollback evidence, but no published
    package or physical/cross-platform proof; see

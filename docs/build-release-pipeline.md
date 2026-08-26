@@ -122,6 +122,20 @@ The test does not cover a physical Windows kernel, antivirus quarantine, driver
 behavior, or a proprietary full game DOL. Those remain platform QA gaps; see
 section 9.
 
+An additional asset-private release smoke is available at
+`.github/scripts/smoke-windows-netplay.sh`. Given an exact Windows ZIP and a
+legally supplied extracted game outside the repository, it uses the packaged
+`moderngekko-port.exe` to build the real Windows module, starts two packaged
+`moderngekko-run.exe` processes under Wine, and requires both peers to complete
+the synchronized StartGame handshake, negotiate rollback, activate the live
+snapshot/prediction/replay scheduler, remain alive for a bounded interval, and
+report no desync or rollback failure. `RINGOUT_WINDOWS_NETPLAY_ROUTES=direct`
+is deterministic on one machine. The optional `traversal` route also verifies
+the player runtime's Dolphin room registration/join path, but a same-public-IP
+run additionally depends on the local router supporting NAT hairpinning.
+Because CI intentionally has no proprietary game data, this is a documented
+manual release gate rather than a public workflow step.
+
 ### Windows direct child-process boundary (`ff3a49fd`, 2026-08-25)
 
 The public `.ell.10` ZIP contains `tools/dolrecomp.exe` and its complete import
