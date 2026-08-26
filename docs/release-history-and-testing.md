@@ -392,6 +392,44 @@ adjacent `.sha256` files and GitHub asset digests, and embedded source commit
 `df76814a0e05655dcbf1efec05620bc02dad0f48`. The AppImage `SOURCE.txt` also
 names the exact same-release runtime source/relink archive and digest.
 
+Post-publication Windows finding: `.ell.10` must not be recommended for a new
+Windows installation. A player report that setup could not find
+`dolrecomp.exe` was reproduced with the exact public ZIP even though the file
+and all three runtime DLLs were present in `tools/`. The helper passed a quoted
+command string through `std::system()`; Windows `cmd.exe` misparsed it as one
+missing command. This affects package paths with and without spaces. The
+source-bound `.ell.10` assets remain valid provenance records, but the Windows
+first-run player path is release-blocking.
+
+### v1.2.1-ell.11 — Windows first-run replacement candidate
+
+Implementation checkpoint: `ff3a49fd` (2026-08-25).
+
+Windows setup now launches compiler probes, DolRecomp, CMake configuration,
+and the build directly with `CreateProcess` argument vectors and captured
+stdout/stderr. No setup tool is interpreted by `cmd.exe`. The exact Windows ZIP
+smoke now builds through `moderngekko-port build` rather than testing DolRecomp
+and CMake independently.
+
+Local validation on 2026-08-25 passed:
+
+- the MinGW Windows launcher/runtime/helper cross-build;
+- the packaged `.ell.11` ZIP policy, import-closure, privacy, provenance, and
+  deterministic-archive checks;
+- the exact ZIP under Wine with spaces in package, game, and output paths. The
+  setup helper reached inspect, translate, configure, compile, and publish;
+  used bundled DolRecomp, Python, CMake, Ninja, Clang 22.1.8 and LLD; generated
+  and loaded a GRSEAF module with ABI 3 / CPU ABI 3;
+- the exact Debian 12 Linux build and all 45 CTests after the shared command
+  representation refactor.
+
+The first validation-only Windows candidate was
+`.cache/ell11-windows-qa/RingOut-1.2.1-ell.11-windows-x86_64.zip`, SHA-256
+`7aae919afa2421a37cd5ff182cadc3e6d3fc025df048f7ae4ec8b02c2df57f26`.
+It predates the final error-reporting-only rebuild and is not a release
+artifact. Publication remains conditional on clean tag workflows and a fresh
+exact-package smoke.
+
 ## What the current release pipeline actually tests
 
 | Layer | `.10` evidence | Important boundary |

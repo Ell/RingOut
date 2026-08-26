@@ -103,13 +103,50 @@ and continues (`dist/RingOut-1.0-dist/module-src/CMakeLists.txt:156-204`). That 
 For the Windows portable package, LLD is effectively a release requirement:
 
 - the packager fails unless `toolchain/bin/ld.lld.exe` or `lld-link.exe` exists (`.github/scripts/package-windows-cross.sh:350-356`);
-- the smoke test specifically requires `ld.lld.exe`, starts it under Wine, and rejects configuration unless it prints `module: linking with lld` (`.github/scripts/smoke-windows-package.sh:75-93,127-150`);
+- the smoke test specifically requires `ld.lld.exe`, starts the packaged setup
+  helper under Wine, and rejects configuration unless the helper's CMake output
+  prints `module: linking with lld` (`.github/scripts/smoke-windows-package.sh:75-93,119-156`);
 - the verbose link must contain `-fuse-ld=lld` or `ld.lld`, and the link must populate a ThinLTO cache (`.github/scripts/smoke-windows-package.sh:152-159`); and
 - the generated DLL is checked for both required exports and loaded through Windows `ctypes`, which also catches unresolved imports (`.github/scripts/smoke-windows-package.sh:161-179`; `.github/scripts/windows-package-smoke.py:37-57`).
 
-This is an actual compile/link/load test, not merely checking that files exist. It creates a project-authored 264-byte synthetic GameCube DOL, runs the packaged Windows DolRecomp, and uses the packaged Windows Python/CMake/Ninja/Clang/LLD stack to build a PE DLL under Wine (`.github/scripts/smoke-windows-package.sh:107-179`). The workflow runs that test after assembling every candidate ZIP (`.github/workflows/windows-cross.yml:190-212`).
+This is an actual compile/link/load test, not merely checking that files exist.
+It creates a project-authored extracted GRSEAF game around a 264-byte synthetic
+GameCube DOL, then runs `tools/moderngekko-port.exe build` through every player
+setup phase. The helper must find and directly launch sibling DolRecomp plus the
+packaged Python/CMake/Ninja/Clang/LLD stack, publish a PE DLL, and load/check its
+ABI under Wine (`.github/scripts/smoke-windows-package.sh:95-176`). Package,
+game, and output paths deliberately contain spaces. The workflow runs that test
+after assembling every candidate ZIP (`.github/workflows/windows-cross.yml:190-212`).
 
-The test does not cover a physical Windows kernel, PowerShell's complete interactive first-run flow, antivirus quarantine, driver behavior, or a proprietary full game DOL. Those remain platform QA gaps; see section 9.
+The test does not cover a physical Windows kernel, antivirus quarantine, driver
+behavior, or a proprietary full game DOL. Those remain platform QA gaps; see
+section 9.
+
+### Windows direct child-process boundary (`ff3a49fd`, 2026-08-25)
+
+The public `.ell.10` ZIP contains `tools/dolrecomp.exe` and its complete import
+closure, but its integrated first-run path is broken. `moderngekko-port` found
+the correct sibling path, rendered it with a leading quote, and passed the
+whole command string to `std::system()`. Windows `cmd.exe` removed/misassociated
+that quote and treated the executable plus arguments as one missing command.
+The exact public ZIP reproduced this under Wine with package paths both with
+and without spaces. The failure text began `Can't recognize
+'...tools\\dolrecomp.exe\" -j16 ...'`; the file itself was present.
+
+The helper now models every compiler probe, DolRecomp translation, CMake
+configure, and CMake build as an argument vector. Windows uses `CreateProcessA`
+directly with CRT-compatible argument quoting and a combined stdout/stderr
+pipe; it no longer invokes `cmd.exe`. Linux retains its explicit shell path so
+the AppImage host-environment prefix remains auditable
+(`ModernGekko/tools/moderngekko_port.cpp:102-119,302-433,811-920`).
+
+The earlier Windows smoke was a false-positive boundary: it self-tested
+`moderngekko-port` resource discovery, then invoked DolRecomp and CMake
+independently from Bash/Wine. It therefore never exercised the faulty
+`std::system()` path. The replacement smoke's packaged-helper build closes that
+gap and passed locally from the `.ell.11` validation ZIP with all five setup
+phases, a path containing spaces, bundled Clang 22.1.8, LLD ThinLTO, module
+publication, PE exports, and a loaded GRSEAF ABI descriptor.
 
 ### Why LLD is retained even though it is not a clean-build speedup
 

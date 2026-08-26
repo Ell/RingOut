@@ -75,18 +75,18 @@ NETPLAY
 
 Both players need this same Ring Out release and the same GameCube disc
 revision. Complete Game files and Controller setup, then open Netplay in the
-launcher. Choose the same network mode on both players:
+launcher. The normal beta flow uses Host online room / Join online room and an
+eight-character room code through Dolphin's hosted rendezvous, then connects
+the players directly over UDP.
 
-  Host: choose Host, set the UDP port (default 2626), nickname, and Fixed delay
-        or Experimental rollback. Allow RingOut through Windows Firewall on
-        private networks if prompted.
+Online Room has no relay, authentication, encryption, room password, or IP
+hiding, and strict NATs can fail. Use it only with trusted friends. Advanced
+Direct IP remains a troubleshooting fallback.
 
-  Join: enter the host name or IPv4 address and matching port, choose the same
-        network mode, then choose Join.
-
-The current player flow is direct UDP. Use a trusted LAN or private VPN; an
-Internet host normally needs UDP forwarding. Room codes, automatic NAT
-traversal, and relay fallback are not included in this build.
+The launcher can enable detailed netplay diagnostics and opens the Logs folder.
+Logs can contain endpoint and local-host information, so inspect them before
+sharing. The in-game network OSD shows RTT and actual rollback correction depth
+and can be disabled in the launcher.
 
 Starting netplay restarts the runtime into its lobby; this is expected. The
 host's enabled AR/Gecko codes are synchronized to the guest before boot. Choose
