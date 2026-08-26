@@ -2,7 +2,7 @@
 
 Research target: `a80c2336` plus branch `codex/rollback-gpu-state`
 
-Research date: 2026-08-26
+Research date: 2026-08-26 UTC
 
 Implementation commit: `35c09137` (`fix rollback GPU state transactions`)
 
@@ -176,8 +176,34 @@ The final CTest result was `100% tests passed, 0 tests failed out of 45` in
 `23.43 sec`; the asset-free evidence-gate test reported
 `rollback live real-game evidence gate: PASS`.
 
-No owned game image or extracted private package is present under the
-repository, `/home/ellg`, `/mnt`, or retained `/tmp` package directories, so
-the real renderer-backed two-peer gate cannot yet be claimed. The older
+A clean Windows cross-build also completed the full launcher/runtime dependency
+graph after the state-store changes and produced x86-64 PE executables for
+`RingOut.exe`, `moderngekko-run.exe`, and `dolrecomp.exe`:
+
+```bash
+cmake -S ModernGekko -B /tmp/ringout-rollback-gpu-win-build -GNinja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-x86_64.cmake \
+  -DCMAKE_C_COMPILER=/usr/bin/x86_64-w64-mingw32-gcc \
+  -DCMAKE_CXX_COMPILER=/usr/bin/x86_64-w64-mingw32-g++ \
+  -DCMAKE_RC_COMPILER=/usr/bin/x86_64-w64-mingw32-windres \
+  -DCMAKE_BUILD_TYPE=Release -DUSE_SYSTEM_LIBS=OFF \
+  -DENABLE_QT=OFF -DENABLE_TESTS=OFF -DENABLE_ANALYTICS=OFF \
+  -DENABLE_AUTOUPDATE=OFF -DBUILD_TESTING=OFF \
+  -DMODERNGEKKO_ENABLE_DOLPHIN_TESTS=OFF
+cmake --build /tmp/ringout-rollback-gpu-win-build \
+  --target moderngekko-launcher -j 12
+file /tmp/ringout-rollback-gpu-win-build/{RingOut.exe,moderngekko-run.exe} \
+  /tmp/ringout-rollback-gpu-win-build/dolrecomp-build/dolrecomp.exe
+```
+
+That closes the fresh Windows compile gate only. These PE files were not run
+under Windows and are not evidence of a Windows renderer-backed netplay match.
+
+No owned game image or intact extracted private package is present under the
+repository, `/home/ellg`, `/mnt`, or retained `/tmp` package directories. The
+retained `/tmp/ringout-live-package.USuoYFcK` has a runtime and recomp module,
+but its `game` path is a broken symlink to the deleted
+`/tmp/ringout-rollback-private.mGbUYiaf/package/game`. It therefore cannot boot,
+and the real renderer-backed two-peer gate cannot yet be claimed. The older
 2026-08-25 private correction run remains useful input/protocol evidence but
 predates this GPU transaction barrier and does not close the player report.
