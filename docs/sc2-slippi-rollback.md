@@ -6,8 +6,11 @@ and continuous-sync slice is implementation commit `514f77e6`. Phase-armed
 hook discovery and the first machine-verified SC2 engine boundary are
 implementation commit `7ad94d48`. Exact-scope MEM1 write-footprint discovery is
 implementation commit `7efcceb3`. Exact full-emulator engine-tick replay and
-the bounded SI input replay journal are implementation commit `304df33a`. All
-were recorded 2026-08-26. No release is certified by this document.
+the bounded SI input replay journal are implementation commit `304df33a`;
+bounded external-effect classification is commit `dbb1682c`; dispatch-PC
+attribution is commit `86513abf`; and direct/indirect update-call attribution
+is commit `0a1dae8d`. All were recorded 2026-08-26. No release is certified by
+this document.
 
 ## Outcome and claim boundary
 
@@ -333,6 +336,102 @@ render/audio/persistence effects are not yet bypassed. The next gate is to
 classify those external effects and replace the full state with an
 overinclusive selective profile while continuing to compare the complete
 endpoint.
+
+### External-effect classification
+
+Commit `dbb1682c` instruments every statically recompiled external MMU read and
+write from the original engine pass, plus the number of interpreter fallback
+instructions. It is bounded to 256 distinct read and write sites, reports and
+fails overflow through the engine-replay gate, and remains inactive outside the
+explicit oracle. Hooks and aggregation are at
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp:19-161`
+and
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp:651-973`.
+
+The automated VS sample retained at
+`/tmp/ringout-live-rollback.sc2-engine-external-gameplay` completed exact
+endpoint replay on both peers and retained 1,664 physical rows. Each peer
+observed 103 external reads over 31 address/size sites, 104 external writes over
+40 sites, zero interpreter fallbacks, no profiler overflow, and no writes to
+the `0xcc008000` gather pipe. The address families were `0xcc000000`,
+`0xcc001000`, `0xcc002000`, `0xcc003000`, `0xcc005000`, `0xcc006400`, and
+`0xcc006800`. Dolphin maps these respectively to Command Processor, Pixel
+Engine, Video Interface, Processor Interface, DSP, Serial Interface, and
+Expansion Interface (`ModernGekko/vendor/dolphin/Source/Core/Core/HW/Memmap.cpp:73-82`).
+
+The result, host log, guest log, and common confirmed-state SHA-256 values are
+respectively
+`85f53ba60bfdffd677481449476ca2659663cd9f4c4b77a83524e88e0ab0d1fa`,
+`8e11a86ce4ea5aeff009ab5141904217b860189fdd6927106e826b26fc9514b4`,
+`b0284aa0b4b85a70ee0b4accab7518f6c3a7fbce73bc1269f8425e7a3d92a0a6`,
+and `e374cd74643d45c124d31b384fd029b164255e3d52f14c87e498cc269110c990`.
+The reproduction command is the exact engine-replay command above with work
+path `/tmp/ringout-live-rollback.sc2-engine-external-gameplay` and port 28865.
+
+Commit `86513abf` additionally attributes every access to the active static-
+recompiler dispatch PC. The gameplay sample contained 41 read block/address
+pairs and 46 write pairs. Concrete blocks cover PI (`0x80183bb8`), VI
+(`0x8018bcf0`), DSP (`0x8018f308`), CP/PE (`0x801a1a40`), EXI
+(`0x801bd3b0`), and SI (`0x801beb94` and related blocks). These are exact PCs,
+not inferred function names. The generated-C inspection remained in the
+private extraction workspace and is not committed.
+
+Commit `0a1dae8d` uses the generated module's bounded MEM1 write journal rather
+than copying all 24 MiB at every call. It profiles the 39 exact direct call
+edges in `0x8001ba3c`, then the seven indirect-dispatch return sites inside the
+gameplay-sensitive object loop at `0x800095c0`. Missing returns, journal
+ownership conflicts, more than 2,048 indirect sites, or incomplete profiles
+fail the evidence gate. Written pages are conservative store footprints: a
+page may be reported even if the stored value was unchanged.
+
+The passing gameplay evidence at
+`/tmp/ringout-live-rollback.sc2-engine-direct-journal-28969` found 26 executed
+direct sites and 6,231 completed calls in the host tick. The wait/service call
+at `0x8001bf58 -> 0x8000c1f4` accounted for 6,202 calls, 58 external reads, and
+44 writes. Four other direct calls touched MMIO. Idle/menu subtraction at
+`/tmp/ringout-live-rollback.sc2-engine-direct-idle-28970` retained the same 26
+sites but exposed gameplay-sensitive write-footprint changes at
+`0x800095c0`, the repeated `0x80020348` calls, and `0x80016d14`.
+
+The nested passing run at
+`/tmp/ringout-live-rollback.sc2-engine-indirect-28971` localized all observed
+virtual updates to callsite `0x80009888`. In the host tick, clean targets
+`0x80009530` and `0x800e9ab0` wrote 32 and 18 MEM1 pages respectively; targets
+`0x8001af10` and `0x8001f0c0` accounted for the loop's observed MMIO. Host and
+guest may arm on different physical ticks, so per-peer counts are exact self-
+replay profiles and are not asserted to be equal cohorts. Both peers still
+passed the full-state replay oracle. The result/host/guest SHA-256 values for
+that run are
+`458e28fb189eae4320be14a5e99104c5c1a21230acdf274d5636f6764ee12d85`,
+`8286453837c63cd108789b14edc7821238daa034366a967fc18a55766042c2d2`,
+and `fa2ba8020e3137c49392d33c8d9da1577eae9c3a65be26c693a48d4976cd5247`.
+
+Exact nested gameplay reproduction command:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-engine-indirect-28971 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 60 --hook-diagnostic-limit 0 \
+  --engine-replay-probe --play-seconds 24 --port 28971
+```
+
+The idle cohort used the same command with
+`--hook-idle-control`, work path
+`/tmp/ringout-live-rollback.sc2-engine-direct-idle-28970`, and port `28970`.
+The code gate is anchored at
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp:745-973`
+and `.github/scripts/rollback-live-real-game.sh:380-399`.
+
+This rejects the hypothesis that the broad engine iteration can be replayed as
+a pure memory transform. It also narrows the implementation target: the
+`0x800095c0` object-update phase is gameplay-sensitive, and its two observed
+MMIO-capable handlers now need explicit read replay/write suppression. The next
+oracle should replay that phase from a selective checkpoint and prove the
+corrected endpoint while leaving the 6,000-call wait/service loop outside
+resimulation.
 
 ### Preallocated selective checkpoint ring
 

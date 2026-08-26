@@ -93,6 +93,26 @@ explicit input renewal. It does not reduce checkpoint size or redirect live
 late-input correction through the SC2 engine loop; external-effect
 classification and selective-state replacement remain the next stage.
 
+Commit `dbb1682c` makes the first part of that classification measurable. The
+automated VS engine pass performed 103 MMIO reads and 104 MMIO writes across
+CP, PE, VI, PI, DSP, SI, and EXI, with zero gather-pipe writes and zero
+interpreter fallbacks. Both peers reported the same aggregate counts and still
+passed exact full-state replay. The current boundary therefore spans emulated
+hardware/interrupt service even though it does not directly submit a GX gather
+stream in this sample. Before region snapshots can replace full state, the
+next gate must attach these accesses to dispatch PCs and prove which can be
+suppressed during replay versus which hardware state must be restored.
+
+Commits `86513abf` and `0a1dae8d` complete that measurement gate. Exact dispatch
+PCs now cover each MMIO access; a bounded generated-module write journal then
+profiles the 39 direct outer calls and seven virtual return sites in the
+gameplay-sensitive object loop. Gameplay/idle subtraction and an exact replay
+run identify `0x800095c0`/callsite `0x80009888` as the next selective oracle,
+while the 6,000-plus-call wait/service loop stays outside resimulation. The
+next implementation slice is an object-update checkpoint plus replayed reads
+and suppressed writes for the two MMIO-capable handlers, followed by complete-
+endpoint comparison before any live late-input correction uses it.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values

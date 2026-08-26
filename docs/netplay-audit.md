@@ -46,6 +46,23 @@ matching confirmed-state logs. This certifies one full-state gameplay tick and
 the input-renewal mechanism, not a selective or player-facing engine rollback
 path; render/audio/persistence suppression and state narrowing remain open.
 
+Commit `dbb1682c` profiles the original engine pass's external accesses. The
+automated VS sample was identical in aggregate on both peers: 103 MMIO reads,
+104 MMIO writes, 31/40 distinct address-size sites, no gather-pipe traffic, no
+interpreter fallback, and no profiler overflow. The accesses span CP, PE, VI,
+PI, DSP, SI, and EXI. This rejects treating the current boundary as a pure
+memory transform: it crosses hardware/interrupt service and requires dispatch-
+PC attribution plus explicit hardware/output policy before selective replay.
+
+Commits `86513abf` and `0a1dae8d` close that attribution gate. The outer tick's
+PI/VI/DSP/CP/PE/EXI/SI accesses now have exact dispatch PCs, and a bounded write
+journal decomposes 39 direct edges plus the indirect object-update phase. A
+passing gameplay sample found that `0x8001bf58 -> 0x8000c1f4` is a 6,202-call
+wait/service loop, while gameplay-sensitive virtual updates converge at
+`0x80009888` inside `0x800095c0`. Two handlers own the sampled MMIO; the clean
+handlers own the largest gameplay write footprints. This is a narrower
+research target, not a shipped selective or live-correction path.
+
 The executive verdict below remains the historical result for audited commit
 `ff0ad952`. It must not be read as a description of the current
 `codex/rollback-netplay` worktree. At implementation commit `6518db52` on
