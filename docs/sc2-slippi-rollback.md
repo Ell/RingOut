@@ -5,8 +5,9 @@ GPU-safety commit `d5fd9426`. The discovery, selective-storage, hook-chassis,
 and continuous-sync slice is implementation commit `514f77e6`. Phase-armed
 hook discovery and the first machine-verified SC2 engine boundary are
 implementation commit `7ad94d48`. Exact-scope MEM1 write-footprint discovery is
-implementation commit `7efcceb3`. All were recorded 2026-08-26. No release is
-certified by this document.
+implementation commit `7efcceb3`. Exact full-emulator engine-tick replay and
+the bounded SI input replay journal are implementation commit `304df33a`. All
+were recorded 2026-08-26. No release is certified by this document.
 
 ## Outcome and claim boundary
 
@@ -31,9 +32,11 @@ Slippi-level performance for SC2 therefore means a game-specific path:
    fingerprint match a continuously verified profile.
 
 The branch implements the discovery and storage primitives and now identifies
-an exact-DOL engine-iteration boundary. It does **not** yet select the region
-store in live netplay and does not claim that the safe memory region set or
-side-effect hooks are known.
+an exact-DOL engine-iteration boundary. A research oracle now proves one idle
+and one automated-VS engine iteration reproduce exactly when the entire
+emulator state and the original resolved SI polls are restored. It does **not**
+yet select the region store in live netplay and does not claim that the safe
+memory region set or side-effect hooks are known.
 
 ## Primary-source comparison
 
@@ -254,6 +257,82 @@ menus/stages/characters/round transitions, locked L1, CPU context, or emulator
 state. The next gate must replay from a deliberately overinclusive candidate
 profile and compare complete corrected MEM1/L1; pages may be removed only after
 long corpus evidence classifies them.
+
+### Exact engine-tick replay oracle and SI renewal
+
+Implementation commit `304df33a` adds a deliberately expensive correctness
+oracle at the certified `0x8001ba3c` entry / `0x8002d628` return boundary. On
+the CPU thread it captures a complete rollback-scoped Dolphin state while the
+GPU transaction is quiesced, materializes the StaticRecomp register state, and
+retains the native timebase-cycle remainder. It discards the unmatched initial
+pass, then runs two passes which both begin from the same restored entry state
+and compares their complete serialized endpoint, `CPUState`, timebase, and
+sub-timebase remainder. Implementation anchors are
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp:651-866`
+and
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Run.cpp:809-812`.
+
+The first raw experiment restored all 24 MiB of MEM1, locked L1, and resident
+StaticRecomp CPU state, but not Dolphin CoreTiming or hardware. Both idle peers
+failed: nine MEM1 pages differed and the replay endpoint timebase was about
+675,000 ticks later. This establishes that the engine function cannot yet be
+treated as an isolated pure game-state call. Restoring full emulator state
+closed that timing gap.
+
+The first gameplay full-state run then exposed a separate input-renewal bug:
+the host happened to reproduce, the guest differed by one serialized hardware
+byte, and both peers reported a confirmed-state desync at frame 1440. Repeating
+the engine tick had advanced the live rollback input scheduler and resolved a
+fresh SI poll batch. The probe now records the original tick's bounded sequence
+of `{pad, batching, result, GCPadStatus}` polls and supplies exactly that
+sequence to both verification passes without touching the scheduler. The
+journal is CPU-thread-local, capped at 4,096 polls, checks count/order, and is
+inactive outside the explicit probe. Anchors are
+`ModernGekko/vendor/dolphin/Source/Core/Core/NetPlay/NetPlayClient.cpp:94-200,2460-2477`.
+
+The real-game harness exposes this as `--engine-replay-probe`, requires the
+supported DOL plus `--hook-profile`, and rejects a missing, partial, size-
+mismatched, timebase-mismatched, input-mismatched, or byte-different result on
+either peer. It cannot be combined with the boundary or memory profiler because
+the oracle deliberately adds engine iterations. The asset-free evidence-gate
+test also proves a one-byte endpoint difference is rejected. Anchors are
+`.github/scripts/rollback-live-real-game.sh:75-79,380-399` and
+`.github/scripts/test-rollback-live-real-game-harness.sh:68-89`.
+
+The final automated VS result retained at
+`/tmp/ringout-live-rollback.sc2-engine-replay-gameplay-inputjournal` passed on
+both peers. Each original engine tick resolved four SI polls. Host and guest
+each produced `state_match=yes`, `cpu_match=yes`,
+`tb_remainder_match=yes`, `input_replay_match=yes`, and zero differing bytes;
+their endpoint sizes were 49,360,077 and 49,360,086 bytes respectively. The
+route completed with 1,622 physical rows and identical confirmed-state logs.
+The result, host log, guest log, and common confirmed-state SHA-256 values are
+respectively
+`1e90c64cfea342d5e928ff33be0971d42137d19de53ef3675398e63d47878919`,
+`b63e1ddc2a95baa7d4e86b7a5269f9fb3a3eadaf724a6de8a83430f8680e3407`,
+`aa0068df7e70b213f98f3f73b84fd28164a26b2945f875ea90bcb980360ebf39`,
+and `b854c3919a37154e7caf4c3d09afe92a9e7fabe7ccd81614b62d9922d7fef6dd`.
+
+Exact reproduction command:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-engine-replay-gameplay-inputjournal \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 60 --hook-diagnostic-limit 0 \
+  --engine-replay-probe --play-seconds 24 --port 28864
+```
+
+This proves the boundary, full machine restore, and explicit SI renewal can
+reproduce one real gameplay tick. It is not the Slippi-class runtime: each
+probe endpoint is still about 47 MiB, no selective state is active, no live
+correction is redirected through this engine loop, and speculative
+render/audio/persistence effects are not yet bypassed. The next gate is to
+classify those external effects and replace the full state with an
+overinclusive selective profile while continuing to compare the complete
+endpoint.
 
 ### Preallocated selective checkpoint ring
 

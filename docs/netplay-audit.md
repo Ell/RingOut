@@ -35,6 +35,17 @@ peers with identical per-route regions; their observed union is 52 pages
 (212,992 bytes). This is a short-corpus write lower bound, not a certified
 selective state profile, and it is not selected by live netplay.
 
+Follow-up commit `304df33a` adds an exact engine-tick replay oracle. The first
+raw MEM1/L1/CPU attempt failed because CoreTiming continued advancing; the
+first full-state gameplay attempt then exposed that repeated SI polls consumed
+new live scheduler batches. A bounded CPU-thread SI journal now records the
+original tick's four resolved polls and reuses them without advancing network
+state. The final automated VS run reproduced the complete roughly 47 MiB
+endpoint byte-for-byte on both peers and completed 1,622 physical rows with
+matching confirmed-state logs. This certifies one full-state gameplay tick and
+the input-renewal mechanism, not a selective or player-facing engine rollback
+path; render/audio/persistence suppression and state narrowing remain open.
+
 The executive verdict below remains the historical result for audited commit
 `ff0ad952`. It must not be read as a description of the current
 `codex/rollback-netplay` worktree. At implementation commit `6518db52` on

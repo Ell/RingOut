@@ -14,7 +14,7 @@ This directory contains source-led audits, implementation research, release hand
 | [Rollback implementation handoff](rollback-netplay-implementation.md) | Branch-local live rollback architecture, safety policy, final Linux/source evidence, and remaining platform/connectivity gaps |
 | [Live rollback test harness](rollback-live-test-harness.md) | Production, correction, horizon, confirmed-state mismatch, and fixed-delay commands; retained evidence and claim boundaries |
 | [Rollback GPU-state research](rollback-emulation-gpu-state.md) | Why emulated GPU/FIFO state matters, player FIFO failure root cause, whole-snapshot quiescence fix, and renderer-backed release gate |
-| [SC2 game-specific rollback](sc2-slippi-rollback.md) | Slippi/GGPO comparison, exact game-hook discovery, selective checkpoint groundwork, and certification gates |
+| [SC2 game-specific rollback](sc2-slippi-rollback.md) | Slippi/GGPO comparison, exact game-hook discovery, engine-tick/SI replay oracle, selective checkpoint groundwork, and certification gates |
 | [Build and release pipeline](build-release-pipeline.md) | Windows cross-compilation, build parallelism, caching, ZIP publication, draft releases, and Linux AppImage packaging |
 | [Windows runtime and controls](windows-runtime-controls.md) | Package contents, first-run module compilation, media/runtime dependencies, controls, netplay startup, and troubleshooting |
 | [Release history and testing](release-history-and-testing.md) | `ell` tag lineage, change provenance, validation evidence, artifact status, and unproven platform cases |

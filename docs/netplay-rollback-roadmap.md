@@ -80,6 +80,19 @@ locked L1, CPU context, and emulator state. Its value is that it makes the next
 selective replay experiment concrete and falsifiable rather than just assuming
 all 24 MiB of MEM1 belongs to each rollback frame.
 
+Commit `304df33a` adds the next falsification gate: capture at the certified
+engine entry, restore, renew the exact original resolved SI polls, execute the
+engine iteration twice, and compare the complete emulator endpoint. Raw
+MEM1/L1/CPU restore failed because CoreTiming advanced. Full-state gameplay
+also failed until SI renewal stopped the repeated tick from consuming fresh
+rollback scheduler batches. With the bounded four-poll journal, both peers
+produced byte-identical roughly 47 MiB endpoints and the automated VS route
+completed 1,622 physical rows with matching confirmed-state logs. This proves
+one real gameplay iteration is replayable from a complete checkpoint with
+explicit input renewal. It does not reduce checkpoint size or redirect live
+late-input correction through the SC2 engine loop; external-effect
+classification and selective-state replacement remain the next stage.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values
