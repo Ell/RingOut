@@ -136,6 +136,22 @@ struct Config
   std::unique_ptr<NetPlay::RollbackSIInputJournal> rb_journal;
   std::unique_ptr<NetPlay::RollbackCoordinator> rb_coordinator;
   std::optional<NetPlay::RollbackCoordinator::ReplayRequest> rb_request;
+
+  // GGPO-style continuous sync oracle: capture one logical frame, advance it,
+  // restore, advance the same frame again, and compare the complete MEM1/L1
+  // hashes. The corrected endpoint becomes the next checkpoint, so every
+  // logical frame in the requested window is executed twice.
+  bool sync_on = false;
+  bool sync_have_snapshot = false;
+  bool sync_replay_next = false;
+  u64 sync_start = 0;
+  u64 sync_pairs = 600;
+  u64 sync_completed = 0;
+  u64 sync_snapshot_frame = 1;
+  u32 sync_expected_low_hash = 0;
+  u32 sync_expected_rest_hash = 0;
+  u32 sync_expected_l1_hash = 0;
+  std::unique_ptr<NetPlay::DolphinRollbackStateStore> sync_state_store;
 };
 
 NetPlay::RollbackCoordinator::ReplayRequest MakeHarnessReplayRequest(const Config& config)
@@ -401,6 +417,21 @@ Config& GetConfig()
       result.rb_core_requested = std::strcmp(rollback_core, "HEADLESS_ISOLATED_ORACLE") == 0;
     }
 
+    if (const char* const sync = std::getenv("RINGOUT_DETERMINISM_CONTINUOUS_SYNC"))
+    {
+      result.sync_on = std::strcmp(sync, "HEADLESS_ISOLATED_ORACLE") == 0;
+      if (const char* const start = std::getenv("RINGOUT_DETERMINISM_SYNC_START"))
+        result.sync_start = std::strtoull(start, nullptr, 10);
+      if (const char* const pairs = std::getenv("RINGOUT_DETERMINISM_SYNC_PAIRS"))
+        result.sync_pairs = std::strtoull(pairs, nullptr, 10);
+      if (!result.sync_on || result.sync_pairs == 0 || result.rb_on)
+      {
+        std::fprintf(stderr, "[rollback sync] continuous oracle refused: acknowledgement, positive "
+                             "pair count, and exclusive rollback mode are required\n");
+        result.sync_on = false;
+      }
+    }
+
     if (const char* const corrected = std::getenv("RINGOUT_DETERMINISM_CORRECTED_INPUT"))
     {
       if (!result.rb_on)
@@ -433,6 +464,11 @@ Config& GetConfig()
       std::fprintf(stderr, "[determinism] NOHASH ignored: a dump or a watch "
                            "needs the per-frame quiesce\n");
       result.hash = true;
+    }
+    if (!result.hash && result.sync_on)
+    {
+      std::fprintf(stderr, "[rollback sync] continuous oracle refused: hashing must be enabled\n");
+      result.sync_on = false;
     }
     if (!result.hash)
       std::fprintf(stderr, "[determinism] NOHASH: input and frame counter only, "
@@ -801,6 +837,90 @@ void OnFrame(Core::System& system)
         config.rb_replaying = false;
         config.rb_on = false;
       }
+    }
+  }
+
+  // ---- Continuous one-frame rollback sync oracle ------------------------
+  // This intentionally uses the production full-emulator store today. Once a
+  // certified SC2 profile exists, the same oracle becomes the release gate for
+  // the selective store: change the store, not the comparison contract.
+  if (config.sync_on)
+  {
+    if (!config.sync_have_snapshot && s_frame >= config.sync_start)
+    {
+      config.sync_state_store = std::make_unique<NetPlay::DolphinRollbackStateStore>(system, 1);
+      const bool ready = config.sync_state_store->GetConfigurationStatus() ==
+                             NetPlay::DolphinRollbackStateStore::ConfigurationStatus::Valid &&
+                         config.sync_state_store->CaptureFrameStart(config.sync_snapshot_frame);
+      if (!ready)
+      {
+        std::fprintf(stderr, "[rollback sync] initial capture FAILED at physical frame %llu\n",
+                     static_cast<unsigned long long>(s_frame));
+        config.sync_on = false;
+      }
+      else
+      {
+        config.sync_have_snapshot = true;
+        std::fprintf(stderr, "[rollback sync] active start_physical_frame=%llu pairs=%llu\n",
+                     static_cast<unsigned long long>(s_frame),
+                     static_cast<unsigned long long>(config.sync_pairs));
+      }
+      std::fflush(stderr);
+    }
+    else if (config.sync_have_snapshot && !config.sync_replay_next)
+    {
+      config.sync_expected_low_hash = low_hash;
+      config.sync_expected_rest_hash = rest_hash;
+      config.sync_expected_l1_hash = l1_hash;
+      const bool restored = config.sync_state_store->RestoreFrameStart(config.sync_snapshot_frame);
+      if (!restored)
+      {
+        std::fprintf(stderr, "[rollback sync] restore FAILED at pair %llu\n",
+                     static_cast<unsigned long long>(config.sync_completed + 1));
+        config.sync_on = false;
+      }
+      else
+      {
+        ++config.rb_input_offset;
+        config.rb_replaying = true;
+        config.sync_replay_next = true;
+      }
+    }
+    else if (config.sync_replay_next)
+    {
+      const bool match = low_hash == config.sync_expected_low_hash &&
+                         rest_hash == config.sync_expected_rest_hash &&
+                         l1_hash == config.sync_expected_l1_hash;
+      ++config.sync_completed;
+      config.rb_replaying = false;
+      config.sync_replay_next = false;
+      if (!match)
+      {
+        std::fprintf(stderr,
+                     "[rollback sync] DIVERGED pair=%llu low=%08x/%08x rest=%08x/%08x "
+                     "l1=%08x/%08x\n",
+                     static_cast<unsigned long long>(config.sync_completed), low_hash,
+                     config.sync_expected_low_hash, rest_hash, config.sync_expected_rest_hash,
+                     l1_hash, config.sync_expected_l1_hash);
+        config.sync_on = false;
+      }
+      else if (config.sync_completed == config.sync_pairs)
+      {
+        std::fprintf(stderr, "[rollback sync] COMPLETED pairs=%llu\n",
+                     static_cast<unsigned long long>(config.sync_completed));
+        config.sync_on = false;
+      }
+      else
+      {
+        ++config.sync_snapshot_frame;
+        if (!config.sync_state_store->CaptureFrameStart(config.sync_snapshot_frame))
+        {
+          std::fprintf(stderr, "[rollback sync] recapture FAILED at pair %llu\n",
+                       static_cast<unsigned long long>(config.sync_completed));
+          config.sync_on = false;
+        }
+      }
+      std::fflush(stderr);
     }
   }
 

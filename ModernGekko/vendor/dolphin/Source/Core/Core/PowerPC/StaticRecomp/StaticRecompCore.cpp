@@ -1,8 +1,9 @@
 // RecompCore: StaticRecomp CPU core.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstdlib>
 #include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
+#include <algorithm>
+#include <cstdlib>
 
 #include <cstdio>
 #include <cstring>
@@ -11,11 +12,12 @@
 #include "Common/DynamicLibrary.h"
 #include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
+#include "Core/Config/ConfigManager.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/StaticRecompSettings.h"
-#include "Core/Config/ConfigManager.h"
 #include "Core/HW/GPFifo.h"
 #include "Core/HW/Memmap.h"
+#include "Core/PowerPC/StaticRecomp/FrameDispatchProfiler.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/RecompDeterminism.h"
 #include "Core/System.h"
@@ -27,13 +29,29 @@
 #include "Core/PowerPC/JitArm64/Jit.h"
 #endif
 
-
 StaticRecompCore* g_static_recomp_core = nullptr;
 
 bool StaticRecompCoveredAt(u32 pc)
 {
   return g_static_recomp_core && g_static_recomp_core->IsModuleActive() &&
          g_static_recomp_core->DispatchableAt(pc);
+}
+
+void StaticRecompVideoFrameBoundary()
+{
+  if (g_static_recomp_core)
+    g_static_recomp_core->NotifyVideoFrameBoundary();
+}
+
+bool InstallStaticRecompDispatchHook(StaticRecompDispatchHook* const hook)
+{
+  return g_static_recomp_core && g_static_recomp_core->InstallDispatchHook(hook);
+}
+
+void UninstallStaticRecompDispatchHook(StaticRecompDispatchHook* const hook)
+{
+  if (g_static_recomp_core)
+    g_static_recomp_core->UninstallDispatchHook(hook);
 }
 
 namespace
@@ -44,8 +62,7 @@ bool RangesAreSorted(const StaticRecompRange* ranges, u32 count)
     return false;
   for (u32 i = 0; i < count; ++i)
   {
-    if (ranges[i].start >= ranges[i].end ||
-        (i != 0 && ranges[i - 1].end > ranges[i].start))
+    if (ranges[i].start >= ranges[i].end || (i != 0 && ranges[i - 1].end > ranges[i].start))
       return false;
   }
   return true;
@@ -69,7 +86,8 @@ bool ChunksTileCode(const StaticRecompModuleDesc& desc)
   for (u32 code = 0; code < desc.num_code_ranges; ++code)
   {
     u32 cursor = desc.code_ranges[code].start;
-    while (chunk < desc.num_chunk_ranges && desc.chunk_ranges[chunk].start < desc.code_ranges[code].end)
+    while (chunk < desc.num_chunk_ranges &&
+           desc.chunk_ranges[chunk].start < desc.code_ranges[code].end)
     {
       if (desc.chunk_ranges[chunk].start != cursor ||
           desc.chunk_ranges[chunk].end > desc.code_ranges[code].end)
@@ -176,6 +194,13 @@ void StaticRecompCore::Init()
   InstallGatherPipeFastPath();
   InitDeterminismWatch();
   m_gqr_log = std::getenv("STATICRECOMP_GQRLOG") != nullptr;
+  if (std::getenv("RINGOUT_SC2_HOOK_PROFILE"))
+  {
+    m_frame_dispatch_profiler = std::make_unique<PowerPC::FrameDispatchProfiler>();
+    std::fprintf(stderr, "[sc2-hook-profile] enabled expected_dol_sha256="
+                         "0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 "
+                         "warmup_frames=120 sample_frames=600\n");
+  }
 
   // The "interpreter fallback" is really Dolphin's JIT whenever one exists, so
   // m_fallback_steps stays 0 on a run that fell back constantly -- read
@@ -299,6 +324,9 @@ void StaticRecompCore::ReportGQRSurvey() const
 
 void StaticRecompCore::Shutdown()
 {
+  ReportFrameDispatchProfile();
+  m_dispatch_hook = nullptr;
+  m_dispatch_hook_pcs.clear();
   if (m_gqr_log)
     ReportGQRSurvey();
   g_static_recomp_core = nullptr;
@@ -314,8 +342,7 @@ void StaticRecompCore::Shutdown()
                  "native_exceptions={} hook_fallback_instructions={} smc_failed_chunks={} "
                  "verifications={} reverify_events={}",
                  m_native_dispatches, m_fallback_steps, m_native_exceptions,
-                 m_hook_fallback_instructions, m_failed_chunks, m_verifications,
-                 m_reverify_events);
+                 m_hook_fallback_instructions, m_failed_chunks, m_verifications, m_reverify_events);
   if (m_dispatch_loop || m_dispatch_fwd || m_dispatch_cross)
   {
     const double total =
@@ -338,6 +365,73 @@ void StaticRecompCore::Shutdown()
     m_fallback_jit->Shutdown();
     m_fallback_jit.reset();
   }
+}
+
+bool StaticRecompCore::InstallDispatchHook(StaticRecompDispatchHook* const hook)
+{
+  if (!hook || m_dispatch_hook)
+    return false;
+  const std::span<const u32> pcs = hook->GetHookPcs();
+  if (pcs.empty() || std::ranges::any_of(pcs, [](const u32 pc) { return pc == 0; }))
+    return false;
+  m_dispatch_hook_pcs.assign(pcs.begin(), pcs.end());
+  std::ranges::sort(m_dispatch_hook_pcs);
+  if (std::ranges::adjacent_find(m_dispatch_hook_pcs) != m_dispatch_hook_pcs.end())
+  {
+    m_dispatch_hook_pcs.clear();
+    return false;
+  }
+  m_dispatch_hook = hook;
+  return true;
+}
+
+void StaticRecompCore::UninstallDispatchHook(StaticRecompDispatchHook* const hook)
+{
+  if (m_dispatch_hook != hook)
+    return;
+  m_dispatch_hook = nullptr;
+  m_dispatch_hook_pcs.clear();
+}
+
+void StaticRecompCore::NotifyVideoFrameBoundary()
+{
+  if (m_frame_dispatch_profiler)
+  {
+    m_frame_dispatch_profiler->EndVideoFrame();
+    if (m_frame_dispatch_profiler->IsComplete())
+      ReportFrameDispatchProfile();
+  }
+}
+
+void StaticRecompCore::ReportFrameDispatchProfile()
+{
+  if (!m_frame_dispatch_profiler || m_frame_dispatch_profile_reported)
+    return;
+  const auto strict = m_frame_dispatch_profiler->GetCandidates();
+  const auto diagnostic = m_frame_dispatch_profiler->GetCandidates(false);
+  std::fprintf(stderr,
+               "[sc2-hook-profile] result observed_frames=%llu profiled_frames=%llu "
+               "strict_candidates=%zu diagnostic_candidates=%zu complete=%s\n",
+               static_cast<unsigned long long>(m_frame_dispatch_profiler->GetObservedFrames()),
+               static_cast<unsigned long long>(m_frame_dispatch_profiler->GetProfiledFrames()),
+               strict.size(), diagnostic.size(),
+               m_frame_dispatch_profiler->IsComplete() ? "yes" : "no");
+  for (const auto& candidate : strict)
+  {
+    std::fprintf(stderr,
+                 "[sc2-hook-profile] candidate pc=0x%08x frames=%llu once=%llu "
+                 "hits=%llu min=%u max=%u first_ordinal=%llu..%llu "
+                 "last_ordinal=%llu..%llu\n",
+                 candidate.pc, static_cast<unsigned long long>(candidate.frames_with_hits),
+                 static_cast<unsigned long long>(candidate.exactly_once_frames),
+                 static_cast<unsigned long long>(candidate.total_hits), candidate.min_hits,
+                 candidate.max_hits, static_cast<unsigned long long>(candidate.first_ordinal_min),
+                 static_cast<unsigned long long>(candidate.first_ordinal_max),
+                 static_cast<unsigned long long>(candidate.last_ordinal_min),
+                 static_cast<unsigned long long>(candidate.last_ordinal_max));
+  }
+  std::fflush(stderr);
+  m_frame_dispatch_profile_reported = true;
 }
 
 void StaticRecompCore::LoadModule()
@@ -384,8 +478,8 @@ void StaticRecompCore::LoadModule()
     return reject(fmt::format("abi_version {} is neither {} nor 2", desc->abi_version,
                               STATICRECOMP_ABI_VERSION));
   if (desc->cpu_abi_version != GXRUNTIME_CPU_ABI_VERSION)
-    return reject(fmt::format("cpu_abi_version {} != {}", desc->cpu_abi_version,
-                              GXRUNTIME_CPU_ABI_VERSION));
+    return reject(
+        fmt::format("cpu_abi_version {} != {}", desc->cpu_abi_version, GXRUNTIME_CPU_ABI_VERSION));
   if (desc->cpu_state_size != sizeof(CPUState))
     return reject(fmt::format("cpu_state_size {} != sizeof(CPUState) {}", desc->cpu_state_size,
                               sizeof(CPUState)));

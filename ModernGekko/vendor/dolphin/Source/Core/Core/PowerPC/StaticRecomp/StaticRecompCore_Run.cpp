@@ -1,21 +1,22 @@
 // RecompCore: StaticRecomp CPU core - Main execution loop.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
-#include "Core/System.h"
-#include "Core/PowerPC/PowerPC.h"
-#include "Core/PowerPC/Interpreter/Interpreter.h"
-#include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
-#include "Core/CoreTiming.h"
-#include "Core/HW/CPU.h"
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
-#include "Core/NetPlay/NetPlayProto.h"
-#include "Core/RecompDeterminism.h"
-#include "Core/Config/MainSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/Config/MainSettings.h"
+#include "Core/CoreTiming.h"
+#include "Core/HW/CPU.h"
 #include "Core/HW/SystemTimers.h"
+#include "Core/NetPlay/NetPlayProto.h"
+#include "Core/PowerPC/Interpreter/Interpreter.h"
+#include "Core/PowerPC/PowerPC.h"
+#include "Core/PowerPC/StaticRecomp/FrameDispatchProfiler.h"
+#include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
+#include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
+#include "Core/RecompDeterminism.h"
+#include "Core/System.h"
 
 #include <algorithm>
 #include <atomic>
@@ -108,8 +109,8 @@ bool FindMovieInAfs(int fno, std::string* out)
   if (!f.ReadArray(&count, 1) || fno < 0 || static_cast<u32>(fno) >= count)
     return false;
   u32 toc[2] = {};  // offset, size
-  if (!f.Seek(8 + static_cast<u64>(fno) * 8, File::SeekOrigin::Begin) ||
-      !f.ReadArray(toc, 2) || toc[1] == 0)
+  if (!f.Seek(8 + static_cast<u64>(fno) * 8, File::SeekOrigin::Begin) || !f.ReadArray(toc, 2) ||
+      toc[1] == 0)
     return false;
 
   // end is exclusive, matching the protocol's own documented usage.
@@ -198,7 +199,7 @@ public:
                     "movie.afs; set STATICRECOMP_FMV_DIR (folder of .sfd files) or "
                     "STATICRECOMP_FMV_AFS (path to movie.afs)",
                     m_fno);
-      m_fno = -1;   // give the movie back to the game's own decoder
+      m_fno = -1;  // give the movie back to the game's own decoder
       return;
     }
 
@@ -282,7 +283,7 @@ public:
     if (now < m_next_due)
       return false;
     m_next_due += std::chrono::microseconds(33367);  // 1/29.97s
-    if (m_next_due < now)  // fell behind: resync
+    if (m_next_due < now)                            // fell behind: resync
       m_next_due = now + std::chrono::microseconds(33367);
     return true;
   }
@@ -349,8 +350,7 @@ void FmvHistSample(u32 pc)
     return;
   std::vector<std::pair<u32, u64>> v(hist.begin(), hist.end());
   std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
-  std::fprintf(stderr, "[hist] window of %llu samples, top:\n",
-               static_cast<unsigned long long>(n));
+  std::fprintf(stderr, "[hist] window of %llu samples, top:\n", static_cast<unsigned long long>(n));
   for (size_t i = 0; i < v.size() && i < 10; ++i)
     std::fprintf(stderr, "  %08X : %.1f%%\n", v[i].first << 10, 100.0 * v[i].second / n);
   hist.clear();
@@ -418,11 +418,11 @@ void StaticRecompCore::OnFmvStartAfs(u32 fno, u32 patid, u32 handle)
     // fed ffmpeg output back into guest RAM -- on whichever peer happened to
     // have seen a movie first. Two peers, one injecting and one not, desynced
     // at the frame the first conversion ran (frame 2220, reproducibly).
-    s_fmv.Stop();   // resets m_fno to -1, so Active() really is false
+    s_fmv.Stop();  // resets m_fno to -1, so Active() really is false
     return;
   }
-  std::fprintf(stderr, "[fmv-hle] mwPlyStartAfs: movie fno=%u patid=%u handle=0x%08X\n",
-               fno, patid, handle);
+  std::fprintf(stderr, "[fmv-hle] mwPlyStartAfs: movie fno=%u patid=%u handle=0x%08X\n", fno, patid,
+               handle);
   s_fmv.Start(static_cast<int>(fno));
 }
 
@@ -464,8 +464,10 @@ void StaticRecompCore::GuestWrite32(u32 addr, u32 value)
   if (m_guest.ram == nullptr || off + 4u > m_guest.ram_size)
     return;
   u8* p = m_guest.ram + off;
-  p[0] = u8(value >> 24); p[1] = u8(value >> 16);
-  p[2] = u8(value >> 8);  p[3] = u8(value);
+  p[0] = u8(value >> 24);
+  p[1] = u8(value >> 16);
+  p[2] = u8(value >> 8);
+  p[3] = u8(value);
 }
 
 // FMV HLE step 2b (visible injection test): fill the ARGB8888 destination
@@ -527,10 +529,10 @@ void StaticRecompCore::OnFmvCnvFrm(u32 handle, u32 desc, u32 dst)
           {
             const u8* px = s + ((static_cast<size_t>(ty * 4u + j) * w) + (tx * 4u + i)) * 4u;
             const u32 t = j * 4u + i;
-            tile[t * 2u + 0u] = px[0];       // A
-            tile[t * 2u + 1u] = px[1];       // R
-            tile[32u + t * 2u + 0u] = px[2]; // G
-            tile[32u + t * 2u + 1u] = px[3]; // B
+            tile[t * 2u + 0u] = px[0];        // A
+            tile[t * 2u + 1u] = px[1];        // R
+            tile[32u + t * 2u + 0u] = px[2];  // G
+            tile[32u + t * 2u + 1u] = px[3];  // B
           }
       }
   }
@@ -684,8 +686,8 @@ void StaticRecompCore::Run()
           // path of every normal run to answer "no". Measured at 0.23% of a
           // Deck profile doing nothing. ShouldCheck's own first test is this
           // same flag, so short-circuiting here is identical by construction.
-          const bool do_ls = m_lockstep_verifier->IsEnabled() &&
-                             m_lockstep_verifier->ShouldCheck(m_guest.pc);
+          const bool do_ls =
+              m_lockstep_verifier->IsEnabled() && m_lockstep_verifier->ShouldCheck(m_guest.pc);
           if (do_ls)
           {
             m_lockstep_verifier->Prepare(m_guest);
@@ -773,10 +775,11 @@ void StaticRecompCore::Run()
             {
               const u32 w0 = GuestRead32(obj);  // byte0=type, byte1=bone (BE)
               std::fprintf(stderr,
-                "[skinlog] call#%d obj=0x%08x %s type=%u bone=%u lr=0x%08x "
-                "r28=0x%08x r29=0x%08x r30=0x%08x r27=0x%08x\n",
-                s_calls, obj, bad ? "BAD" : "ok", (w0 >> 24) & 0xFF, (w0 >> 16) & 0xFF,
-                m_guest.lr, m_guest.gpr[28], m_guest.gpr[29], m_guest.gpr[30], m_guest.gpr[27]);
+                           "[skinlog] call#%d obj=0x%08x %s type=%u bone=%u lr=0x%08x "
+                           "r28=0x%08x r29=0x%08x r30=0x%08x r27=0x%08x\n",
+                           s_calls, obj, bad ? "BAD" : "ok", (w0 >> 24) & 0xFF, (w0 >> 16) & 0xFF,
+                           m_guest.lr, m_guest.gpr[28], m_guest.gpr[29], m_guest.gpr[30],
+                           m_guest.gpr[27]);
               ++s_logged;
             }
             ++s_calls;
@@ -802,6 +805,24 @@ void StaticRecompCore::Run()
           const u32 dispatch_from = s_dispatchlog ? m_guest.pc : 0;
 
           const u32 dbg_pc_before = m_guest.pc;
+          if (m_frame_dispatch_profiler)
+            m_frame_dispatch_profiler->RecordDispatch(m_guest.pc);
+          if (m_dispatch_hook && std::binary_search(m_dispatch_hook_pcs.begin(),
+                                                    m_dispatch_hook_pcs.end(), m_guest.pc))
+          {
+            const StaticRecompDispatchHookResult hook_result =
+                m_dispatch_hook->OnDispatch(m_guest, m_guest.pc);
+            if (hook_result.action == StaticRecompDispatchHookAction::ReturnToLinkRegister)
+            {
+              m_guest.pc = m_guest.lr;
+              continue;
+            }
+            if (hook_result.action == StaticRecompDispatchHookAction::Redirect)
+            {
+              m_guest.pc = hook_result.redirect_pc;
+              continue;
+            }
+          }
           m_module->dispatch(&m_guest, m_guest.pc);
           ++m_native_dispatches;
           {
@@ -818,10 +839,17 @@ void StaticRecompCore::Run()
               static u32 s_last = 0;
               if (m_guest.pc == dbg_pc_before)
               {
-                if (m_guest.pc == s_last) ++s_same; else { s_same = 1; s_last = m_guest.pc; }
+                if (m_guest.pc == s_last)
+                  ++s_same;
+                else
+                {
+                  s_same = 1;
+                  s_last = m_guest.pc;
+                }
                 if (s_same == 200000u)
                   std::fprintf(stderr, "[spin] no progress at pc=0x%08X (200k dispatches)\n",
-                               m_guest.pc), std::fflush(stderr);
+                               m_guest.pc),
+                      std::fflush(stderr);
               }
             }
           }

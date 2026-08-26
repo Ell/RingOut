@@ -71,6 +71,7 @@
 #include "Core/PowerPC/GDBStub.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 #include "Core/RecompDeterminism.h"
 #include "Core/State.h"
 #include "Core/System.h"
@@ -136,6 +137,7 @@ void SetIsThrottlerTempDisabled(bool disable)
 
 void FrameUpdateOnCPUThread()
 {
+  StaticRecompVideoFrameBoundary();
   if (NetPlay::IsNetPlayRunning() && !NetPlay::NetPlayClient::IsLiveRollbackSessionActive() &&
       NetPlay::IsLiveRollbackReplayDerivedOutboundAllowed())
     NetPlay::NetPlayClient::SendTimeBase();

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <map>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -24,13 +25,38 @@ class System;
 
 namespace PowerPC
 {
+class FrameDispatchProfiler;
 struct PowerPCState;
-}
+}  // namespace PowerPC
 
 namespace StaticRecompLockstep
 {
 class StaticRecompLockstepVerifier;
 }
+
+enum class StaticRecompDispatchHookAction : u8
+{
+  Continue,
+  ReturnToLinkRegister,
+  Redirect,
+};
+
+struct StaticRecompDispatchHookResult
+{
+  StaticRecompDispatchHookAction action = StaticRecompDispatchHookAction::Continue;
+  u32 redirect_pc = 0;
+};
+
+// Game-specific rollback driver interface. DolRecomp --dispatch-pc makes the
+// selected guest PCs return to this chassis dispatcher; the driver can then
+// snapshot at update_begin or bypass render/audio/persistence during replay.
+class StaticRecompDispatchHook
+{
+public:
+  virtual ~StaticRecompDispatchHook() = default;
+  virtual std::span<const u32> GetHookPcs() const = 0;
+  virtual StaticRecompDispatchHookResult OnDispatch(CPUState& state, u32 pc) = 0;
+};
 
 // Executes statically recompiled per-game native code when the PC is covered by
 // a loaded module; falls back to Dolphin's interpreter for everything else.
@@ -55,6 +81,9 @@ public:
   bool IsModuleActive() const;
   bool DispatchableAt(u32 address);
   bool FastDispatchableAt(u32 address) const;
+  void NotifyVideoFrameBoundary();
+  bool InstallDispatchHook(StaticRecompDispatchHook* hook);
+  void UninstallDispatchHook(StaticRecompDispatchHook* hook);
 
   // One bit per guest instruction slot: "this address is an entry point of a
   // VERIFIED chunk", the exact question the dispatcher asks on every dispatch.
@@ -257,9 +286,14 @@ private:
   // ppc_psq_load/store directly instead; see work/perf-fmv/psq_dynamic_counts.log.
   void SampleGQRs();
   void ReportGQRSurvey() const;
+  void ReportFrameDispatchProfile();
   std::map<u32, u64> m_gqr_seen[8];
   u64 m_gqr_samples = 0;
   bool m_gqr_log = false;
+  std::unique_ptr<PowerPC::FrameDispatchProfiler> m_frame_dispatch_profiler;
+  bool m_frame_dispatch_profile_reported = false;
+  StaticRecompDispatchHook* m_dispatch_hook = nullptr;
+  std::vector<u32> m_dispatch_hook_pcs;
 
   // Determinism write watch state. m_watch_block_* is refreshed before each
   // native dispatch so the journal callback -- which is handed nothing but an
@@ -278,3 +312,10 @@ extern StaticRecompCore* g_static_recomp_core;
 // Used by the fallback JIT dispatcher to hand covered PCs back to the module
 // instead of JIT-compiling them. Safe to call with no core/module (returns false).
 bool StaticRecompCoveredAt(u32 pc);
+
+// Called at Dolphin's video frame boundary. It is a no-op unless the opt-in
+// SC2 hook discovery profiler is active.
+void StaticRecompVideoFrameBoundary();
+
+bool InstallStaticRecompDispatchHook(StaticRecompDispatchHook* hook);
+void UninstallStaticRecompDispatchHook(StaticRecompDispatchHook* hook);

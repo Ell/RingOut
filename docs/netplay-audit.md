@@ -18,6 +18,13 @@ with a private game package, the older results below prove input correction and
 confirmed memory convergence only.
 See [rollback GPU-state research](rollback-emulation-gpu-state.md).
 
+Performance-architecture update 2026-08-26: branch
+`codex/sc2-slippi-rollback`, based on `d5fd9426`, begins the game-specific path
+needed for Slippi-class performance. It adds bounded once-per-frame SC2 hook
+discovery and a preallocated selective-region checkpoint ring, but neither is
+selected by live netplay yet. No SC2 hook or region profile is certified. See
+[SC2 game-specific rollback](sc2-slippi-rollback.md).
+
 The executive verdict below remains the historical result for audited commit
 `ff0ad952`. It must not be read as a description of the current
 `codex/rollback-netplay` worktree. At implementation commit `6518db52` on
@@ -96,6 +103,7 @@ diagnostics checkpoint is commit
 - [Rollback implementation handoff](rollback-netplay-implementation.md): the later branch-local live implementation, safety policy, evidence, and blockers.
 - [Live rollback test harness](rollback-live-test-harness.md): exact real-game commands and confirmed logical-state comparison.
 - [Rollback GPU-state research](rollback-emulation-gpu-state.md): emulated-versus-host GPU state boundary, FIFO crash root cause, transaction barrier, and renderer-backed gate.
+- [SC2 game-specific rollback](sc2-slippi-rollback.md): game-loop replay architecture, automated hook discovery, selective-state groundwork, and release gates.
 
 ## Historical executive verdict at `ff0ad952`
 

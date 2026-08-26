@@ -14,6 +14,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--work <empty-output-dir>] [--play-seconds <seconds>] \
          [--port <udp-port>] [--expect-horizon] [--production] \
          [--windowed] [--dual-core] \
+         [--hook-profile] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -44,6 +45,11 @@ must report that exact desync and stop; guest RAM is never modified.
 GPU/FIFO regression path; headless remains useful for faster protocol checks.
 --dual-core opts into the guarded deterministic-GPU rollback experiment. The
 player default stays single-core until this route passes the platform matrix.
+
+--hook-profile enables the bounded SC2 dispatch profiler on both peers. It
+requires a complete 600-frame sample and at least one PC that dispatched
+exactly once in every sampled video frame. The result is discovery evidence,
+not permission to enable a hook in production.
 EOF
   exit 2
 }
@@ -66,6 +72,7 @@ PRODUCTION=0
 DIGEST_MISMATCH_FRAME=""
 WINDOWED_RUN=0
 DUAL_CORE_RUN=0
+HOOK_PROFILE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -78,6 +85,7 @@ while [ "$#" -gt 0 ]; do
     --production) PRODUCTION=1; shift ;;
     --windowed) WINDOWED_RUN=1; shift ;;
     --dual-core) DUAL_CORE_RUN=1; shift ;;
+    --hook-profile) HOOK_PROFILE=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -210,6 +218,22 @@ verify_confirmed_state_logs() {
   rm -rf "$compare_dir"
 }
 
+verify_hook_profiles() {
+  local evidence="$1"
+  local peer log result
+  for peer in host guest; do
+    log="$evidence/$peer/log.txt"
+    grep -Fq '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5' "$log" ||
+      fail "$peer did not profile the supported GRSEAF revision"
+    result="$(grep -F '[sc2-hook-profile] result ' "$log" | tail -1)"
+    [ -n "$result" ] || fail "$peer produced no hook profile result"
+    printf '%s\n' "$result" | grep -Eq 'profiled_frames=600 .*strict_candidates=[1-9][0-9]* .*complete=yes' ||
+      fail "$peer hook profile is incomplete or has no strict candidate"
+    grep -Eq '^\[sc2-hook-profile\] candidate pc=0x[0-9a-f]{8} frames=600 once=600 hits=600 min=1 max=1 first_ordinal=[0-9]+\.\.[0-9]+ last_ordinal=[0-9]+\.\.[0-9]+$' "$log" ||
+      fail "$peer produced no stable once-per-frame candidate"
+  done
+}
+
 # Asset-free parser/orchestration tests use this path with synthetic logs. It
 # never launches a runtime and is intentionally undocumented in normal usage.
 if [ -n "$VERIFY_EXISTING" ]; then
@@ -219,6 +243,9 @@ if [ -n "$VERIFY_EXISTING" ]; then
     verify_digest_mismatch_logs "$VERIFY_EXISTING" "$DIGEST_MISMATCH_FRAME"
   else
     verify_logs "$VERIFY_EXISTING"
+  fi
+  if [ "$HOOK_PROFILE" -eq 1 ]; then
+    verify_hook_profiles "$VERIFY_EXISTING"
   fi
   echo "PASS: live rollback evidence satisfies the log contract."
   exit 0
@@ -265,6 +292,11 @@ if [ -n "$FAULT_SCRIPT" ]; then
 fi
 [ -x "$PACKAGE/bin/moderngekko-run" ] || fail "private package has no executable runtime"
 [ -f "$PACKAGE/game/sys/main.dol" ] || fail "private package has no extracted game"
+if [ "$HOOK_PROFILE" -eq 1 ]; then
+  [ "$(sha256sum "$PACKAGE/game/sys/main.dol" | cut -d' ' -f1)" = \
+    0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 ] ||
+    fail "hook profiling requires the supported unmodified GRSEAF revision-0 DOL"
+fi
 shopt -s nullglob
 modules=("$PACKAGE"/bin/gGRSEAF_recomp.so)
 shopt -u nullglob
@@ -308,6 +340,9 @@ fi
 if [ "$DUAL_CORE_RUN" -eq 1 ]; then
   run_env+=(RINGOUT_ROLLBACK_DUALCORE=1)
 fi
+if [ "$HOOK_PROFILE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_HOOK_PROFILE=1)
+fi
 if ! "${run_env[@]}" bash "$REPO/.github/scripts/netplay-match.sh" \
     "$WORK" "$PLAY" "$PORT"; then
   fail "two-peer VS route failed; evidence retained in $WORK"
@@ -317,6 +352,9 @@ if [ -n "$DIGEST_MISMATCH_FRAME" ]; then
   verify_digest_mismatch_logs "$WORK" "$DIGEST_MISMATCH_FRAME"
 else
   verify_logs "$WORK"
+fi
+if [ "$HOOK_PROFILE" -eq 1 ]; then
+  verify_hook_profiles "$WORK"
 fi
 
 {
@@ -332,6 +370,7 @@ fi
   echo "production_path=$PRODUCTION"
   echo "renderer_path=$([ "$WINDOWED_RUN" -eq 1 ] && echo windowed || echo headless)"
   echo "threading_path=$([ "$DUAL_CORE_RUN" -eq 1 ] && echo dual-core-experiment || echo rollback-safe-default)"
+  echo "sc2_hook_profile=$([ "$HOOK_PROFILE" -eq 1 ] && echo complete || echo disabled)"
   if [ -n "$DIGEST_MISMATCH_FRAME" ]; then
     echo "expected_digest_mismatch_frame=$DIGEST_MISMATCH_FRAME"
   fi

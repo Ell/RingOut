@@ -15,6 +15,25 @@ provenance, and fatal GPU/FIFO marker rejection. The older result remains
 input-correction and confirmed-memory evidence only. See
 `docs/rollback-emulation-gpu-state.md`.
 
+Game-specific update 2026-08-26: the `codex/sc2-slippi-rollback` branch adds a
+GGPO-style consecutive-frame oracle. It uses the production full-state
+transaction store today, restores and re-executes every logical frame in the
+requested window with identical scripted input, and compares low MEM1, game
+MEM1, and locked L1 at each endpoint:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-continuous-sync.sh \
+  --package /path/to/private/package --start 600 --pairs 600 \
+  --work /tmp/ringout-continuous-sync.sc2
+```
+
+The same branch adds `--hook-profile` to
+`.github/scripts/rollback-live-real-game.sh`. It collects 600 post-warmup video
+frames from both peers and fails unless each has at least one dispatch PC that
+appears exactly once in every frame. This is hook-discovery evidence, not a
+certified SC2 hook. See [SC2 game-specific rollback](sc2-slippi-rollback.md).
+
 ## Coverage and claim boundary
 
 `moderngekko.rollback_live_contract` is an executable model which uses the

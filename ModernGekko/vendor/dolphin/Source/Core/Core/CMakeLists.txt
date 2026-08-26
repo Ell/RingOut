@@ -564,10 +564,14 @@ add_library(core
   NetPlay/RollbackCoordinator.h
   NetPlay/RollbackInputTimeline.cpp
   NetPlay/RollbackInputTimeline.h
+  NetPlay/RollbackRegionSnapshotRing.cpp
+  NetPlay/RollbackRegionSnapshotRing.h
   NetPlay/RollbackSIInputJournal.cpp
   NetPlay/RollbackSIInputJournal.h
   NetPlay/RollbackSIInputProtocol.cpp
   NetPlay/RollbackSIInputProtocol.h
+  NetPlay/Sc2RollbackProfile.cpp
+  NetPlay/Sc2RollbackProfile.h
   NetPlay/RollbackStateDigestProtocol.cpp
   NetPlay/RollbackStateDigestProtocol.h
   NetPlay/NetPlayServer.cpp
@@ -631,6 +635,8 @@ add_library(core
   PowerPC/PowerPC.cpp
   PowerPC/PowerPC_Exceptions.cpp
   PowerPC/PowerPC.h
+  PowerPC/StaticRecomp/FrameDispatchProfiler.cpp
+  PowerPC/StaticRecomp/FrameDispatchProfiler.h
   PowerPC/StaticRecomp/StaticRecompABI.h
   PowerPC/StaticRecomp/StaticRecompCore.cpp
   PowerPC/StaticRecomp/StaticRecompCore_SMC.cpp

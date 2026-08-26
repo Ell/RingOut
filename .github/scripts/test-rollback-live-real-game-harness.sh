@@ -51,6 +51,34 @@ printf '%s\n' '[rollback live] correction committed' \
   >> "$WORK/pass/guest/log.txt"
 "$HARNESS" --verify-existing "$WORK/pass" >/dev/null
 
+make_case hook-profile
+for peer in host guest; do
+  printf '%s\n' \
+    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600' \
+    '[sc2-hook-profile] result observed_frames=720 profiled_frames=600 strict_candidates=1 diagnostic_candidates=12 complete=yes' \
+    '[sc2-hook-profile] candidate pc=0x80012340 frames=600 once=600 hits=600 min=1 max=1 first_ordinal=12..14 last_ordinal=12..14' \
+    >> "$WORK/hook-profile/$peer/log.txt"
+done
+printf '%s\n' '[rollback live] correction committed' \
+  >> "$WORK/hook-profile/guest/log.txt"
+"$HARNESS" --verify-existing "$WORK/hook-profile" --hook-profile >/dev/null
+
+make_case incomplete-hook-profile
+for peer in host guest; do
+  printf '%s\n' \
+    '[sc2-hook-profile] enabled expected_dol_sha256=0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5 warmup_frames=120 sample_frames=600' \
+    '[sc2-hook-profile] result observed_frames=719 profiled_frames=599 strict_candidates=1 diagnostic_candidates=12 complete=no' \
+    '[sc2-hook-profile] candidate pc=0x80012340 frames=599 once=599 hits=599 min=1 max=1 first_ordinal=12..14 last_ordinal=12..14' \
+    >> "$WORK/incomplete-hook-profile/$peer/log.txt"
+done
+printf '%s\n' '[rollback live] correction committed' \
+  >> "$WORK/incomplete-hook-profile/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/incomplete-hook-profile" --hook-profile \
+    >/dev/null 2>&1; then
+  echo "incomplete SC2 hook profile unexpectedly passed" >&2
+  exit 1
+fi
+
 make_case production
 printf '%s\n' '[rollback live] active generation=4 snapshot_frames=10' \
   >> "$WORK/production/host/log.txt"
