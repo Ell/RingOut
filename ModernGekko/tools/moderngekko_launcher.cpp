@@ -5,6 +5,7 @@
 #include "DiscIO/DiscExtractor.h"
 #include "DiscIO/Filesystem.h"
 #include "DiscIO/Volume.h"
+#include "Common/Image.h"
 #include "Core/NetPlay/LiveRollbackOutputGate.h"
 
 #include <SDL3/SDL.h>
@@ -87,9 +88,47 @@ struct LauncherFonts {
   ImFont *brand = nullptr;
 };
 
+struct LauncherArtwork {
+  SDL_Texture *texture = nullptr;
+  int width = 0;
+  int height = 0;
+};
+
+LauncherArtwork LoadLauncherArtwork(SDL_Renderer *renderer,
+                                    const fs::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  const std::vector<std::uint8_t> encoded{
+      std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  if (encoded.empty())
+    return {};
+
+  Common::UniqueBuffer<std::uint8_t> pixels;
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  if (!Common::LoadPNG(encoded, &pixels, &width, &height) || width == 0 ||
+      height == 0)
+    return {};
+
+  SDL_Surface *surface = SDL_CreateSurfaceFrom(
+      static_cast<int>(width), static_cast<int>(height), SDL_PIXELFORMAT_RGBA32,
+      pixels.data(), static_cast<int>(width * 4));
+  if (!surface)
+    return {};
+  SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+  SDL_DestroySurface(surface);
+  if (!texture)
+    return {};
+  SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+  SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR);
+  return {.texture = texture,
+          .width = static_cast<int>(width),
+          .height = static_cast<int>(height)};
+}
+
 struct ControllerOption {
   std::string label;
   std::string device;
+  SDL_JoystickID instance_id = 0;
 };
 
 std::vector<ControllerOption> EnumerateControllers() {
@@ -104,18 +143,28 @@ std::vector<ControllerOption> EnumerateControllers() {
                                      : SDL_GetJoystickNameForID(joystick_id);
     const std::string name =
         name_value && *name_value ? name_value : "Unknown Controller";
-    const int device_id = device_ids[name]++;
     if (!gamepad)
       continue;
+    const int duplicate_name_id = device_ids[name]++;
     ControllerOption option;
-    option.label = device_id == 0
+    option.label = duplicate_name_id == 0
                        ? name
-                       : name + " (" + std::to_string(device_id + 1) + ")";
-    option.device = "SDL/" + std::to_string(device_id) + "/" + name;
+                       : name + " (" + std::to_string(duplicate_name_id + 1) +
+                             ")";
+    // Dolphin numbers SDL devices by backend insertion order, not by name.
+    option.device = "SDL/" + std::to_string(result.size()) + "/" + name;
+    option.instance_id = joystick_id;
     result.emplace_back(std::move(option));
   }
   SDL_free(joystick_ids);
   return result;
+}
+
+std::string DisplayControllerExpression(std::string_view expression) {
+  if (expression.size() >= 2 && expression.front() == '`' &&
+      expression.back() == '`')
+    expression = expression.substr(1, expression.size() - 2);
+  return std::string(expression);
 }
 
 int FindController(const std::vector<ControllerOption> &controllers,
@@ -559,6 +608,15 @@ bool PrimaryButton(const char *label, const ImVec2 &size) {
   return pressed;
 }
 
+void ContentSeparator(float width, float scale) {
+  const ImVec2 cursor = ImGui::GetCursorScreenPos();
+  const float y = cursor.y + 0.5f * scale;
+  ImGui::GetWindowDrawList()->AddLine(
+      ImVec2(cursor.x, y), ImVec2(cursor.x + width, y),
+      ImGui::GetColorU32(ImGuiCol_Separator), scale);
+  ImGui::Dummy(ImVec2(width, 1.0f * scale));
+}
+
 void SectionHeading(ImFont *heading_font, const char *title,
                     const char *description, float width, float scale) {
   ImGui::PushFont(heading_font);
@@ -568,7 +626,7 @@ void SectionHeading(ImFont *heading_font, const char *title,
   ImGui::TextDisabled("%s", description);
   ImGui::PopTextWrapPos();
   ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-  ImGui::Separator();
+  ContentSeparator(width, scale);
   ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
 }
 
@@ -627,12 +685,16 @@ int main(int argc, char **argv) {
     const fs::path runner = SiblingRunner(argv[0]);
     const fs::path port = SiblingPort(argv[0]);
     const fs::path fonts = SiblingAsset(argv[0], "fonts");
+    const fs::path launcher_art =
+        SiblingAsset(argv[0], "art") / "launcher-character.png";
     const bool valid =
         fs::is_regular_file(runner) && fs::is_regular_file(port) &&
         fs::is_regular_file(fonts / "DroidSans.ttf") &&
-        fs::is_regular_file(fonts / "Roboto-Medium.ttf");
+        fs::is_regular_file(fonts / "Roboto-Medium.ttf") &&
+        fs::is_regular_file(launcher_art);
     std::cout << "RingOut C++ launcher self-test"
               << " runner=" << runner.string() << " port=" << port.string()
+              << " art=" << launcher_art.string()
               << " rollback_ready="
               << (NetPlay::IsLiveRollbackProductionReady() ? "yes" : "no")
               << '\n';
@@ -717,6 +779,8 @@ int main(int argc, char **argv) {
   ImGui::GetStyle().FontScaleDpi = scale;
   ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
   ImGui_ImplSDLRenderer3_Init(renderer);
+  const LauncherArtwork artwork = LoadLauncherArtwork(
+      renderer, SiblingAsset(argv[0], "art") / "launcher-character.png");
 
   std::vector<fs::path> images = FindDiscImages();
   std::optional<fs::path> selected_image =
@@ -779,11 +843,18 @@ int main(int argc, char **argv) {
   std::string controller_status;
   const auto select_controller = [&](int index) {
     std::string message;
-    if (!moderngekko::frontend::WriteGamepadGCPadConfig(
-            user_directory, controllers[index].device, &message)) {
-      std::lock_guard lock(dialog.mutex);
-      dialog.error = std::move(message);
-      return false;
+    moderngekko::frontend::GamepadProfile existing_profile;
+    if (moderngekko::frontend::LoadGamepadProfile(
+            user_directory, &existing_profile, nullptr) &&
+        existing_profile.device == controllers[index].device) {
+      message = "Using the saved custom mapping";
+    } else {
+      if (!moderngekko::frontend::WriteGamepadGCPadConfig(
+              user_directory, controllers[index].device, &message)) {
+        std::lock_guard lock(dialog.mutex);
+        dialog.error = std::move(message);
+        return false;
+      }
     }
     std::string error;
     if (!moderngekko::frontend::SaveConfig(
@@ -841,6 +912,52 @@ int main(int argc, char **argv) {
     }
   };
   refresh_controllers();
+  moderngekko::frontend::GamepadProfile remap_profile;
+  std::optional<moderngekko::frontend::GamepadControl> capture_control;
+  SDL_JoystickID capture_device = 0;
+  std::array<bool, SDL_GAMEPAD_AXIS_COUNT> capture_axis_neutral{};
+  std::string remap_status;
+  bool open_remap_popup = false;
+  bool confirm_reset_mapping = false;
+  const auto save_captured_binding = [&](std::string expression) {
+    if (!capture_control)
+      return;
+    const auto control = *capture_control;
+    remap_profile.bindings[static_cast<std::size_t>(control)] =
+        std::move(expression);
+    std::string message;
+    if (!moderngekko::frontend::SaveGamepadProfile(
+            user_directory, remap_profile, &message)) {
+      std::lock_guard lock(dialog.mutex);
+      dialog.error = std::move(message);
+    } else {
+      remap_status = std::string(
+                         moderngekko::frontend::GamepadControlLabel(control)) +
+                     " mapped to " +
+                     DisplayControllerExpression(remap_profile.bindings[
+                         static_cast<std::size_t>(control)]);
+      controller_status = "Custom GameCube mapping saved";
+    }
+    capture_control.reset();
+  };
+  const auto begin_capture = [&](moderngekko::frontend::GamepadControl control) {
+    capture_control = control;
+    capture_device = controller_index >= 0
+                         ? controllers[controller_index].instance_id
+                         : 0;
+    capture_axis_neutral.fill(false);
+    if (capture_device != 0) {
+      if (SDL_Gamepad *pad = SDL_OpenGamepad(capture_device)) {
+        for (int axis = 0; axis < SDL_GAMEPAD_AXIS_COUNT; ++axis) {
+          const int value = SDL_GetGamepadAxis(
+              pad, static_cast<SDL_GamepadAxis>(axis));
+          capture_axis_neutral[axis] = value > -8000 && value < 8000;
+        }
+        SDL_CloseGamepad(pad);
+      }
+    }
+    remap_status = "Press a button or move an axis; Escape cancels";
+  };
   ExtractionState extraction;
   std::jthread extraction_thread;
   bool rebuild_after_extraction = false;
@@ -911,6 +1028,39 @@ int main(int argc, char **argv) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       ImGui_ImplSDL3_ProcessEvent(&event);
+      bool remap_consumed_event = false;
+      if (capture_control && event.type == SDL_EVENT_KEY_DOWN &&
+          event.key.key == SDLK_ESCAPE) {
+        capture_control.reset();
+        remap_status = "Mapping cancelled";
+        remap_consumed_event = true;
+      } else if (capture_control &&
+                 event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                 event.gbutton.which == capture_device) {
+        if (auto expression =
+                moderngekko::frontend::DolphinSdlButtonExpression(
+                    event.gbutton.button)) {
+          save_captured_binding(std::move(*expression));
+          remap_consumed_event = true;
+        }
+      } else if (capture_control &&
+                 event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
+                 event.gaxis.which == capture_device && event.gaxis.axis >= 0 &&
+                 event.gaxis.axis < SDL_GAMEPAD_AXIS_COUNT) {
+        const int axis = event.gaxis.axis;
+        const int value = event.gaxis.value;
+        if (value > -8000 && value < 8000)
+          capture_axis_neutral[axis] = true;
+        if (capture_axis_neutral[axis] &&
+            (value <= -20000 || value >= 20000)) {
+          if (auto expression =
+                  moderngekko::frontend::DolphinSdlAxisExpression(axis,
+                                                                   value)) {
+            save_captured_binding(std::move(*expression));
+            remap_consumed_event = true;
+          }
+        }
+      }
       if (event.type == SDL_EVENT_QUIT ||
           event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         if (extraction.running || module_build.running) {
@@ -924,8 +1074,14 @@ int main(int argc, char **argv) {
           event.type == SDL_EVENT_JOYSTICK_REMOVED ||
           event.type == SDL_EVENT_GAMEPAD_REMAPPED) {
         controllers_changed = true;
+        if (event.type == SDL_EVENT_JOYSTICK_REMOVED && capture_control &&
+            event.jdevice.which == capture_device) {
+          capture_control.reset();
+          remap_status = "Controller disconnected; mapping cancelled";
+        }
       }
-      if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+      if (!remap_consumed_event && !capture_control &&
+          event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
           (event.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER ||
            event.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
         constexpr int page_count = 5;
@@ -1027,10 +1183,48 @@ int main(int argc, char **argv) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg,
                           ImVec4(0.075f, 0.083f, 0.102f, 1.0f));
     ImGui::BeginChild("##content", ImVec2(0.0f, 0.0f), false);
+    float artwork_safe_width = 0.0f;
+    const bool remap_popup_visible =
+        open_remap_popup || ImGui::IsPopupOpen("Controller mapping");
+    if (artwork.texture && !remap_popup_visible) {
+      const ImVec2 child_position = ImGui::GetWindowPos();
+      const ImVec2 child_size = ImGui::GetWindowSize();
+      float art_height =
+          std::min({430.0f * scale, child_size.y * 0.55f,
+                    child_size.x * 0.40f * artwork.height / artwork.width});
+      float art_width = art_height * artwork.width / artwork.height;
+      // At the 900x600 minimum, a full-size corner illustration would consume
+      // the netplay copy. Keep at least a 440 px text column and downscale (or
+      // hide) the decoration before allowing any text/image overlap.
+      const float maximum_art_width =
+          child_size.x - (32.0f + 440.0f + 42.0f) * scale;
+      if (maximum_art_width < 120.0f * scale) {
+        art_width = 0.0f;
+        art_height = 0.0f;
+      } else if (art_width > maximum_art_width) {
+        art_width = maximum_art_width;
+        art_height = art_width * artwork.height / artwork.width;
+      }
+      const ImVec2 art_min(child_position.x + child_size.x - art_width -
+                               18.0f * scale,
+                           child_position.y + child_size.y - art_height -
+                               10.0f * scale);
+      const ImVec2 art_max(art_min.x + art_width, art_min.y + art_height);
+      // Draw first so controls, status text, and modals remain legible if a
+      // small window causes them to overlap the decorative corner art.
+      if (art_width > 0.0f) {
+        ImGui::GetWindowDrawList()->AddImage(
+            ImTextureRef(static_cast<ImTextureID>(
+                reinterpret_cast<std::intptr_t>(artwork.texture))),
+            art_min, art_max);
+        artwork_safe_width = art_width + 42.0f * scale;
+      }
+    }
     ImGui::SetCursorPos(ImVec2(32.0f * scale, 30.0f * scale));
     ImGui::BeginGroup();
     const float content_width =
-        ImGui::GetContentRegionAvail().x - 32.0f * scale;
+        ImGui::GetContentRegionAvail().x - 32.0f * scale - artwork_safe_width;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
 
     if (page == LauncherPage::Play) {
       SectionHeading(fonts.heading, "Play",
@@ -1138,7 +1332,7 @@ int main(int argc, char **argv) {
       ImGui::EndDisabled();
 
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
-      ImGui::Separator();
+      ContentSeparator(content_width, scale);
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
       ImGui::TextUnformatted("Setup status");
       ImGui::Dummy(ImVec2(0.0f, 2.0f * scale));
@@ -1349,7 +1543,7 @@ int main(int argc, char **argv) {
       }
       ImGui::EndDisabled();
       ImGui::Dummy(ImVec2(0.0f, 12.0f * scale));
-      ImGui::Separator();
+      ContentSeparator(content_width, scale);
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
       ImGui::TextUnformatted("Status");
       const char *netplay_status =
@@ -1416,7 +1610,7 @@ int main(int argc, char **argv) {
         }
       }
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
-      ImGui::Separator();
+      ContentSeparator(content_width, scale);
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
       ImGui::TextUnformatted("Controller");
       const char *controller_preview =
@@ -1442,10 +1636,183 @@ int main(int argc, char **argv) {
       ImGui::BeginDisabled(controller_index < 0);
       if (ImGui::Button("Use this controller"))
         select_controller(controller_index);
+      ImGui::SameLine();
+      if (ImGui::Button("Configure buttons")) {
+        if (select_controller(controller_index)) {
+          std::string message;
+          if (moderngekko::frontend::LoadGamepadProfile(
+                  user_directory, &remap_profile, &message)) {
+            remap_status = "Select a GameCube control to remap";
+            confirm_reset_mapping = false;
+            capture_control.reset();
+            open_remap_popup = true;
+          } else {
+            std::lock_guard lock(dialog.mutex);
+            dialog.error = std::move(message);
+          }
+        }
+      }
       ImGui::EndDisabled();
       ImGui::TextDisabled("%s", controller_status.c_str());
+
+      if (open_remap_popup) {
+        ImGui::OpenPopup("Controller mapping");
+        open_remap_popup = false;
+      }
+      const float remap_modal_width =
+          std::min(720.0f * scale, io.DisplaySize.x - 48.0f * scale);
+      const float remap_modal_height =
+          std::min(700.0f * scale, io.DisplaySize.y - 48.0f * scale);
+      ImGui::SetNextWindowPos(
+          ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+          ImGuiCond_Appearing,
+                              ImVec2(0.5f, 0.5f));
+      ImGui::SetNextWindowSize(
+          ImVec2(remap_modal_width, remap_modal_height), ImGuiCond_Appearing);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(24.0f * scale, 20.0f * scale));
+      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                          ImVec2(10.0f * scale, 9.0f * scale));
+      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                          ImVec2(12.0f * scale, 7.0f * scale));
+      if (ImGui::BeginPopupModal("Controller mapping", nullptr,
+                                 ImGuiWindowFlags_NoResize |
+                                     ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::PushFont(fonts.heading);
+        ImGui::TextUnformatted("GameCube controller mapping");
+        ImGui::PopFont();
+        ImGui::TextDisabled("%s", controller_index >= 0
+                                      ? controllers[controller_index]
+                                            .label.c_str()
+                                      : remap_profile.device.c_str());
+        const float remap_content_width = ImGui::GetContentRegionAvail().x;
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + remap_content_width);
+        ImGui::TextWrapped(
+            "Choose a GameCube control, then press the desired button or move "
+            "an axis. Changes save immediately and apply to solo and netplay.");
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f * scale));
+        ContentSeparator(remap_content_width, scale);
+        ImGui::Dummy(ImVec2(0.0f, 3.0f * scale));
+
+        // Size the scrolling rows from the space that is actually left inside
+        // the popup. This keeps status and actions fixed and visible at the
+        // launcher's 900x600 minimum size, including the reset confirmation.
+        const float footer_reserve =
+            (confirm_reset_mapping ? 136.0f : 112.0f) * scale;
+        const float mapping_list_height =
+            std::max(180.0f * scale,
+                     ImGui::GetContentRegionAvail().y - footer_reserve);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f * scale);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f * scale);
+        ImGui::BeginChild(
+            "##mapping-list", ImVec2(0.0f, mapping_list_height),
+            ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,
+                            ImVec2(12.0f * scale, 7.0f * scale));
+        if (ImGui::BeginTable("##mapping-table", 2,
+                              ImGuiTableFlags_SizingStretchProp |
+                                  ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_BordersInnerH |
+                                  ImGuiTableFlags_PadOuterX)) {
+          ImGui::TableSetupColumn("GameCube control",
+                                  ImGuiTableColumnFlags_WidthStretch, 0.42f);
+          ImGui::TableSetupColumn("Physical input",
+                                  ImGuiTableColumnFlags_WidthStretch, 0.58f);
+          ImGui::TableHeadersRow();
+          for (std::size_t i = 0;
+               i < moderngekko::frontend::kGamepadControlCount; ++i) {
+            if (i == 0 || i == 8 || i == 12 || i == 16) {
+              ImGui::TableNextRow();
+              ImGui::TableSetColumnIndex(0);
+              const char *section = i == 0    ? "Buttons and triggers"
+                                    : i == 8  ? "D-pad"
+                                    : i == 12 ? "Main stick"
+                                              : "C-stick";
+              ImGui::TextDisabled("%s", section);
+              ImGui::TableSetColumnIndex(1);
+              ImGui::TextDisabled(" ");
+            }
+            const auto control =
+                static_cast<moderngekko::frontend::GamepadControl>(i);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(
+                moderngekko::frontend::GamepadControlLabel(control).data());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::PushID(static_cast<int>(i));
+            const bool capturing = capture_control == control;
+            const std::string display =
+                capturing ? "Press input..."
+                          : DisplayControllerExpression(
+                                remap_profile.bindings[i]);
+            if (capturing)
+              ImGui::PushStyleColor(ImGuiCol_Button,
+                                    ImVec4(0.72f, 0.38f, 0.16f, 1.0f));
+            if (ImGui::Button(display.c_str(), ImVec2(-1.0f, 0.0f)))
+              begin_capture(control);
+            if (capturing)
+              ImGui::PopStyleColor();
+            ImGui::PopID();
+          }
+          ImGui::EndTable();
+        }
+        ImGui::PopStyleVar();
+        ImGui::EndChild();
+        ImGui::PopStyleVar(2);
+
+        ImGui::Dummy(ImVec2(0.0f, 3.0f * scale));
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + remap_content_width);
+        ImGui::TextDisabled("%s", remap_status.c_str());
+        ImGui::PopTextWrapPos();
+        ContentSeparator(remap_content_width, scale);
+        ImGui::Dummy(ImVec2(0.0f, 2.0f * scale));
+
+        if (confirm_reset_mapping)
+          ImGui::TextColored(ImVec4(0.85f, 0.64f, 0.27f, 1.0f),
+                             "Replace every custom binding?");
+        const float footer_y = ImGui::GetCursorPosY();
+        if (capture_control) {
+          if (ImGui::Button("Cancel capture")) {
+            capture_control.reset();
+            remap_status = "Mapping cancelled";
+          }
+        } else if (!confirm_reset_mapping) {
+          if (ImGui::Button("Reset to defaults"))
+            confirm_reset_mapping = true;
+        } else {
+          if (ImGui::Button("Confirm reset")) {
+            remap_profile = moderngekko::frontend::DefaultGamepadProfile(
+                remap_profile.device);
+            std::string message;
+            if (!moderngekko::frontend::SaveGamepadProfile(
+                    user_directory, remap_profile, &message)) {
+              std::lock_guard lock(dialog.mutex);
+              dialog.error = std::move(message);
+            } else {
+              remap_status = "Default mapping restored";
+              controller_status = "Default GameCube mapping restored";
+            }
+            confirm_reset_mapping = false;
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Keep custom mapping"))
+            confirm_reset_mapping = false;
+        }
+        const float done_width = 104.0f * scale;
+        ImGui::SetCursorPosY(footer_y);
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - done_width);
+        if (PrimaryButton("Done", ImVec2(done_width, 0.0f))) {
+          capture_control.reset();
+          confirm_reset_mapping = false;
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
+      ImGui::PopStyleVar(3);
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
-      ImGui::Separator();
+      ContentSeparator(content_width, scale);
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
       ImGui::TextUnformatted("Files");
       ImGui::TextWrapped("User data: %s", user_directory.string().c_str());
@@ -1457,18 +1824,20 @@ int main(int argc, char **argv) {
           (user_directory / "Logs" / "RingOut.log").string().c_str());
     }
 
+    ImGui::PopTextWrapPos();
     ImGui::EndGroup();
     {
       std::lock_guard lock(dialog.mutex);
       if (!dialog.error.empty()) {
         ImGui::Spacing();
-        ImGui::Separator();
+        ContentSeparator(content_width, scale);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
         ImGui::TextColored(ImVec4(0.86f, 0.36f, 0.36f, 1.0f), "%s",
                            dialog.error.c_str());
         ImGui::PopTextWrapPos();
       }
     }
+    ImGui::Dummy(ImVec2(0.0f, 40.0f * scale));
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::End();
@@ -1705,6 +2074,8 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (artwork.texture)
+    SDL_DestroyTexture(artwork.texture);
   ImGui_ImplSDLRenderer3_Shutdown();
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();

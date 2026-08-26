@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="v1.2.1-ell.11"
+VERSION="v1.2.1-ell.12"
 BUILD_DIR="$REPO/build-appimage"
 DOLRECOMP_BUILD_DIR="$REPO/build-dolrecomp-appimage"
 OUT_DIR="$REPO/dist/out"
@@ -25,7 +25,7 @@ usage() {
   cat <<'EOF'
 Usage: package-appimage.sh [options]
 
-  --version TAG             package/release tag (default v1.2.1-ell.11)
+  --version TAG             package/release tag (default v1.2.1-ell.12)
   --build-dir DIR           ModernGekko build tree (default build-appimage)
   --dolrecomp-build-dir DIR DolRecomp build tree
   --out-dir DIR             output directory (default dist/out)
@@ -270,6 +270,11 @@ install -m 644 "$(dirname "$LAUNCHER")/fonts/DroidSans.ttf" \
   "$APPDIR/usr/bin/fonts/DroidSans.ttf"
 install -m 644 "$(dirname "$LAUNCHER")/fonts/Roboto-Medium.ttf" \
   "$APPDIR/usr/bin/fonts/Roboto-Medium.ttf"
+[[ -s "$(dirname "$LAUNCHER")/art/launcher-character.png" ]] || \
+  die "C++ launcher character art is missing beside $LAUNCHER"
+mkdir -p "$APPDIR/usr/bin/art"
+install -m 644 "$(dirname "$LAUNCHER")/art/launcher-character.png" \
+  "$APPDIR/usr/bin/art/launcher-character.png"
 copy_tree "$SYS_DIR" "$APPDIR/usr/bin/Sys"
 
 printf '==> selective support-library payload\n'

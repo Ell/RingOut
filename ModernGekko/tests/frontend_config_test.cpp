@@ -146,6 +146,69 @@ int main() {
     return 14;
   }
 
+  // Launcher remapping uses Dolphin's exact SDL expression names and updates
+  // only the known GCPad1 fields. Custom options and other pad sections must
+  // survive, and every edit leaves the previous file as a recovery backup.
+  const fs::path remap_directory = directory / "remap";
+  if (!moderngekko::frontend::WriteGamepadGCPadConfig(
+          remap_directory, "SDL/0/Remap Pad", &error))
+    return 22;
+  {
+    std::ofstream output(remap_directory / "Config" / "GCPadNew.ini",
+                         std::ios::app);
+    output << "Rumble/Motor = Motor\n"
+              "# keep this comment\n"
+              "[GCPad2]\n"
+              "Device = SDL/1/Second Pad\n"
+              "Buttons/A = `Custom`\n";
+  }
+  moderngekko::frontend::GamepadProfile remap;
+  if (!moderngekko::frontend::LoadGamepadProfile(remap_directory, &remap,
+                                                  &error) ||
+      remap.device != "SDL/0/Remap Pad")
+    return 23;
+  remap.bindings[static_cast<std::size_t>(
+      moderngekko::frontend::GamepadControl::A)] = "`Button N`";
+  remap.bindings[static_cast<std::size_t>(
+      moderngekko::frontend::GamepadControl::MainUp)] = "`Right Y+`";
+  if (!moderngekko::frontend::SaveGamepadProfile(remap_directory, remap,
+                                                  &error))
+    return 24;
+  moderngekko::frontend::GamepadProfile reloaded;
+  if (!moderngekko::frontend::LoadGamepadProfile(remap_directory, &reloaded,
+                                                  &error) ||
+      reloaded.bindings[static_cast<std::size_t>(
+          moderngekko::frontend::GamepadControl::A)] != "`Button N`" ||
+      reloaded.bindings[static_cast<std::size_t>(
+          moderngekko::frontend::GamepadControl::MainUp)] != "`Right Y+`")
+    return 25;
+  std::ifstream remap_input(remap_directory / "Config" / "GCPadNew.ini");
+  const std::string remap_config{std::istreambuf_iterator<char>(remap_input),
+                                 std::istreambuf_iterator<char>()};
+  if (!remap_config.contains("Rumble/Motor = Motor\n") ||
+      !remap_config.contains("# keep this comment\n") ||
+      !remap_config.contains(
+          "[GCPad2]\nDevice = SDL/1/Second Pad\nButtons/A = `Custom`\n") ||
+      !fs::is_regular_file(remap_directory / "Config" / "GCPadNew.ini.bak"))
+    return 26;
+
+  remap.bindings[0] = "bad\nexpression";
+  if (moderngekko::frontend::SaveGamepadProfile(remap_directory, remap,
+                                                 &error))
+    return 27;
+  if (moderngekko::frontend::DolphinSdlButtonExpression(0) !=
+          "`Button S`" ||
+      moderngekko::frontend::DolphinSdlButtonExpression(20) != "`Touchpad`" ||
+      moderngekko::frontend::DolphinSdlButtonExpression(21) ||
+      moderngekko::frontend::DolphinSdlAxisExpression(0, 20000) !=
+          "`Left X+`" ||
+      moderngekko::frontend::DolphinSdlAxisExpression(1, -20000) !=
+          "`Left Y+`" ||
+      moderngekko::frontend::DolphinSdlAxisExpression(4, 20000) !=
+          "`Trigger L`" ||
+      moderngekko::frontend::DolphinSdlAxisExpression(6, 20000))
+    return 28;
+
   // No pad named and (in CI) none attached: the keyboard profile is still the
   // fallback, so a desktop with no hardware keeps booting into a playable game.
   if (moderngekko::frontend::DetectSdlGamepads().empty()) {

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="v1.2.1-ell.11"
+VERSION="v1.2.1-ell.12"
 BUILD_DIR="$REPO/build-windows-cross"
 OUT_DIR="$REPO/dist/out"
 RUNTIME=""
@@ -25,7 +25,7 @@ usage() {
   cat <<'EOF'
 Usage: package-windows-cross.sh [options]
 
-  --version TAG                 package/release tag (default v1.2.1-ell.11)
+  --version TAG                 package/release tag (default v1.2.1-ell.12)
   --build-dir DIR               cross-build tree
   --out-dir DIR                 output directory (default dist/out)
   --runtime FILE                explicit moderngekko-run.exe
@@ -234,6 +234,11 @@ install -m 644 "$(dirname "$LAUNCHER")/fonts/DroidSans.ttf" \
   "$STAGE/fonts/DroidSans.ttf"
 install -m 644 "$(dirname "$LAUNCHER")/fonts/Roboto-Medium.ttf" \
   "$STAGE/fonts/Roboto-Medium.ttf"
+[[ -s "$(dirname "$LAUNCHER")/art/launcher-character.png" ]] || \
+  die "C++ launcher character art is missing beside $LAUNCHER"
+mkdir -p "$STAGE/art"
+install -m 644 "$(dirname "$LAUNCHER")/art/launcher-character.png" \
+  "$STAGE/art/launcher-character.png"
 copy_tree "$SYS_DIR" "$STAGE/bin/Sys"
 
 copy_tree "$REPO/dist/RingOut-1.0-dist/module-src" "$STAGE/module-src"

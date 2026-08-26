@@ -539,7 +539,12 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
                 "$<TARGET_FILE_DIR:moderngekko-launcher>/fonts/DroidSans.ttf"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/misc/fonts/Roboto-Medium.ttf"
-                "$<TARGET_FILE_DIR:moderngekko-launcher>/fonts/Roboto-Medium.ttf")
+                "$<TARGET_FILE_DIR:moderngekko-launcher>/fonts/Roboto-Medium.ttf"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:moderngekko-launcher>/art"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/launcher/launcher-character.png"
+                "$<TARGET_FILE_DIR:moderngekko-launcher>/art/launcher-character.png")
     if(MODERNGEKKO_FRONTEND_SDK)
         set_property(TARGET moderngekko-launcher PROPERTY BUILD_RPATH
             "${_moderngekko_sdk_lib}")

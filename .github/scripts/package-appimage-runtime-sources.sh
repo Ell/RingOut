@@ -6,7 +6,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="v1.2.1-ell.11"
+VERSION="v1.2.1-ell.12"
 OUT_DIR="$REPO/dist/out"
 TYPE2_SOURCE=""
 LIBFUSE_SOURCE=""
@@ -30,7 +30,7 @@ usage() {
   cat <<'EOF'
 Usage: package-appimage-runtime-sources.sh [options]
 
-  --version TAG              package/release tag (default v1.2.1-ell.11)
+  --version TAG              package/release tag (default v1.2.1-ell.12)
   --out-dir DIR              output directory (default dist/out)
   --type2-source FILE        pinned type2-runtime codeload .tar.gz
   --libfuse-source FILE      pinned fuse-3.15.0.tar.xz

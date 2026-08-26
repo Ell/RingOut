@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -71,6 +72,55 @@ bool GCPadConfigExists(const std::filesystem::path &user_directory);
 enum class KeyboardLayout { Player1, Player2 };
 bool WriteKeyboardGCPadConfig(const std::filesystem::path &user_directory,
                               KeyboardLayout layout, std::string *message);
+
+// Launcher-editable GameCube port-one mappings. Expressions are stored exactly
+// as Dolphin expects them in GCPadNew.ini (normally a backtick-quoted SDL
+// control name). SaveGamepadProfile updates only these known settings and the
+// device, preserving calibration, rumble, comments, and other pad sections.
+enum class GamepadControl : std::size_t {
+  A,
+  B,
+  X,
+  Y,
+  Z,
+  Start,
+  L,
+  R,
+  DpadUp,
+  DpadDown,
+  DpadLeft,
+  DpadRight,
+  MainUp,
+  MainDown,
+  MainLeft,
+  MainRight,
+  CUp,
+  CDown,
+  CLeft,
+  CRight,
+  Count,
+};
+
+inline constexpr std::size_t kGamepadControlCount =
+    static_cast<std::size_t>(GamepadControl::Count);
+
+struct GamepadProfile {
+  std::string device;
+  std::array<std::string, kGamepadControlCount> bindings{};
+};
+
+std::string_view GamepadControlLabel(GamepadControl control);
+GamepadProfile DefaultGamepadProfile(std::string_view device);
+bool LoadGamepadProfile(const std::filesystem::path &user_directory,
+                        GamepadProfile *profile, std::string *message);
+bool SaveGamepadProfile(const std::filesystem::path &user_directory,
+                        const GamepadProfile &profile, std::string *message);
+
+// Convert SDL3's stable gamepad button/axis indexes to the expression names
+// used by Dolphin's SDL controller backend. Axis direction is SDL's raw sign;
+// vertical axes are inverted here to match Dolphin's displayed names.
+std::optional<std::string> DolphinSdlButtonExpression(int button);
+std::optional<std::string> DolphinSdlAxisExpression(int axis, int value);
 // Write a GCPadNew.ini bound to an SDL gamepad. `device` is a fully qualified
 // Dolphin device name ("SDL/0/<pad name>"); DetectSdlGamepads produces them.
 bool WriteGamepadGCPadConfig(const std::filesystem::path &user_directory,

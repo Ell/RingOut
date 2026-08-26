@@ -4,6 +4,8 @@
 #include <cctype>
 #include <charconv>
 #include <fstream>
+#include <iterator>
+#include <map>
 #include <string_view>
 
 #ifndef MODERNGEKKO_NO_SDL_GAMEPADS
@@ -359,6 +361,313 @@ bool GCPadConfigExists(const fs::path &user_directory) {
   return fs::is_regular_file(user_directory / "Config" / "GCPadNew.ini", ec);
 }
 
+namespace {
+using GamepadControl = moderngekko::frontend::GamepadControl;
+
+struct GamepadControlInfo {
+  const char *label;
+  const char *key;
+  const char *default_expression;
+};
+
+constexpr std::array<GamepadControlInfo,
+                     moderngekko::frontend::kGamepadControlCount>
+    kGamepadControls = {{{"A", "Buttons/A", "`Button S`"},
+                         {"B", "Buttons/B", "`Button E`"},
+                         {"X", "Buttons/X", "`Button W`"},
+                         {"Y", "Buttons/Y", "`Button N`"},
+                         {"Z", "Buttons/Z", "`Shoulder R`"},
+                         {"Start", "Buttons/Start", "`Start`"},
+                         {"L", "Triggers/L", "`Trigger L`"},
+                         {"R", "Triggers/R", "`Trigger R`"},
+                         {"D-pad Up", "D-Pad/Up", "`Pad N`"},
+                         {"D-pad Down", "D-Pad/Down", "`Pad S`"},
+                         {"D-pad Left", "D-Pad/Left", "`Pad W`"},
+                         {"D-pad Right", "D-Pad/Right", "`Pad E`"},
+                         {"Main Stick Up", "Main Stick/Up", "`Left Y+`"},
+                         {"Main Stick Down", "Main Stick/Down", "`Left Y-`"},
+                         {"Main Stick Left", "Main Stick/Left", "`Left X-`"},
+                         {"Main Stick Right", "Main Stick/Right", "`Left X+`"},
+                         {"C-Stick Up", "C-Stick/Up", "`Right Y+`"},
+                         {"C-Stick Down", "C-Stick/Down", "`Right Y-`"},
+                         {"C-Stick Left", "C-Stick/Left", "`Right X-`"},
+                         {"C-Stick Right", "C-Stick/Right", "`Right X+`"}}};
+
+constexpr std::array<const char *, 21> kSdlButtonNames = {
+    "Button S", "Button E", "Button W", "Button N", "Back",    "Guide",
+    "Start",    "Thumb L",  "Thumb R",  "Shoulder L", "Shoulder R",
+    "Pad N",    "Pad S",    "Pad W",    "Pad E",      "Misc 1",
+    "Paddle 1", "Paddle 2", "Paddle 3", "Paddle 4",   "Touchpad",
+};
+
+constexpr std::array<const char *, 6> kSdlAxisNames = {
+    "Left X", "Left Y", "Right X", "Right Y", "Trigger L", "Trigger R"};
+
+std::size_t ControlIndex(GamepadControl control) {
+  return static_cast<std::size_t>(control);
+}
+
+bool ValidProfileValue(std::string_view value) {
+  return !value.empty() &&
+         value.find_first_of("\r\n") == std::string_view::npos;
+}
+
+std::string SettingKey(std::string_view line) {
+  const std::string trimmed = Trim(std::string(line));
+  const auto separator = trimmed.find('=');
+  if (separator == std::string::npos)
+    return {};
+  return Trim(trimmed.substr(0, separator));
+}
+
+bool WriteProfileLines(const fs::path &destination,
+                       const std::vector<std::string> &lines,
+                       std::string *message) {
+  std::error_code ec;
+  fs::create_directories(destination.parent_path(), ec);
+  if (ec) {
+    if (message)
+      *message = "can't create controller config directory: " + ec.message();
+    return false;
+  }
+
+  const fs::path temporary = destination.string() + ".tmp";
+  {
+    std::ofstream output(temporary, std::ios::trunc);
+    if (!output) {
+      if (message)
+        *message = "can't write " + temporary.string();
+      return false;
+    }
+    for (const std::string &line : lines)
+      output << line << '\n';
+    output.close();
+    if (!output) {
+      if (message)
+        *message = "can't write " + temporary.string();
+      fs::remove(temporary, ec);
+      return false;
+    }
+  }
+
+  const fs::path backup = destination.string() + ".bak";
+  if (fs::is_regular_file(destination, ec)) {
+    ec.clear();
+    fs::copy_file(destination, backup, fs::copy_options::overwrite_existing,
+                  ec);
+    if (ec) {
+      if (message)
+        *message = "can't back up controller profile: " + ec.message();
+      fs::remove(temporary, ec);
+      return false;
+    }
+  }
+
+  // Windows cannot rename over an existing path. Replace it only after the
+  // backup is durable, then restore that backup if the final rename fails.
+  ec.clear();
+  fs::remove(destination, ec);
+  if (ec) {
+    if (message)
+      *message = "can't replace controller profile: " + ec.message();
+    fs::remove(temporary, ec);
+    return false;
+  }
+  fs::rename(temporary, destination, ec);
+  if (ec) {
+    std::error_code restore_error;
+    if (fs::is_regular_file(backup, restore_error))
+      fs::copy_file(backup, destination, fs::copy_options::overwrite_existing,
+                    restore_error);
+    if (message)
+      *message = "can't install controller profile: " + ec.message();
+    fs::remove(temporary, restore_error);
+    return false;
+  }
+  return true;
+}
+} // namespace
+
+std::string_view GamepadControlLabel(GamepadControl control) {
+  const std::size_t index = ControlIndex(control);
+  return index < kGamepadControls.size() ? kGamepadControls[index].label : "";
+}
+
+GamepadProfile DefaultGamepadProfile(std::string_view device) {
+  GamepadProfile profile;
+  profile.device = device;
+  for (std::size_t i = 0; i < kGamepadControls.size(); ++i)
+    profile.bindings[i] = kGamepadControls[i].default_expression;
+  return profile;
+}
+
+bool LoadGamepadProfile(const fs::path &user_directory, GamepadProfile *profile,
+                        std::string *message) {
+  if (profile == nullptr) {
+    if (message)
+      *message = "missing controller profile output";
+    return false;
+  }
+  const fs::path destination = user_directory / "Config" / "GCPadNew.ini";
+  std::ifstream input(destination);
+  if (!input) {
+    if (message)
+      *message = "can't open " + destination.string();
+    return false;
+  }
+
+  *profile = DefaultGamepadProfile({});
+  bool in_pad_one = false;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    const std::string trimmed = Trim(line);
+    if (trimmed.starts_with('[')) {
+      in_pad_one = trimmed == "[GCPad1]";
+      continue;
+    }
+    if (!in_pad_one)
+      continue;
+    const auto separator = trimmed.find('=');
+    if (separator == std::string::npos)
+      continue;
+    const std::string key = Trim(trimmed.substr(0, separator));
+    const std::string value = Trim(trimmed.substr(separator + 1));
+    if (key == "Device")
+      profile->device = value;
+    for (std::size_t i = 0; i < kGamepadControls.size(); ++i) {
+      if (key == kGamepadControls[i].key)
+        profile->bindings[i] = value;
+    }
+  }
+  if (profile->device.empty()) {
+    if (message)
+      *message = "GCPad1 has no input device";
+    return false;
+  }
+  return true;
+}
+
+bool SaveGamepadProfile(const fs::path &user_directory,
+                        const GamepadProfile &profile, std::string *message) {
+  if (!ValidProfileValue(profile.device)) {
+    if (message)
+      *message = "invalid gamepad device name";
+    return false;
+  }
+  for (const std::string &binding : profile.bindings) {
+    if (!ValidProfileValue(binding)) {
+      if (message)
+        *message = "every GameCube control must have a valid binding";
+      return false;
+    }
+  }
+
+  const fs::path destination = user_directory / "Config" / "GCPadNew.ini";
+  std::vector<std::string> lines;
+  {
+    std::ifstream input(destination);
+    std::string line;
+    while (std::getline(input, line)) {
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      lines.push_back(std::move(line));
+    }
+  }
+  if (lines.empty())
+    lines.emplace_back("[GCPad1]");
+
+  std::map<std::string, std::string> replacements;
+  replacements["Device"] = profile.device;
+  for (std::size_t i = 0; i < kGamepadControls.size(); ++i)
+    replacements[kGamepadControls[i].key] = profile.bindings[i];
+  replacements["Triggers/L-Analog"] =
+      profile.bindings[ControlIndex(GamepadControl::L)];
+  replacements["Triggers/R-Analog"] =
+      profile.bindings[ControlIndex(GamepadControl::R)];
+
+  bool found_pad_one = false;
+  bool in_pad_one = false;
+  std::map<std::string, bool> written;
+  std::vector<std::string> updated;
+  const auto append_missing = [&] {
+    for (const auto &[key, value] : replacements) {
+      if (!written[key])
+        updated.push_back(key + " = " + value);
+    }
+    if (!written["Main Stick/Calibration"])
+      updated.emplace_back("Main Stick/Calibration = 100.00 141.42 100.00 "
+                           "141.42 100.00 141.42 100.00 141.42");
+    if (!written["C-Stick/Calibration"])
+      updated.emplace_back("C-Stick/Calibration = 100.00 141.42 100.00 "
+                           "141.42 100.00 141.42 100.00 141.42");
+  };
+
+  for (const std::string &line : lines) {
+    const std::string trimmed = Trim(line);
+    if (trimmed.starts_with('[')) {
+      if (in_pad_one)
+        append_missing();
+      in_pad_one = trimmed == "[GCPad1]";
+      found_pad_one = found_pad_one || in_pad_one;
+      updated.push_back(line);
+      continue;
+    }
+    if (!in_pad_one) {
+      updated.push_back(line);
+      continue;
+    }
+    const std::string key = SettingKey(line);
+    if (key == "Main Stick/Calibration" || key == "C-Stick/Calibration")
+      written[key] = true;
+    const auto replacement = replacements.find(key);
+    if (replacement == replacements.end()) {
+      updated.push_back(line);
+      continue;
+    }
+    if (!written[key]) {
+      updated.push_back(key + " = " + replacement->second);
+      written[key] = true;
+    }
+  }
+  if (in_pad_one)
+    append_missing();
+  if (!found_pad_one) {
+    if (!updated.empty() && !updated.back().empty())
+      updated.emplace_back();
+    updated.emplace_back("[GCPad1]");
+    append_missing();
+  }
+
+  if (!WriteProfileLines(destination, updated, message))
+    return false;
+  if (message)
+    *message = "gamepad mapping saved (" + profile.device + ")";
+  return true;
+}
+
+std::optional<std::string> DolphinSdlButtonExpression(int button) {
+  if (button < 0 || static_cast<std::size_t>(button) >= kSdlButtonNames.size())
+    return std::nullopt;
+  return "`" + std::string(kSdlButtonNames[button]) + "`";
+}
+
+std::optional<std::string> DolphinSdlAxisExpression(int axis, int value) {
+  if (axis < 0 || static_cast<std::size_t>(axis) >= kSdlAxisNames.size() ||
+      value == 0)
+    return std::nullopt;
+  std::string expression = "`" + std::string(kSdlAxisNames[axis]);
+  if (axis < 4) {
+    bool negative = value < 0;
+    if (axis % 2 == 1)
+      negative = !negative;
+    expression += negative ? '-' : '+';
+  }
+  expression += '`';
+  return expression;
+}
+
 bool WriteKeyboardGCPadConfig(const fs::path &user_directory,
                               KeyboardLayout layout, std::string *message) {
   // Dolphin's Linux keyboard/mouse device is the X master pointer/keyboard
@@ -469,76 +778,8 @@ std::vector<std::string> DetectSdlGamepads() {
 
 bool WriteGamepadGCPadConfig(const fs::path &user_directory,
                              std::string_view device, std::string *message) {
-  if (device.empty() ||
-      device.find_first_of("\r\n") != std::string_view::npos) {
-    if (message)
-      *message = "invalid gamepad device name";
-    return false;
-  }
-
-  const fs::path destination = user_directory / "Config" / "GCPadNew.ini";
-  std::error_code ec;
-  fs::create_directories(destination.parent_path(), ec);
-  if (ec) {
-    if (message)
-      *message = "can't create controller config directory: " + ec.message();
-    return false;
-  }
-  std::ofstream output(destination, std::ios::trunc);
-  if (!output) {
-    if (message)
-      *message = "can't write " + destination.string();
-    return false;
-  }
-
-  // Input names are Dolphin's SDL gamepad names (s_sdl_button_names /
-  // s_sdl_axis_names in SDLGamepad.h), not SDL's own constants. The vertical
-  // axes read `Left Y+` for up because that backend already inverts them to
-  // match XInput -- do not "fix" the sign here.
-  //
-  // Face buttons follow the GameCube's physical layout rather than the labels:
-  // A is the big south button, B east. Z sits on the right shoulder because the
-  // GameCube has one Z; L/R are the analog triggers, and are mapped as both
-  // digital and analog so a full press registers as a click.
-  output << "[GCPad1]\n"
-         << "Device = " << device << '\n'
-         << "Buttons/A = `Button S`\n"
-            "Buttons/B = `Button E`\n"
-            "Buttons/X = `Button W`\n"
-            "Buttons/Y = `Button N`\n"
-            "Buttons/Z = `Shoulder R`\n"
-            "Buttons/Start = `Start`\n"
-            "Triggers/L = `Trigger L`\n"
-            "Triggers/R = `Trigger R`\n"
-            "Triggers/L-Analog = `Trigger L`\n"
-            "Triggers/R-Analog = `Trigger R`\n"
-            "D-Pad/Up = `Pad N`\n"
-            "D-Pad/Down = `Pad S`\n"
-            "D-Pad/Left = `Pad W`\n"
-            "D-Pad/Right = `Pad E`\n"
-            "Main Stick/Up = `Left Y+`\n"
-            "Main Stick/Down = `Left Y-`\n"
-            "Main Stick/Left = `Left X-`\n"
-            "Main Stick/Right = `Left X+`\n"
-            // Without a calibration line Dolphin assumes a square gate and the
-            // diagonals never reach full deflection.
-            "Main Stick/Calibration = 100.00 141.42 100.00 141.42 100.00 "
-            "141.42 100.00 141.42\n"
-            "C-Stick/Up = `Right Y+`\n"
-            "C-Stick/Down = `Right Y-`\n"
-            "C-Stick/Left = `Right X-`\n"
-            "C-Stick/Right = `Right X+`\n"
-            "C-Stick/Calibration = 100.00 141.42 100.00 141.42 100.00 141.42 "
-            "100.00 141.42\n";
-  output.close();
-  if (!output) {
-    if (message)
-      *message = "can't write " + destination.string();
-    return false;
-  }
-  if (message)
-    *message = "gamepad mapped (" + std::string(device) + ")";
-  return true;
+  return SaveGamepadProfile(user_directory, DefaultGamepadProfile(device),
+                            message);
 }
 
 bool GenerateControllerConfig(const fs::path &user_directory,
