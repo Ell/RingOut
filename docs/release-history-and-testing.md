@@ -15,7 +15,9 @@ build instructions in `README.md` or the two release workflows.
 
 ## Executive verdict
 
-- `v1.2.1-ell.1`, `.2`, `.3`, `.6`, and `.9` are public prereleases.
+- `v1.2.1-ell.1`, `.2`, `.3`, `.6`, `.9`, `.10`, and `.11` are public
+  prereleases. `.10` remains valid on Linux but its Windows asset is superseded
+  by `.11`.
 - `v1.2.1-ell.4`, `.5`, `.7`, and `.8` are real, immutable annotated tags, but
   are not public releases. `.4` and `.5` failed at draft publication, `.7`
   failed its minimal Linux build, and `.8` failed AppImage assembly after its
@@ -38,7 +40,7 @@ build instructions in `README.md` or the two release workflows.
 
 ## Immutable tag ledger
 
-All six tags are annotated. The raw tag objects and peeled commits below were
+All eleven tags are annotated. The raw tag objects and peeled commits below were
 verified both locally and with `git ls-remote --tags origin` on the audit date.
 
 | Tag | Annotated tag object | Peeled source commit | Commit subject |
@@ -49,6 +51,11 @@ verified both locally and with `git ls-remote --tags origin` on the audit date.
 | `v1.2.1-ell.4` | `e555cceb896cf6332054e83e41d3c2d3827a4d77` | `6f1ef65e12013e1023fc4bab8bd31460f1f6d399` | Fix controls and add AppImage releases |
 | `v1.2.1-ell.5` | `31bbb821c8905185e72fff87761e71ff51663c13` | `885aaecf8660bec118f5d4cea4a0a2e2d2caaa21` | Preserve canonical release tags in CI |
 | `v1.2.1-ell.6` | `9f2335e3c15a91759ecf6b5362a984f0348ee18c` | `ff0ad952980f5083afd21c3d3758208a7a093d72` | Harden concurrent draft release publishing |
+| `v1.2.1-ell.7` | `acd6b5910448e77c745a9a3b770d7de3ededb58e` | `a9ce89ec883fe1812e9d6cab8066d9b95c1b9e34` | Prepare rollback beta release |
+| `v1.2.1-ell.8` | `587b056fce3e98080c1eff02b4ffc8c5acdefbb9` | `3881ef28aaff9e380994503c7e9667ff46a0f685` | Record rollback overlay release evidence |
+| `v1.2.1-ell.9` | `c092e9f6ab81338aa038f1ff077d300d647e1c13` | `94cd55df6ab53b974a41c9d27c124cd0b99e68f2` | Fix launcher identity validation |
+| `v1.2.1-ell.10` | `67fa2bf50854a215fe85af2fce2848a1d125825c` | `df76814a0e05655dcbf1efec05620bc02dad0f48` | Prepare v1.2.1-ell.10 replacement release |
+| `v1.2.1-ell.11` | `fed2f692b1e50c45b0a4114334e1c2a301207134` | `a24a0cd5e0372d724a053992c11b56c1a554b087` | Add Windows two-peer netplay smoke |
 
 The `.1` through `.3` public release objects report `target_commitish: main`
 because the original `gh release create` path did not source-bind that release
@@ -401,9 +408,17 @@ missing command. This affects package paths with and without spaces. The
 source-bound `.ell.10` assets remain valid provenance records, but the Windows
 first-run player path is release-blocking.
 
-### v1.2.1-ell.11 — Windows first-run replacement candidate
+### v1.2.1-ell.11 — published Windows first-run replacement
 
 Implementation checkpoint: `ff3a49fd` (2026-08-25).
+
+Release source: `a24a0cd5e0372d724a053992c11b56c1a554b087`.
+
+Annotated tag object: `fed2f692b1e50c45b0a4114334e1c2a301207134`.
+
+Public prerelease: [v1.2.1-ell.11](https://github.com/Ell/RingOut/releases/tag/v1.2.1-ell.11),
+published 2026-08-26 00:59:28 UTC. The `.ell.10` public page now warns Windows
+users to use `.ell.11`; its valid Linux assets remain available.
 
 Windows setup now launches compiler probes, DolRecomp, CMake configuration,
 and the build directly with `CreateProcess` argument vectors and captured
@@ -465,12 +480,26 @@ The first validation-only Windows candidate was
 `.cache/ell11-windows-qa/RingOut-1.2.1-ell.11-windows-x86_64.zip`, SHA-256
 `7aae919afa2421a37cd5ff182cadc3e6d3fc025df048f7ae4ec8b02c2df57f26`.
 It predates the final error-reporting-only rebuild and is not a release
-artifact. Publication remains conditional on clean tag workflows and a fresh
-exact-package smoke.
+artifact.
+
+Both clean, source-bound tag workflows passed:
+
+- Windows [32916680932](https://github.com/Ell/RingOut/actions/runs/32916680932)
+  rebuilt the MinGW runtime/helper, assembled the portable ZIP, and passed the
+  exact packaged helper/DolRecomp/CMake/Ninja/Clang/LLD/module-load Wine smoke.
+- Linux [32916680938](https://github.com/Ell/RingOut/actions/runs/32916680938)
+  passed 45/45 runtime tests, static DolRecomp tests, AppImage module/setup
+  validation, and the clean Ubuntu 24.04 no-FUSE self-test.
+
+All six draft assets were downloaded before publication. Each payload matched
+its adjacent sidecar and GitHub SHA-256 digest. Windows and AppImage
+`SOURCE.txt` both name release source `a24a0cd5e0372d724a053992c11b56c1a554b087`;
+the AppImage marker also names runtime source/relink digest
+`237f83e26fd6de08fbecfaa143a7e554169886aecdc74caec5c911d8e15867fc`.
 
 ## What the current release pipeline actually tests
 
-| Layer | `.11` candidate evidence | Important boundary |
+| Layer | `.11` evidence | Important boundary |
 | --- | --- | --- |
 | Linux runtime build/tests | Debian 12 container builds runtime, module inspector, and tests; `ctest` reports 45/45. | This is host-side unit/integration coverage, not a real game session. |
 | Static DolRecomp | Separately configured static executable; 14/14 tests pass and `readelf` rejects an ELF interpreter. | Uses project-authored fixtures/synthetic input, not distributed game data. |
@@ -481,7 +510,7 @@ exact-package smoke.
 | AppImage clean-host smoke | Exact AppImage runs `--ringout-self-test` as uid 65534 in a digest-pinned Ubuntu 24.04 container with no network, no capabilities, no FUSE, and `no-new-privileges`. | Proves extraction/startup self-test, not desktop integration, rendering, sound, or input. |
 | Package policy | Both packages validate manifests, exact source/provenance, licence payload, privacy, and absence of disc/save/generated-module data. Windows also validates PE import closure and ZIP timestamps; AppImage validates DSO/source closure and glibc floor. | Policy checks cannot prove runtime correctness. |
 | Netplay protocol test | `moderngekko.netplay_protocol` is one test in the 45-test Linux runtime tree. | It is localhost/protocol coverage, not Internet traversal, adverse-network simulation, cross-platform interoperability, or two physical peers. |
-| Release publication | Publisher tests simulate tag/source checks, draft creation/joining, races, and immutable digest comparisons. Public `.10` API metadata and sidecars match. | Publication integrity does not add gameplay evidence. |
+| Release publication | Publisher tests simulate tag/source checks, draft creation/joining, races, and immutable digest comparisons. Public `.11` API metadata and sidecars match. | Publication integrity does not add gameplay evidence. |
 
 Source anchors for those claims:
 
@@ -524,6 +553,9 @@ downloaded `.sha256` sidecars on 2026-08-25.
 | `RingOut-1.2.1-ell.10-windows-x86_64.zip` | 221,109,204 | `fb5274be369aeffedfa718fe37076eb12b336a5dd6115e46b0386c10c9cbab23` |
 | `RingOut-1.2.1-ell.10-linux-x86_64.AppImage` | 34,163,192 | `6dc3db976e6c1db044bc7eaa3a77fc3861757f61a17f8c73564d57bb7d55f8df` |
 | `RingOut-1.2.1-ell.10-appimage-runtime-sources.tar.zst` | 4,741,081 | `7a8db4b8dcfad9a545a8e317020bf3904993ad761623eee72f999372dd0651bc` |
+| `RingOut-1.2.1-ell.11-windows-x86_64.zip` | 221,113,234 | `dd8de026114a3020258256c919da94837bfd51f84f81d3b4a3c0a1417d305b95` |
+| `RingOut-1.2.1-ell.11-linux-x86_64.AppImage` | 34,167,288 | `e812fedd2c9c357dd281f5157be37ab49a95f321cf75b77ec2771a137cbba4c5` |
+| `RingOut-1.2.1-ell.11-appimage-runtime-sources.tar.zst` | 4,741,076 | `237f83e26fd6de08fbecfaa143a7e554169886aecdc74caec5c911d8e15867fc` |
 
 The checkout retains byte-identical local copies of the published `.1`, `.2`,
 and `.3` ZIPs under `dist/out/`; their hashes and internal `SOURCE.txt` commits
@@ -568,7 +600,7 @@ been completed (`.github/workflows/windows-cross.yml:214-238`;
    drove `.3`, proving some physical-Windows startup and game execution. The
    exact `.6` ZIP has not completed the documented fresh-folder, real-disc,
    GPU/audio/controller/menu/gameplay matrix on physical Windows.
-2. **Cross-platform netplay:** the `.ell.11` candidate has a retained
+2. **Cross-platform netplay:** the `.ell.11` release has a retained
    Windows-to-Windows direct two-process rollback smoke under Wine, but no test
    proves Windows-to-Linux, Windows-to-Windows, or Linux-to-Linux play between
    two physical machines. No adverse latency, jitter, loss,
