@@ -18,6 +18,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--hook-sample-frames <frames>] [--hook-diagnostic-limit <count>] \
          [--hook-idle-control] [--expect-sc2-engine-boundary] \
          [--hook-memory-profile] [--hook-memory-profile-ticks <ticks>] \
+         [--engine-replay-probe] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -70,6 +71,12 @@ certifies the measured 30 Hz engine boundary, not selective rollback safety.
 it at the exact return edge. It emits the page-aligned union changed inside the
 engine iteration. This requires --expect-sc2-engine-boundary and is conservative
 discovery evidence, not a safe selective-state profile.
+
+--engine-replay-probe restores a complete emulator snapshot at the certified
+engine entry, executes the 30 Hz game-engine iteration twice from that same
+state, and requires byte-identical complete endpoint states on both peers. It
+requires --hook-profile and cannot be combined with the boundary or memory
+profilers because its deliberate extra iterations change their hit counts.
 EOF
   exit 2
 }
@@ -100,6 +107,7 @@ HOOK_IDLE_CONTROL=0
 EXPECT_SC2_ENGINE_BOUNDARY=0
 HOOK_MEMORY_PROFILE=0
 HOOK_MEMORY_PROFILE_TICKS=60
+ENGINE_REPLAY_PROBE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -136,6 +144,7 @@ while [ "$#" -gt 0 ]; do
       HOOK_MEMORY_PROFILE_TICKS="$2"
       shift 2
       ;;
+    --engine-replay-probe) ENGINE_REPLAY_PROBE=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -181,6 +190,13 @@ if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
     fail "hook memory profile ticks must be at most 600"
   [ "$HOOK_PROFILE_SAMPLE" -ge $((HOOK_MEMORY_PROFILE_TICKS * 2)) ] ||
     fail "hook sample must cover at least twice the requested SC2 memory ticks"
+fi
+if [ "$ENGINE_REPLAY_PROBE" -eq 1 ]; then
+  [ "$HOOK_PROFILE" -eq 1 ] || fail "--engine-replay-probe requires --hook-profile"
+  [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 0 ] ||
+    fail "--engine-replay-probe cannot be combined with --expect-sc2-engine-boundary"
+  [ "$HOOK_MEMORY_PROFILE" -eq 0 ] ||
+    fail "--engine-replay-probe cannot be combined with --hook-memory-profile"
 fi
 
 validate_fault_script() {
@@ -361,6 +377,26 @@ verify_hook_profiles() {
       fail "peer SC2 memory profiles differ: $memory_difference"
     fi
   fi
+  if [ "$ENGINE_REPLAY_PROBE" -eq 1 ]; then
+    for peer in host guest; do
+      log="$evidence/$peer/log.txt"
+      grep -Fq '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628' "$log" ||
+        fail "$peer did not enable the full-emulator SC2 engine replay probe"
+      grep -Fq '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' "$log" ||
+        fail "$peer did not execute the symmetric SC2 engine replay sequence"
+      result="$(grep -F '[sc2-engine-replay] full-state-result ' "$log" | tail -1)"
+      [ -n "$result" ] || fail "$peer produced no SC2 engine replay result"
+      printf '%s\n' "$result" | grep -Eq 'state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=[0-9]+ endpoint_bytes=[1-9][0-9]* replay_bytes=[1-9][0-9]* differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=[0-9]+ replay_tb=[0-9]+$' ||
+        fail "$peer SC2 engine replay endpoint was not exact"
+      local endpoint_bytes replay_bytes endpoint_tb replay_tb
+      endpoint_bytes="$(printf '%s\n' "$result" | sed -E 's/.* endpoint_bytes=([0-9]+).*/\1/')"
+      replay_bytes="$(printf '%s\n' "$result" | sed -E 's/.* replay_bytes=([0-9]+).*/\1/')"
+      endpoint_tb="$(printf '%s\n' "$result" | sed -E 's/.* endpoint_tb=([0-9]+).*/\1/')"
+      replay_tb="$(printf '%s\n' "$result" | sed -E 's/.* replay_tb=([0-9]+).*/\1/')"
+      [ "$endpoint_bytes" = "$replay_bytes" ] || fail "$peer replay state size changed"
+      [ "$endpoint_tb" = "$replay_tb" ] || fail "$peer replay timebase changed"
+    done
+  fi
 }
 
 # Asset-free parser/orchestration tests use this path with synthetic logs. It
@@ -480,6 +516,9 @@ if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_MEMORY_PROFILE=1
     RINGOUT_SC2_MEMORY_PROFILE_TICKS="$HOOK_MEMORY_PROFILE_TICKS")
 fi
+if [ "$ENGINE_REPLAY_PROBE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=FULL_EMULATOR_ONE_TICK)
+fi
 if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
   run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)
 fi
@@ -521,6 +560,7 @@ fi
     if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
       echo "sc2_memory_profile_ticks=$HOOK_MEMORY_PROFILE_TICKS"
     fi
+    echo "sc2_engine_replay_probe=$([ "$ENGINE_REPLAY_PROBE" -eq 1 ] && echo exact-full-emulator || echo disabled)"
   fi
   if [ -n "$DIGEST_MISMATCH_FRAME" ]; then
     echo "expected_digest_mismatch_frame=$DIGEST_MISMATCH_FRAME"

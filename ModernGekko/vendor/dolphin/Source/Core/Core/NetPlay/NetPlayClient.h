@@ -6,6 +6,7 @@
 #include <SFML/Network/Packet.hpp>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -435,4 +436,15 @@ void NetPlay_Enable(NetPlayClient* const np);
 void NetPlay_Disable();
 bool NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry>& entries);
 unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot);
+
+// Exact-DOL SC2 replay-oracle support. The first engine iteration captures the
+// resolved SI poll results while advancing the live scheduler normally. Probe
+// replays then consume this bounded CPU-thread journal without advancing
+// network input state a second time. These calls are inert outside the
+// explicitly armed research probe.
+void BeginSc2EngineInputCapture();
+bool FinishSc2EngineInputCapture(std::size_t* captured_polls);
+bool BeginSc2EngineInputReplay();
+bool FinishSc2EngineInputReplay();
+void EndSc2EngineInputReplay();
 }  // namespace NetPlay

@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Common/Buffer.h"
 #include "Common/CommonTypes.h"
 #include "Common/DynamicLibrary.h"
 #include "Core/PowerPC/JitCommon/JitBase.h"
@@ -289,6 +290,7 @@ private:
   void ReportFrameDispatchProfile();
   void ProfileSc2EngineMemory(u32 pc);
   void ReportSc2EngineMemoryProfile();
+  void ProbeSc2EngineReplay(u32 pc);
   std::map<u32, u64> m_gqr_seen[8];
   u64 m_gqr_samples = 0;
   bool m_gqr_log = false;
@@ -304,6 +306,28 @@ private:
   u64 m_sc2_memory_profile_ticks = 0;
   std::vector<u8> m_sc2_memory_before;
   std::vector<u32> m_sc2_memory_page_changed_ticks;
+  bool m_sc2_engine_replay_probe_enabled = false;
+  bool m_sc2_engine_replay_have_entry = false;
+  bool m_sc2_engine_replay_replaying = false;
+  bool m_sc2_engine_replay_completed = false;
+  bool m_sc2_engine_replay_full_emulator = false;
+  bool m_sc2_engine_replay_have_reference = false;
+  CPUState m_sc2_engine_replay_entry_guest{};
+  CPUState m_sc2_engine_replay_endpoint_guest{};
+  u64 m_sc2_engine_replay_entry_tb_remainder = 0;
+  u64 m_sc2_engine_replay_endpoint_tb_remainder = 0;
+  std::vector<u8> m_sc2_engine_replay_entry_ram;
+  std::vector<u8> m_sc2_engine_replay_endpoint_ram;
+  std::vector<u8> m_sc2_engine_replay_entry_l1;
+  std::vector<u8> m_sc2_engine_replay_endpoint_l1;
+  Common::UniqueBuffer<u8> m_sc2_engine_replay_entry_state;
+  Common::UniqueBuffer<u8> m_sc2_engine_replay_endpoint_state;
+  Common::UniqueBuffer<u8> m_sc2_engine_replay_replayed_state;
+  std::size_t m_sc2_engine_replay_entry_state_size = 0;
+  std::size_t m_sc2_engine_replay_endpoint_state_size = 0;
+  std::size_t m_sc2_engine_replay_input_polls = 0;
+  bool m_sc2_engine_replay_input_capture_valid = false;
+  bool m_sc2_engine_replay_reference_input_valid = false;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;
 

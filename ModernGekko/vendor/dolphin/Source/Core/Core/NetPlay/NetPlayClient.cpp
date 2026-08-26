@@ -91,6 +91,114 @@ static std::mutex crit_netplay_client;
 static NetPlayClient* netplay_client = nullptr;
 static bool s_si_poll_batching = false;
 
+namespace
+{
+constexpr std::size_t SC2_ENGINE_INPUT_POLL_LIMIT = 4096;
+
+enum class Sc2EngineInputMode
+{
+  Disabled,
+  Capture,
+  Replay,
+};
+
+struct Sc2EngineInputPoll
+{
+  int pad_num = 0;
+  bool batching = false;
+  bool result = false;
+  GCPadStatus status{};
+};
+
+// All users are on Dolphin's CPU thread. Keeping the probe journal thread-local
+// also makes it impossible for the netplay socket thread to observe a partial
+// capture or consume a replay entry.
+thread_local Sc2EngineInputMode s_sc2_engine_input_mode = Sc2EngineInputMode::Disabled;
+thread_local std::vector<Sc2EngineInputPoll> s_sc2_engine_input_polls;
+thread_local std::size_t s_sc2_engine_input_cursor = 0;
+thread_local bool s_sc2_engine_input_valid = true;
+
+bool TryReplaySc2EngineInput(const int pad_num, const bool batching, GCPadStatus* const status,
+                             bool* const result)
+{
+  if (s_sc2_engine_input_mode != Sc2EngineInputMode::Replay)
+    return false;
+
+  if (s_sc2_engine_input_cursor >= s_sc2_engine_input_polls.size())
+  {
+    s_sc2_engine_input_valid = false;
+    *status = {};
+    *result = false;
+    return true;
+  }
+
+  const Sc2EngineInputPoll& poll = s_sc2_engine_input_polls[s_sc2_engine_input_cursor++];
+  if (poll.pad_num != pad_num || poll.batching != batching)
+    s_sc2_engine_input_valid = false;
+  *status = poll.status;
+  *result = poll.result;
+  return true;
+}
+
+void RecordSc2EngineInput(const int pad_num, const bool batching, const GCPadStatus& status,
+                          const bool result)
+{
+  if (s_sc2_engine_input_mode != Sc2EngineInputMode::Capture)
+    return;
+  if (s_sc2_engine_input_polls.size() >= SC2_ENGINE_INPUT_POLL_LIMIT)
+  {
+    s_sc2_engine_input_valid = false;
+    return;
+  }
+  s_sc2_engine_input_polls.push_back(
+      {.pad_num = pad_num, .batching = batching, .result = result, .status = status});
+}
+}  // namespace
+
+void BeginSc2EngineInputCapture()
+{
+  s_sc2_engine_input_polls.clear();
+  s_sc2_engine_input_cursor = 0;
+  s_sc2_engine_input_valid = true;
+  s_sc2_engine_input_mode = Sc2EngineInputMode::Capture;
+}
+
+bool FinishSc2EngineInputCapture(std::size_t* const captured_polls)
+{
+  const bool valid = s_sc2_engine_input_mode == Sc2EngineInputMode::Capture &&
+                     s_sc2_engine_input_valid;
+  s_sc2_engine_input_mode = Sc2EngineInputMode::Disabled;
+  if (captured_polls)
+    *captured_polls = s_sc2_engine_input_polls.size();
+  return valid;
+}
+
+bool BeginSc2EngineInputReplay()
+{
+  if (s_sc2_engine_input_mode != Sc2EngineInputMode::Disabled || !s_sc2_engine_input_valid)
+    return false;
+  s_sc2_engine_input_cursor = 0;
+  s_sc2_engine_input_mode = Sc2EngineInputMode::Replay;
+  return true;
+}
+
+bool FinishSc2EngineInputReplay()
+{
+  const bool valid = s_sc2_engine_input_mode == Sc2EngineInputMode::Replay &&
+                     s_sc2_engine_input_valid &&
+                     s_sc2_engine_input_cursor == s_sc2_engine_input_polls.size();
+  s_sc2_engine_input_mode = Sc2EngineInputMode::Disabled;
+  return valid;
+}
+
+void EndSc2EngineInputReplay()
+{
+  s_sc2_engine_input_mode = Sc2EngineInputMode::Disabled;
+  s_sc2_engine_input_polls.clear();
+  s_sc2_engine_input_cursor = 0;
+  s_sc2_engine_input_valid = true;
+}
+
 // called from ---GUI--- thread
 NetPlayClient::~NetPlayClient()
 {
@@ -2351,12 +2459,21 @@ void NetPlay_Disable()
 // Actual Core function which is called on every frame
 bool SerialInterface::CSIDevice_GCController::NetPlay_GetInput(int pad_num, GCPadStatus* status)
 {
+  bool replayed_result = false;
+  if (NetPlay::TryReplaySc2EngineInput(pad_num, NetPlay::s_si_poll_batching, status,
+                                      &replayed_result))
+  {
+    return replayed_result;
+  }
+
   std::lock_guard lk(NetPlay::crit_netplay_client);
 
+  bool result = false;
   if (NetPlay::netplay_client)
-    return NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
+    result = NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
 
-  return false;
+  NetPlay::RecordSc2EngineInput(pad_num, NetPlay::s_si_poll_batching, *status, result);
+  return result;
 }
 
 bool NetPlay::NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry>& entries)

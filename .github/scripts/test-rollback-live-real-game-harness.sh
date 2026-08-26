@@ -64,6 +64,24 @@ printf '%s\n' '[rollback live] correction committed' \
   >> "$WORK/hook-profile/guest/log.txt"
 "$HARNESS" --verify-existing "$WORK/hook-profile" --hook-profile >/dev/null
 
+cp -a "$WORK/hook-profile" "$WORK/engine-replay"
+for peer in host guest; do
+  printf '%s\n' \
+    '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628' \
+    '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' \
+    '[sc2-engine-replay] full-state-result state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=4 endpoint_bytes=49360152 replay_bytes=49360152 differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=34063786066743458 replay_tb=34063786066743458' \
+    >> "$WORK/engine-replay/$peer/log.txt"
+done
+"$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \
+  --engine-replay-probe >/dev/null
+sed -i 's/differing_state_bytes=0/differing_state_bytes=1/' \
+  "$WORK/engine-replay/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \
+    --engine-replay-probe >/dev/null 2>&1; then
+  echo "divergent SC2 engine replay unexpectedly passed" >&2
+  exit 1
+fi
+
 make_case engine-boundary
 for peer in host guest; do
   printf '%s\n' \
