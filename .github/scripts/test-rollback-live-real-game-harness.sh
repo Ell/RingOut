@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS="$REPO/.github/scripts/rollback-live-real-game.sh"
+MEMORY_DIFF="$REPO/.github/scripts/sc2-memory-profile-diff.sh"
 WORK="$(mktemp -d /tmp/ringout-live-harness-test.XXXXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -70,12 +71,41 @@ for peer in host guest; do
     '[sc2-hook-profile] result observed_frames=720 profiled_frames=600 strict_candidates=1 diagnostic_candidates=1200 complete=yes' \
     '[sc2-hook-profile] candidate pc=0x80012340 frames=600 once=600 hits=600 min=1 max=1 parity=300/300 first_ordinal=12..14 last_ordinal=12..14 caller_lr=0x80045678 caller_lr_stable=yes predecessor_pc=0x80023450 predecessor_stable=yes' \
     '[sc2-hook-profile] diagnostic rank=200 pc=0x8001ba3c frames=300 once=300 hits=300 min=1 max=1 parity=300/0 first_ordinal=70000..73000 last_ordinal=70000..73000 caller_lr=0x8002d628 caller_lr_stable=yes predecessor_pc=0x8002d624 predecessor_stable=yes' \
+    '[sc2-memory-profile] enabled begin_pc=0x8001ba3c return_pc=0x8002d628 page_bytes=4096 target_ticks=60' \
+    '[sc2-memory-profile] result ticks=60 ram_bytes=25165824 page_bytes=4096 changed_pages=128 changed_bytes_upper_bound=524288 every_tick_pages=16 complete=yes' \
+    '[sc2-memory-profile] region offset=0x00001000 size=0x00010000 pages=16 changed_ticks=10..60' \
     >> "$WORK/engine-boundary/$peer/log.txt"
 done
 printf '%s\n' '[rollback live] correction committed' \
   >> "$WORK/engine-boundary/guest/log.txt"
 "$HARNESS" --verify-existing "$WORK/engine-boundary" --hook-profile \
   --hook-diagnostic-limit 4096 --expect-sc2-engine-boundary >/dev/null
+"$HARNESS" --verify-existing "$WORK/engine-boundary" --hook-profile \
+  --hook-diagnostic-limit 4096 --expect-sc2-engine-boundary \
+  --hook-memory-profile --hook-memory-profile-ticks 60 >/dev/null
+
+sed -i 's/offset=0x00001000/offset=0x00002000/' \
+  "$WORK/engine-boundary/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/engine-boundary" --hook-profile \
+    --hook-diagnostic-limit 4096 --expect-sc2-engine-boundary \
+    --hook-memory-profile --hook-memory-profile-ticks 60 >/dev/null 2>&1; then
+  echo "asymmetric SC2 memory profile unexpectedly passed" >&2
+  exit 1
+fi
+sed -i 's/offset=0x00002000/offset=0x00001000/' \
+  "$WORK/engine-boundary/guest/log.txt"
+
+cp -a "$WORK/engine-boundary" "$WORK/engine-memory-gameplay"
+for peer in host guest; do
+  sed -i 's/offset=0x00001000 size=0x00010000 pages=16/offset=0x00009000 size=0x00010000 pages=16/' \
+    "$WORK/engine-memory-gameplay/$peer/log.txt"
+done
+memory_diff="$($MEMORY_DIFF "$WORK/engine-boundary" "$WORK/engine-memory-gameplay")"
+printf '%s\n' "$memory_diff" | grep -Fqx 'idle_pages=16'
+printf '%s\n' "$memory_diff" | grep -Fqx 'gameplay_pages=16'
+printf '%s\n' "$memory_diff" | grep -Fqx 'shared_pages=8'
+printf '%s\n' "$memory_diff" | grep -Fqx 'union_pages=24'
+printf '%s\n' "$memory_diff" | grep -Fqx 'union_bytes_upper_bound=98304'
 
 sed -i 's/predecessor_pc=0x8002d624/predecessor_pc=0x8002d620/' \
   "$WORK/engine-boundary/guest/log.txt"

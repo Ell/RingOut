@@ -242,6 +242,16 @@ void StaticRecompCore::Init()
                  static_cast<unsigned long long>(sample_frames),
                  static_cast<unsigned long long>(m_frame_dispatch_diagnostic_limit),
                  m_frame_dispatch_profile_armed ? "immediate" : "file");
+    if (std::getenv("RINGOUT_SC2_MEMORY_PROFILE"))
+    {
+      m_sc2_memory_profile_target_ticks =
+          ReadBoundedFrameCount("RINGOUT_SC2_MEMORY_PROFILE_TICKS", 60, 1, 600);
+      m_sc2_memory_profile_enabled = true;
+      std::fprintf(stderr,
+                   "[sc2-memory-profile] enabled begin_pc=0x8001ba3c "
+                   "return_pc=0x8002d628 page_bytes=4096 target_ticks=%llu\n",
+                   static_cast<unsigned long long>(m_sc2_memory_profile_target_ticks));
+    }
   }
 
   // The "interpreter fallback" is really Dolphin's JIT whenever one exists, so
@@ -517,6 +527,108 @@ void StaticRecompCore::ReportFrameDispatchProfile()
   }
   std::fflush(stderr);
   m_frame_dispatch_profile_reported = true;
+}
+
+void StaticRecompCore::ProfileSc2EngineMemory(const u32 pc)
+{
+  constexpr u32 ENGINE_BEGIN_PC = 0x8001ba3c;
+  constexpr u32 ENGINE_RETURN_PC = 0x8002d628;
+  constexpr std::size_t PAGE_BYTES = 4096;
+  if (!m_sc2_memory_profile_enabled || m_sc2_memory_profile_reported || m_guest.ram == nullptr ||
+      m_guest.ram_size == 0)
+  {
+    return;
+  }
+
+  if (pc == ENGINE_BEGIN_PC)
+  {
+    if (m_sc2_memory_tick_active)
+    {
+      std::fprintf(stderr,
+                   "[sc2-memory-profile] aborted reason=nested-engine-entry ticks=%llu\n",
+                   static_cast<unsigned long long>(m_sc2_memory_profile_ticks));
+      m_sc2_memory_profile_enabled = false;
+      return;
+    }
+    if (m_sc2_memory_before.size() != m_guest.ram_size)
+    {
+      m_sc2_memory_before.resize(m_guest.ram_size);
+      m_sc2_memory_page_changed_ticks.assign(
+          (m_guest.ram_size + PAGE_BYTES - 1) / PAGE_BYTES, 0);
+    }
+    std::memcpy(m_sc2_memory_before.data(), m_guest.ram, m_guest.ram_size);
+    m_sc2_memory_tick_active = true;
+    return;
+  }
+
+  if (pc != ENGINE_RETURN_PC || !m_sc2_memory_tick_active)
+    return;
+
+  for (std::size_t page = 0; page < m_sc2_memory_page_changed_ticks.size(); ++page)
+  {
+    const std::size_t offset = page * PAGE_BYTES;
+    const std::size_t size = std::min(PAGE_BYTES, m_sc2_memory_before.size() - offset);
+    if (std::memcmp(m_sc2_memory_before.data() + offset, m_guest.ram + offset, size) != 0)
+      ++m_sc2_memory_page_changed_ticks[page];
+  }
+  m_sc2_memory_tick_active = false;
+  ++m_sc2_memory_profile_ticks;
+  if (m_sc2_memory_profile_ticks >= m_sc2_memory_profile_target_ticks)
+    ReportSc2EngineMemoryProfile();
+}
+
+void StaticRecompCore::ReportSc2EngineMemoryProfile()
+{
+  constexpr std::size_t PAGE_BYTES = 4096;
+  if (m_sc2_memory_profile_reported)
+    return;
+
+  std::size_t changed_pages = 0;
+  std::size_t every_tick_pages = 0;
+  for (const u32 changed_ticks : m_sc2_memory_page_changed_ticks)
+  {
+    changed_pages += changed_ticks != 0 ? 1 : 0;
+    every_tick_pages += changed_ticks == m_sc2_memory_profile_ticks ? 1 : 0;
+  }
+  std::fprintf(stderr,
+               "[sc2-memory-profile] result ticks=%llu ram_bytes=%zu page_bytes=%zu "
+               "changed_pages=%zu changed_bytes_upper_bound=%zu every_tick_pages=%zu "
+               "complete=%s\n",
+               static_cast<unsigned long long>(m_sc2_memory_profile_ticks),
+               m_sc2_memory_before.size(), PAGE_BYTES, changed_pages,
+               changed_pages * PAGE_BYTES, every_tick_pages,
+               m_sc2_memory_profile_ticks == m_sc2_memory_profile_target_ticks ? "yes" : "no");
+
+  std::size_t page = 0;
+  while (page < m_sc2_memory_page_changed_ticks.size())
+  {
+    while (page < m_sc2_memory_page_changed_ticks.size() &&
+           m_sc2_memory_page_changed_ticks[page] == 0)
+    {
+      ++page;
+    }
+    if (page == m_sc2_memory_page_changed_ticks.size())
+      break;
+    const std::size_t first = page;
+    u32 minimum_ticks = m_sc2_memory_page_changed_ticks[page];
+    u32 maximum_ticks = minimum_ticks;
+    while (page < m_sc2_memory_page_changed_ticks.size() &&
+           m_sc2_memory_page_changed_ticks[page] != 0)
+    {
+      minimum_ticks = std::min(minimum_ticks, m_sc2_memory_page_changed_ticks[page]);
+      maximum_ticks = std::max(maximum_ticks, m_sc2_memory_page_changed_ticks[page]);
+      ++page;
+    }
+    const std::size_t offset = first * PAGE_BYTES;
+    const std::size_t size =
+        std::min((page - first) * PAGE_BYTES, m_sc2_memory_before.size() - offset);
+    std::fprintf(stderr,
+                 "[sc2-memory-profile] region offset=0x%08zx size=0x%08zx pages=%zu "
+                 "changed_ticks=%u..%u\n",
+                 offset, size, page - first, minimum_ticks, maximum_ticks);
+  }
+  std::fflush(stderr);
+  m_sc2_memory_profile_reported = true;
 }
 
 void StaticRecompCore::LoadModule()

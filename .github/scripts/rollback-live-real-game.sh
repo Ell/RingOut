@@ -17,6 +17,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--hook-profile] [--hook-warmup-frames <frames>] \
          [--hook-sample-frames <frames>] [--hook-diagnostic-limit <count>] \
          [--hook-idle-control] [--expect-sc2-engine-boundary] \
+         [--hook-memory-profile] [--hook-memory-profile-ticks <ticks>] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -64,6 +65,11 @@ subtraction against a gameplay profile and requires --hook-profile.
 0x8002d624 -> 0x8001ba3c -> LR 0x8002d628 to execute once on exactly one
 video-frame parity. It requires an even sample and diagnostic limit 4096. This
 certifies the measured 30 Hz engine boundary, not selective rollback safety.
+
+--hook-memory-profile snapshots MEM1 at the certified engine entry and compares
+it at the exact return edge. It emits the page-aligned union changed inside the
+engine iteration. This requires --expect-sc2-engine-boundary and is conservative
+discovery evidence, not a safe selective-state profile.
 EOF
   exit 2
 }
@@ -92,6 +98,8 @@ HOOK_PROFILE_SAMPLE=600
 HOOK_PROFILE_DIAGNOSTIC_LIMIT=0
 HOOK_IDLE_CONTROL=0
 EXPECT_SC2_ENGINE_BOUNDARY=0
+HOOK_MEMORY_PROFILE=0
+HOOK_MEMORY_PROFILE_TICKS=60
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -122,6 +130,12 @@ while [ "$#" -gt 0 ]; do
       ;;
     --hook-idle-control) HOOK_IDLE_CONTROL=1; shift ;;
     --expect-sc2-engine-boundary) EXPECT_SC2_ENGINE_BOUNDARY=1; shift ;;
+    --hook-memory-profile) HOOK_MEMORY_PROFILE=1; shift ;;
+    --hook-memory-profile-ticks)
+      [ "$#" -ge 2 ] || usage
+      HOOK_MEMORY_PROFILE_TICKS="$2"
+      shift 2
+      ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -157,6 +171,17 @@ fi
   [ "$HOOK_PROFILE_DIAGNOSTIC_LIMIT" -eq 4096 ] ||
     fail "SC2 engine-boundary evidence requires --hook-diagnostic-limit 4096"
 }
+if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
+  [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 1 ] ||
+    fail "--hook-memory-profile requires --expect-sc2-engine-boundary"
+  [[ "$HOOK_MEMORY_PROFILE_TICKS" =~ ^[1-9][0-9]*$ ]] ||
+    fail "hook memory profile ticks must be positive"
+  HOOK_MEMORY_PROFILE_TICKS=$((10#$HOOK_MEMORY_PROFILE_TICKS))
+  [ "$HOOK_MEMORY_PROFILE_TICKS" -le 600 ] ||
+    fail "hook memory profile ticks must be at most 600"
+  [ "$HOOK_PROFILE_SAMPLE" -ge $((HOOK_MEMORY_PROFILE_TICKS * 2)) ] ||
+    fail "hook sample must cover at least twice the requested SC2 memory ticks"
+fi
 
 validate_fault_script() {
   local schedule="$1"
@@ -319,6 +344,23 @@ verify_hook_profiles() {
         fail "$peer did not reproduce the SC2 30 Hz engine boundary"
     done
   fi
+  if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
+    for peer in host guest; do
+      log="$evidence/$peer/log.txt"
+      grep -Fq "[sc2-memory-profile] enabled begin_pc=0x8001ba3c return_pc=0x8002d628 page_bytes=4096 target_ticks=${HOOK_MEMORY_PROFILE_TICKS}" "$log" ||
+        fail "$peer did not enable the scoped SC2 memory profile"
+      grep -Eq "^\[sc2-memory-profile\] result ticks=${HOOK_MEMORY_PROFILE_TICKS} ram_bytes=[1-9][0-9]* page_bytes=4096 changed_pages=[1-9][0-9]* changed_bytes_upper_bound=[1-9][0-9]* every_tick_pages=[0-9]+ complete=yes$" "$log" ||
+        fail "$peer did not complete a non-empty SC2 memory profile"
+      grep -Eq '^\[sc2-memory-profile\] region offset=0x[0-9a-f]{8} size=0x[0-9a-f]{8} pages=[1-9][0-9]* changed_ticks=[1-9][0-9]*\.\.[1-9][0-9]*$' "$log" ||
+        fail "$peer SC2 memory profile has no changed region"
+    done
+    local memory_difference
+    if ! memory_difference="$(diff -u \
+        <(grep -E '^\[sc2-memory-profile\] (result|region) ' "$evidence/host/log.txt") \
+        <(grep -E '^\[sc2-memory-profile\] (result|region) ' "$evidence/guest/log.txt"))"; then
+      fail "peer SC2 memory profiles differ: $memory_difference"
+    fi
+  fi
 }
 
 # Asset-free parser/orchestration tests use this path with synthetic logs. It
@@ -434,6 +476,10 @@ if [ "$HOOK_PROFILE" -eq 1 ]; then
     RINGOUT_SC2_HOOK_PROFILE_DIAGNOSTIC_LIMIT="$HOOK_PROFILE_DIAGNOSTIC_LIMIT"
     RINGOUT_SC2_HOOK_PROFILE_ARM_ROUTE="$([ "$HOOK_IDLE_CONTROL" -eq 1 ] && echo idle-control || echo gameplay)")
 fi
+if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_MEMORY_PROFILE=1
+    RINGOUT_SC2_MEMORY_PROFILE_TICKS="$HOOK_MEMORY_PROFILE_TICKS")
+fi
 if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
   run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)
 fi
@@ -471,6 +517,10 @@ fi
     echo "sc2_hook_profile_diagnostic_limit=$HOOK_PROFILE_DIAGNOSTIC_LIMIT"
     echo "sc2_hook_profile_route=$([ "$HOOK_IDLE_CONTROL" -eq 1 ] && echo idle-control || echo gameplay)"
     echo "sc2_engine_boundary=$([ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 1 ] && echo verified-30hz || echo unchecked)"
+    echo "sc2_memory_profile=$([ "$HOOK_MEMORY_PROFILE" -eq 1 ] && echo complete || echo disabled)"
+    if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
+      echo "sc2_memory_profile_ticks=$HOOK_MEMORY_PROFILE_TICKS"
+    fi
   fi
   if [ -n "$DIGEST_MISMATCH_FRAME" ]; then
     echo "expected_digest_mismatch_frame=$DIGEST_MISMATCH_FRAME"

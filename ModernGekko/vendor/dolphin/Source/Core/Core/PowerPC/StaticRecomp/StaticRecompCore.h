@@ -287,6 +287,8 @@ private:
   void SampleGQRs();
   void ReportGQRSurvey() const;
   void ReportFrameDispatchProfile();
+  void ProfileSc2EngineMemory(u32 pc);
+  void ReportSc2EngineMemoryProfile();
   std::map<u32, u64> m_gqr_seen[8];
   u64 m_gqr_samples = 0;
   bool m_gqr_log = false;
@@ -295,6 +297,13 @@ private:
   u64 m_frame_dispatch_diagnostic_limit = 0;
   std::string m_frame_dispatch_profile_arm_file;
   bool m_frame_dispatch_profile_armed = false;
+  bool m_sc2_memory_profile_enabled = false;
+  bool m_sc2_memory_tick_active = false;
+  bool m_sc2_memory_profile_reported = false;
+  u64 m_sc2_memory_profile_target_ticks = 0;
+  u64 m_sc2_memory_profile_ticks = 0;
+  std::vector<u8> m_sc2_memory_before;
+  std::vector<u32> m_sc2_memory_page_changed_ticks;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;
 
