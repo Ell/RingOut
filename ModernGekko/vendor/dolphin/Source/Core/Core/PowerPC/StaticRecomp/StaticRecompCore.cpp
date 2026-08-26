@@ -742,6 +742,224 @@ void StaticRecompCore::ReportSc2EngineExternalProfile()
   m_sc2_engine_external_profile_complete = true;
 }
 
+void StaticRecompCore::ObserveSc2EngineDirectCall(const u32 pc)
+{
+  if (!m_sc2_engine_external_profile_active || m_guest.ram == nullptr || m_guest.ram_size == 0)
+    return;
+
+  constexpr std::size_t PAGE_BYTES = 4096;
+  if (m_sc2_engine_direct_call_active)
+  {
+    if (pc != m_sc2_engine_direct_call_return)
+      return;
+
+    const u64 key = (static_cast<u64>(m_sc2_engine_direct_call_return) << 32) |
+                    m_sc2_engine_direct_call_target;
+    auto& profile = m_sc2_engine_direct_calls[key];
+    ++profile.invocations;
+    profile.external_reads +=
+        m_sc2_engine_external_read_count - m_sc2_engine_direct_call_entry_reads;
+    profile.external_writes +=
+        m_sc2_engine_external_write_count - m_sc2_engine_direct_call_entry_writes;
+    profile.fallback_instructions +=
+        m_hook_fallback_instructions - m_sc2_engine_direct_call_entry_fallbacks;
+    ++m_sc2_engine_direct_call_completed;
+    m_sc2_engine_direct_call_active = false;
+    return;
+  }
+
+  // These are the exact direct branch-and-link edges in the certified USA DOL
+  // function at 0x8001ba3c. Requiring both the target and LR avoids mistaking
+  // ordinary branches for calls after LR has retained an earlier return PC.
+  constexpr std::array<std::pair<u32, u32>, 39> DIRECT_CALLS{{
+      {0x8001f664, 0x8001ba60}, {0x8001f624, 0x8001ba9c}, {0x8002bde0, 0x8001baa8},
+      {0x8001aef0, 0x8001bb64}, {0x8001aa7c, 0x8001bb70}, {0x8001fe10, 0x8001bb80},
+      {0x80020458, 0x8001bb8c}, {0x8001ac90, 0x8001bb94}, {0x800dda30, 0x8001bbec},
+      {0x80011c80, 0x8001bbf8}, {0x801270b8, 0x8001bbfc}, {0x8001aef0, 0x8001bc40},
+      {0x8001aa7c, 0x8001bc4c}, {0x800200a8, 0x8001bc5c}, {0x800200a8, 0x8001bc6c},
+      {0x8001ac90, 0x8001bc74}, {0x8001aa2c, 0x8001bc7c}, {0x8001aa2c, 0x8001bc9c},
+      {0x8012faac, 0x8001bca0}, {0x80065b70, 0x8001bca8}, {0x800095c0, 0x8001bcb0},
+      {0x80020348, 0x8001bcc0}, {0x80020348, 0x8001bcd0}, {0x80020348, 0x8001bcf0},
+      {0x8001b4b8, 0x8001bcf4}, {0x8001aa58, 0x8001bd04}, {0x80016d14, 0x8001bd5c},
+      {0x8002bc50, 0x8001bd68}, {0x8002be14, 0x8001bd74}, {0x80165738, 0x8001bdd4},
+      {0x80011c80, 0x8001bdfc}, {0x8001aef0, 0x8001be74}, {0x8001aef0, 0x8001be9c},
+      {0x8001aa7c, 0x8001bea8}, {0x8001aa2c, 0x8001bec8}, {0x800095c0, 0x8001bed0},
+      {0x8001aa58, 0x8001bee8}, {0x802086e8, 0x8001bf4c}, {0x8000c1f4, 0x8001bf5c},
+  }};
+  if (std::find(DIRECT_CALLS.begin(), DIRECT_CALLS.end(),
+                std::pair{pc, m_guest.lr}) == DIRECT_CALLS.end())
+  {
+    return;
+  }
+
+  m_sc2_engine_direct_call_target = pc;
+  m_sc2_engine_direct_call_return = m_guest.lr;
+  const u64 key = (static_cast<u64>(m_sc2_engine_direct_call_return) << 32) |
+                  m_sc2_engine_direct_call_target;
+  auto& profile = m_sc2_engine_direct_calls[key];
+  if (profile.written_pages.empty())
+    profile.written_pages.assign((m_guest.ram_size + PAGE_BYTES - 1) / PAGE_BYTES, false);
+  m_sc2_engine_direct_call_entry_reads = m_sc2_engine_external_read_count;
+  m_sc2_engine_direct_call_entry_writes = m_sc2_engine_external_write_count;
+  m_sc2_engine_direct_call_entry_fallbacks = m_hook_fallback_instructions;
+  m_sc2_engine_direct_call_active = true;
+}
+
+void StaticRecompCore::Sc2EngineDirectCallWriteTrampoline(const u32 offset, const u32 size,
+                                                           void* const user)
+{
+  auto* const core = static_cast<StaticRecompCore*>(user);
+  if (!core->m_sc2_engine_direct_call_active || size == 0 ||
+      offset >= core->m_guest.ram_size)
+  {
+    return;
+  }
+  constexpr u32 PAGE_BYTES = 4096;
+  const u64 key = (static_cast<u64>(core->m_sc2_engine_direct_call_return) << 32) |
+                  core->m_sc2_engine_direct_call_target;
+  auto& pages = core->m_sc2_engine_direct_calls[key].written_pages;
+  const u32 last_offset = std::min<u32>(core->m_guest.ram_size - 1, offset + size - 1);
+  for (u32 page = offset / PAGE_BYTES; page <= last_offset / PAGE_BYTES; ++page)
+    pages[page] = true;
+
+  if (core->m_sc2_engine_indirect_call_active)
+  {
+    const u64 indirect_key =
+        (static_cast<u64>(core->m_sc2_engine_indirect_call_return) << 32) |
+        core->m_sc2_engine_indirect_call_target;
+    auto& indirect_pages = core->m_sc2_engine_indirect_calls[indirect_key].written_pages;
+    for (u32 page = offset / PAGE_BYTES; page <= last_offset / PAGE_BYTES; ++page)
+      indirect_pages[page] = true;
+  }
+}
+
+void StaticRecompCore::ObserveSc2EngineIndirectCall(const u32 pc)
+{
+  if (!m_sc2_engine_external_profile_active || !m_sc2_engine_direct_call_active ||
+      m_sc2_engine_direct_call_target != 0x800095c0)
+  {
+    return;
+  }
+
+  if (m_sc2_engine_indirect_call_active)
+  {
+    if (pc != m_sc2_engine_indirect_call_return)
+      return;
+    const u64 key = (static_cast<u64>(m_sc2_engine_indirect_call_return) << 32) |
+                    m_sc2_engine_indirect_call_target;
+    auto& profile = m_sc2_engine_indirect_calls[key];
+    ++profile.invocations;
+    profile.external_reads +=
+        m_sc2_engine_external_read_count - m_sc2_engine_indirect_call_entry_reads;
+    profile.external_writes +=
+        m_sc2_engine_external_write_count - m_sc2_engine_indirect_call_entry_writes;
+    profile.fallback_instructions +=
+        m_hook_fallback_instructions - m_sc2_engine_indirect_call_entry_fallbacks;
+    ++m_sc2_engine_indirect_call_completed;
+    m_sc2_engine_indirect_call_active = false;
+    return;
+  }
+
+  constexpr std::array<u32, 7> INDIRECT_RETURNS{
+      0x800097f4, 0x8000981c, 0x8000988c, 0x800098ac,
+      0x800098cc, 0x80009920, 0x80009940,
+  };
+  if (std::find(INDIRECT_RETURNS.begin(), INDIRECT_RETURNS.end(), m_guest.lr) ==
+          INDIRECT_RETURNS.end() ||
+      (pc >= 0x800095c0 && pc < 0x8000a000))
+  {
+    return;
+  }
+  constexpr std::size_t MAX_INDIRECT_SITES = 2048;
+  const u64 key = (static_cast<u64>(m_guest.lr) << 32) | pc;
+  if (!m_sc2_engine_indirect_calls.contains(key) &&
+      m_sc2_engine_indirect_calls.size() >= MAX_INDIRECT_SITES)
+  {
+    m_sc2_engine_indirect_call_overflow = true;
+    return;
+  }
+  auto& profile = m_sc2_engine_indirect_calls[key];
+  if (profile.written_pages.empty())
+  {
+    profile.written_pages.assign((m_guest.ram_size + 4095) / 4096, false);
+  }
+  m_sc2_engine_indirect_call_target = pc;
+  m_sc2_engine_indirect_call_return = m_guest.lr;
+  m_sc2_engine_indirect_call_entry_reads = m_sc2_engine_external_read_count;
+  m_sc2_engine_indirect_call_entry_writes = m_sc2_engine_external_write_count;
+  m_sc2_engine_indirect_call_entry_fallbacks = m_hook_fallback_instructions;
+  m_sc2_engine_indirect_call_active = true;
+}
+
+void StaticRecompCore::ReportSc2EngineDirectCallProfile()
+{
+  if (m_sc2_engine_set_mem_journal)
+    m_sc2_engine_set_mem_journal(nullptr, nullptr);
+  if (StaticRecompLockstep::g_ram_write_journal_user == this)
+  {
+    StaticRecompLockstep::g_ram_write_journal = nullptr;
+    StaticRecompLockstep::g_ram_write_journal_user = nullptr;
+  }
+  if (m_sc2_engine_direct_call_active)
+  {
+    m_sc2_engine_direct_call_overflow = true;
+    m_sc2_engine_direct_call_active = false;
+  }
+  std::fprintf(stderr,
+               "[sc2-engine-calls] result sites=%zu completed=%llu overflow=%s complete=%s\n",
+               m_sc2_engine_direct_calls.size(),
+               static_cast<unsigned long long>(m_sc2_engine_direct_call_completed),
+               m_sc2_engine_direct_call_overflow ? "yes" : "no",
+               m_sc2_engine_direct_call_overflow ? "no" : "yes");
+  for (const auto& [key, profile] : m_sc2_engine_direct_calls)
+  {
+    const std::size_t written_pages =
+        static_cast<std::size_t>(std::count(profile.written_pages.begin(),
+                                           profile.written_pages.end(), true));
+    std::fprintf(stderr,
+                 "[sc2-engine-calls] callsite=0x%08x target=0x%08x invocations=%llu "
+                 "written_pages=%zu external_reads=%llu external_writes=%llu "
+                 "fallback_instructions=%llu\n",
+                 static_cast<u32>(key >> 32) - 4, static_cast<u32>(key),
+                 static_cast<unsigned long long>(profile.invocations), written_pages,
+                 static_cast<unsigned long long>(profile.external_reads),
+                 static_cast<unsigned long long>(profile.external_writes),
+                 static_cast<unsigned long long>(profile.fallback_instructions));
+  }
+  std::fflush(stderr);
+}
+
+void StaticRecompCore::ReportSc2EngineIndirectCallProfile()
+{
+  if (m_sc2_engine_indirect_call_active)
+  {
+    m_sc2_engine_indirect_call_overflow = true;
+    m_sc2_engine_indirect_call_active = false;
+  }
+  std::fprintf(stderr,
+               "[sc2-engine-indirect] result sites=%zu completed=%llu overflow=%s complete=%s\n",
+               m_sc2_engine_indirect_calls.size(),
+               static_cast<unsigned long long>(m_sc2_engine_indirect_call_completed),
+               m_sc2_engine_indirect_call_overflow ? "yes" : "no",
+               m_sc2_engine_indirect_call_overflow ? "no" : "yes");
+  for (const auto& [key, profile] : m_sc2_engine_indirect_calls)
+  {
+    const std::size_t written_pages =
+        static_cast<std::size_t>(std::count(profile.written_pages.begin(),
+                                           profile.written_pages.end(), true));
+    std::fprintf(stderr,
+                 "[sc2-engine-indirect] callsite=0x%08x target=0x%08x invocations=%llu "
+                 "written_pages=%zu external_reads=%llu external_writes=%llu "
+                 "fallback_instructions=%llu\n",
+                 static_cast<u32>(key >> 32) - 4, static_cast<u32>(key),
+                 static_cast<unsigned long long>(profile.invocations), written_pages,
+                 static_cast<unsigned long long>(profile.external_reads),
+                 static_cast<unsigned long long>(profile.external_writes),
+                 static_cast<unsigned long long>(profile.fallback_instructions));
+  }
+  std::fflush(stderr);
+}
+
 void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
 {
   constexpr u32 ENGINE_BEGIN_PC = 0x8001ba3c;
@@ -751,6 +969,9 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
   {
     return;
   }
+
+  ObserveSc2EngineIndirectCall(pc);
+  ObserveSc2EngineDirectCall(pc);
 
   auto& memory = m_system.GetMemory();
   u8* const l1 = memory.GetL1Cache();
@@ -812,6 +1033,28 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
       m_sc2_engine_external_writes.clear();
       m_sc2_engine_external_read_blocks.clear();
       m_sc2_engine_external_write_blocks.clear();
+      m_sc2_engine_direct_calls.clear();
+      m_sc2_engine_direct_call_completed = 0;
+      m_sc2_engine_direct_call_active = false;
+      m_sc2_engine_direct_call_overflow = false;
+      m_sc2_engine_indirect_calls.clear();
+      m_sc2_engine_indirect_call_completed = 0;
+      m_sc2_engine_indirect_call_active = false;
+      m_sc2_engine_indirect_call_overflow = false;
+      m_sc2_engine_set_mem_journal = reinterpret_cast<Sc2EngineSetMemJournalFn>(
+          m_library.GetSymbolAddress("ppc_set_mem_write_journal"));
+      if (!m_sc2_engine_set_mem_journal || m_lockstep_verifier->IsEnabled() || m_watch_armed)
+      {
+        m_sc2_engine_direct_call_overflow = true;
+      }
+      else
+      {
+        m_sc2_engine_set_mem_journal(&StaticRecompCore::Sc2EngineDirectCallWriteTrampoline,
+                                     this);
+        StaticRecompLockstep::g_ram_write_journal =
+            &StaticRecompCore::Sc2EngineDirectCallWriteTrampoline;
+        StaticRecompLockstep::g_ram_write_journal_user = this;
+      }
       m_sc2_engine_external_read_count = 0;
       m_sc2_engine_external_write_count = 0;
       m_sc2_engine_external_entry_fallback_count = m_hook_fallback_instructions;
@@ -834,6 +1077,8 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
     {
       m_sc2_engine_external_profile_active = false;
       ReportSc2EngineExternalProfile();
+      ReportSc2EngineDirectCallProfile();
+      ReportSc2EngineIndirectCallProfile();
       // A load intentionally dirties renderer caches. Comparing the original
       // endpoint with a replayed endpoint would therefore compare a no-load
       // path with a post-load path. Discard this first pass and compare two

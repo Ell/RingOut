@@ -293,6 +293,11 @@ private:
   void ProbeSc2EngineReplay(u32 pc);
   void ObserveSc2EngineExternalAccess(bool write, u32 address, u8 size);
   void ReportSc2EngineExternalProfile();
+  void ObserveSc2EngineDirectCall(u32 pc);
+  void ReportSc2EngineDirectCallProfile();
+  void ObserveSc2EngineIndirectCall(u32 pc);
+  void ReportSc2EngineIndirectCallProfile();
+  static void Sc2EngineDirectCallWriteTrampoline(u32 offset, u32 size, void* user);
   std::map<u32, u64> m_gqr_seen[8];
   u64 m_gqr_samples = 0;
   bool m_gqr_log = false;
@@ -340,6 +345,34 @@ private:
   std::map<u64, u64> m_sc2_engine_external_writes;
   std::map<u64, u64> m_sc2_engine_external_read_blocks;
   std::map<u64, u64> m_sc2_engine_external_write_blocks;
+  struct Sc2EngineDirectCallProfile
+  {
+    u64 invocations = 0;
+    u64 external_reads = 0;
+    u64 external_writes = 0;
+    u64 fallback_instructions = 0;
+    std::vector<bool> written_pages;
+  };
+  std::map<u64, Sc2EngineDirectCallProfile> m_sc2_engine_direct_calls;
+  using Sc2EngineSetMemJournalFn = void (*)(void (*)(u32, u32, void*), void*);
+  Sc2EngineSetMemJournalFn m_sc2_engine_set_mem_journal = nullptr;
+  u32 m_sc2_engine_direct_call_target = 0;
+  u32 m_sc2_engine_direct_call_return = 0;
+  u64 m_sc2_engine_direct_call_entry_reads = 0;
+  u64 m_sc2_engine_direct_call_entry_writes = 0;
+  u64 m_sc2_engine_direct_call_entry_fallbacks = 0;
+  u64 m_sc2_engine_direct_call_completed = 0;
+  bool m_sc2_engine_direct_call_active = false;
+  bool m_sc2_engine_direct_call_overflow = false;
+  std::map<u64, Sc2EngineDirectCallProfile> m_sc2_engine_indirect_calls;
+  u32 m_sc2_engine_indirect_call_target = 0;
+  u32 m_sc2_engine_indirect_call_return = 0;
+  u64 m_sc2_engine_indirect_call_entry_reads = 0;
+  u64 m_sc2_engine_indirect_call_entry_writes = 0;
+  u64 m_sc2_engine_indirect_call_entry_fallbacks = 0;
+  u64 m_sc2_engine_indirect_call_completed = 0;
+  bool m_sc2_engine_indirect_call_active = false;
+  bool m_sc2_engine_indirect_call_overflow = false;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;
 
