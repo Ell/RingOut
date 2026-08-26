@@ -29,6 +29,12 @@ engine-iteration boundary on both peers. State regions and side-effect hooks
 remain uncertified, so live netplay still uses whole-emulator checkpoints. See
 [SC2 game-specific rollback](sc2-slippi-rollback.md).
 
+Follow-up commit `7efcceb3` measures the exact engine function's MEM1 write
+footprint. A 60-tick idle control and 60-tick automated VS route passed on both
+peers with identical per-route regions; their observed union is 52 pages
+(212,992 bytes). This is a short-corpus write lower bound, not a certified
+selective state profile, and it is not selected by live netplay.
+
 The executive verdict below remains the historical result for audited commit
 `ff0ad952`. It must not be read as a description of the current
 `codex/rollback-netplay` worktree. At implementation commit `6518db52` on

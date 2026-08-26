@@ -72,6 +72,14 @@ selective rollback path: memory-region ownership and render/audio/persistence
 suppression remain open. Exact hashes and reproduction commands are in
 `docs/sc2-slippi-rollback.md`.
 
+Commit `7efcceb3` then bounded the first exact-scope memory experiment to the
+entry/return of that function. The idle and VS cohorts produced identical
+host/guest page sets and a 52-page (212,992-byte) observed union. That number is
+not a storage target yet: it omits unexercised state, read-only dependencies,
+locked L1, CPU context, and emulator state. Its value is that it makes the next
+selective replay experiment concrete and falsifiable rather than just assuming
+all 24 MiB of MEM1 belongs to each rollback frame.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values

@@ -4,7 +4,8 @@ Status: active implementation research on `codex/sc2-slippi-rollback`, based on
 GPU-safety commit `d5fd9426`. The discovery, selective-storage, hook-chassis,
 and continuous-sync slice is implementation commit `514f77e6`. Phase-armed
 hook discovery and the first machine-verified SC2 engine boundary are
-implementation commit `7ad94d48`. Both were recorded 2026-08-26. No release is
+implementation commit `7ad94d48`. Exact-scope MEM1 write-footprint discovery is
+implementation commit `7efcceb3`. All were recorded 2026-08-26. No release is
 certified by this document.
 
 ## Outcome and claim boundary
@@ -183,6 +184,76 @@ for continued research. It does **not** yet make selective replay safe: the
 game-owned memory regions, controller-renewal point, render/audio suppression,
 persistence suppression, and corrected-frontier publication still need to be
 derived and tested before this PC can drive live netplay.
+
+### Exact-scope MEM1 write footprint
+
+Commit `7efcceb3` adds an opt-in probe that copies MEM1 at entry to
+`0x8001ba3c` and compares it page-by-page when the function returns at
+`0x8002d628`. It therefore measures writes inside one SC2 engine iteration and
+excludes the `0x8007aef8` work performed between iterations. Nested entries,
+incomplete runs, empty profiles, wrong boundary context, or different host and
+guest region sets fail the harness. Implementation anchors are
+`ModernGekko/vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp:245-254,533-632`,
+`.github/scripts/rollback-live-real-game.sh:338-363`, and
+`.github/scripts/sc2-memory-profile-diff.sh:1-80`.
+
+Two 60-logical-tick, two-peer profiles passed:
+
+| route | changed pages | upper bound | every-tick pages | physical rows |
+| --- | ---: | ---: | ---: | ---: |
+| synchronized idle/menu control | 43 | 176,128 bytes | 20 | 346 |
+| automated VS gameplay | 33 | 135,168 bytes | 28 | 1,451 |
+
+The cohort diff found 24 shared pages, 19 idle-only pages, 9 gameplay-only
+pages, and a 52-page/212,992-byte union. Gameplay-only page offsets were
+`0x002d5000`, `0x0034d000`, `0x003ed000`, `0x00405000`, `0x00406000`,
+`0x00422000`, `0x00736000`, `0x00739000`, and `0x00770000`. These are offsets
+from guest `0x80000000`, not host addresses.
+
+Exact commands were:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-memory-idle-pass \
+  --production --hook-profile --hook-idle-control \
+  --hook-warmup-frames 0 --hook-sample-frames 120 \
+  --hook-diagnostic-limit 4096 --expect-sc2-engine-boundary \
+  --hook-memory-profile --hook-memory-profile-ticks 60 \
+  --play-seconds 24 --port 28855
+
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-memory-gameplay \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 120 --hook-diagnostic-limit 4096 \
+  --expect-sc2-engine-boundary --hook-memory-profile \
+  --hook-memory-profile-ticks 60 --play-seconds 24 --port 28856
+
+.github/scripts/sc2-memory-profile-diff.sh \
+  /tmp/ringout-live-rollback.sc2-memory-idle-pass \
+  /tmp/ringout-live-rollback.sc2-memory-gameplay
+```
+
+The idle `rollback-result.env`, host log, and guest log hash to
+`5458f6c06986b1407f7500d2a203e5792c3c8b68bd44acf31f6f518fbe0dc2fc`,
+`e7b1d63156876cf860d064426e7b078140edeaa999dd7bd2737e072805be4639`,
+and `dac0cbe40ac5718c25c650b6699538abbf7437771d59d7bbb28465135787d8c7`.
+The gameplay equivalents hash to
+`bb3ec718cab34b5811a58acc95a90ee578eb34e0f255a450e9595bcd728ccfa3`,
+`b18b133e556de4d2c7bdb616c8907b56b160e3662f635a6471aeb9fa7a30345e`,
+and `d549bb9189b1f04368b7ff30c3e26ab2c12575522c96093621a71734645643b3`.
+The diff output SHA-256 is
+`67ae89bbad854c3e8debdf5e65894ff9aefa8c24d772d1c69a1f19637fa4cd9f`.
+
+This write union is a **lower bound, not a selective-state whitelist**. It does
+not include state read but not written in these ticks, pages changed by other
+menus/stages/characters/round transitions, locked L1, CPU context, or emulator
+state. The next gate must replay from a deliberately overinclusive candidate
+profile and compare complete corrected MEM1/L1; pages may be removed only after
+long corpus evidence classifies them.
 
 ### Preallocated selective checkpoint ring
 
