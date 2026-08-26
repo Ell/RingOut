@@ -1,8 +1,9 @@
 # Soulcalibur II game-specific rollback program
 
 Status: active implementation research on `codex/sc2-slippi-rollback`, based on
-GPU-safety commit `d5fd9426`, recorded 2026-08-26. No release is certified by
-this document.
+GPU-safety commit `d5fd9426`. The discovery, selective-storage, hook-chassis,
+and continuous-sync slice is implementation commit `514f77e6`, recorded
+2026-08-26. No release is certified by this document.
 
 ## Outcome and claim boundary
 
@@ -179,6 +180,12 @@ ctest --test-dir /tmp/ringout-sc2-rollback-build \
 bash -n .github/scripts/rollback-live-real-game.sh \
   .github/scripts/rollback-continuous-sync.sh
 ```
+
+The complete Linux build passed all 48 registered CTest tests. The same source
+also built the Windows release target (`moderngekko-launcher`, producing
+`RingOut.exe`) with the repository MinGW toolchain and the workflow-equivalent
+release options. These are compile and asset-free regression results; neither
+substitutes for the private-game continuous-sync and renderer-backed gates.
 
 The owned SC2 image previously used by the real-game harness was not available
 in this worktree on 2026-08-26, so no hook candidate, SC2 region size, or live
