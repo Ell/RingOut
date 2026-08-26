@@ -384,9 +384,11 @@ verify_hook_profiles() {
         fail "$peer did not enable the full-emulator SC2 engine replay probe"
       grep -Fq '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' "$log" ||
         fail "$peer did not execute the symmetric SC2 engine replay sequence"
+      grep -Eq '^\[sc2-engine-external\] result reads=[0-9]+ writes=[0-9]+ read_sites=[0-9]+ write_sites=[0-9]+ fallback_instructions=[0-9]+ overflow=no complete=yes$' "$log" ||
+        fail "$peer did not complete the SC2 engine external-effect profile"
       result="$(grep -F '[sc2-engine-replay] full-state-result ' "$log" | tail -1)"
       [ -n "$result" ] || fail "$peer produced no SC2 engine replay result"
-      printf '%s\n' "$result" | grep -Eq 'state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=[0-9]+ endpoint_bytes=[1-9][0-9]* replay_bytes=[1-9][0-9]* differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=[0-9]+ replay_tb=[0-9]+$' ||
+      printf '%s\n' "$result" | grep -Eq 'state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=[0-9]+ external_profile_complete=yes endpoint_bytes=[1-9][0-9]* replay_bytes=[1-9][0-9]* differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=[0-9]+ replay_tb=[0-9]+$' ||
         fail "$peer SC2 engine replay endpoint was not exact"
       local endpoint_bytes replay_bytes endpoint_tb replay_tb
       endpoint_bytes="$(printf '%s\n' "$result" | sed -E 's/.* endpoint_bytes=([0-9]+).*/\1/')"

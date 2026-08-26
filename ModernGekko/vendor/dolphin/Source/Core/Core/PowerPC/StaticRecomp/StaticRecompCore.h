@@ -291,6 +291,8 @@ private:
   void ProfileSc2EngineMemory(u32 pc);
   void ReportSc2EngineMemoryProfile();
   void ProbeSc2EngineReplay(u32 pc);
+  void ObserveSc2EngineExternalAccess(bool write, u32 address, u8 size);
+  void ReportSc2EngineExternalProfile();
   std::map<u32, u64> m_gqr_seen[8];
   u64 m_gqr_samples = 0;
   bool m_gqr_log = false;
@@ -328,6 +330,14 @@ private:
   std::size_t m_sc2_engine_replay_input_polls = 0;
   bool m_sc2_engine_replay_input_capture_valid = false;
   bool m_sc2_engine_replay_reference_input_valid = false;
+  bool m_sc2_engine_external_profile_active = false;
+  bool m_sc2_engine_external_profile_complete = false;
+  bool m_sc2_engine_external_profile_overflow = false;
+  u64 m_sc2_engine_external_read_count = 0;
+  u64 m_sc2_engine_external_write_count = 0;
+  u64 m_sc2_engine_external_entry_fallback_count = 0;
+  std::map<u64, u64> m_sc2_engine_external_reads;
+  std::map<u64, u64> m_sc2_engine_external_writes;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;
 

@@ -648,6 +648,68 @@ void StaticRecompCore::ReportSc2EngineMemoryProfile()
   m_sc2_memory_profile_reported = true;
 }
 
+void StaticRecompCore::ObserveSc2EngineExternalAccess(const bool write, const u32 address,
+                                                       const u8 size)
+{
+  if (!m_sc2_engine_external_profile_active)
+    return;
+
+  constexpr std::size_t MAX_SITES = 256;
+  auto& sites = write ? m_sc2_engine_external_writes : m_sc2_engine_external_reads;
+  u64& total = write ? m_sc2_engine_external_write_count : m_sc2_engine_external_read_count;
+  ++total;
+  const u64 key = (static_cast<u64>(address) << 8) | size;
+  const auto existing = sites.find(key);
+  if (existing != sites.end())
+  {
+    ++existing->second;
+  }
+  else if (sites.size() < MAX_SITES)
+  {
+    sites.emplace(key, 1);
+  }
+  else
+  {
+    m_sc2_engine_external_profile_overflow = true;
+  }
+}
+
+void StaticRecompCore::ReportSc2EngineExternalProfile()
+{
+  if (m_sc2_engine_external_profile_complete)
+    return;
+
+  const u64 fallback_delta =
+      m_hook_fallback_instructions - m_sc2_engine_external_entry_fallback_count;
+  std::fprintf(stderr,
+               "[sc2-engine-external] result reads=%llu writes=%llu read_sites=%zu "
+               "write_sites=%zu fallback_instructions=%llu overflow=%s complete=%s\n",
+               static_cast<unsigned long long>(m_sc2_engine_external_read_count),
+               static_cast<unsigned long long>(m_sc2_engine_external_write_count),
+               m_sc2_engine_external_reads.size(), m_sc2_engine_external_writes.size(),
+               static_cast<unsigned long long>(fallback_delta),
+               m_sc2_engine_external_profile_overflow ? "yes" : "no",
+               m_sc2_engine_external_profile_overflow ? "no" : "yes");
+  const auto report_sites = [](const char* const kind, const std::map<u64, u64>& sites) {
+    for (const auto& [key, count] : sites)
+    {
+      const u32 address = static_cast<u32>(key >> 8);
+      const u8 size = static_cast<u8>(key);
+      const char* category =
+          (address & 0xfffff000u) == 0xcc008000u ? "gather-pipe" :
+          (address & 0xffff0000u) == 0xcc000000u ? "mmio" :
+          (address & 0xff000000u) == 0xe0000000u ? "locked-cache" : "translated-mmu";
+      std::fprintf(stderr,
+                   "[sc2-engine-external] %s address=0x%08x size=%u count=%llu category=%s\n",
+                   kind, address, size, static_cast<unsigned long long>(count), category);
+    }
+  };
+  report_sites("read", m_sc2_engine_external_reads);
+  report_sites("write", m_sc2_engine_external_writes);
+  std::fflush(stderr);
+  m_sc2_engine_external_profile_complete = true;
+}
+
 void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
 {
   constexpr u32 ENGINE_BEGIN_PC = 0x8001ba3c;
@@ -712,7 +774,16 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
     }
     m_sc2_engine_replay_have_entry = true;
     if (m_sc2_engine_replay_full_emulator)
+    {
       NetPlay::BeginSc2EngineInputCapture();
+      m_sc2_engine_external_reads.clear();
+      m_sc2_engine_external_writes.clear();
+      m_sc2_engine_external_read_count = 0;
+      m_sc2_engine_external_write_count = 0;
+      m_sc2_engine_external_entry_fallback_count = m_hook_fallback_instructions;
+      m_sc2_engine_external_profile_overflow = false;
+      m_sc2_engine_external_profile_active = true;
+    }
     std::fprintf(stderr,
                  "[sc2-engine-replay] captured ram_bytes=%u l1_bytes=%zu state_bytes=%zu "
                  "lr=0x%08x\n",
@@ -727,6 +798,8 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
   {
     if (m_sc2_engine_replay_full_emulator)
     {
+      m_sc2_engine_external_profile_active = false;
+      ReportSc2EngineExternalProfile();
       // A load intentionally dirties renderer caches. Comparing the original
       // endpoint with a replayed endpoint would therefore compare a no-load
       // path with a post-load path. Discard this first pass and compare two
@@ -842,13 +915,18 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
     std::fprintf(stderr,
                  "[sc2-engine-replay] full-state-result state_match=%s cpu_match=%s "
                  "tb_remainder_match=%s input_replay_match=%s input_polls=%zu "
+                 "external_profile_complete=%s "
                  "endpoint_bytes=%zu replay_bytes=%zu "
                  "differing_state_bytes=%zu first_state_difference=0x%08zx "
                  "last_state_difference=0x%08zx endpoint_value=0x%02x replay_value=0x%02x "
                  "endpoint_tb=%llu replay_tb=%llu\n",
                  state_match ? "yes" : "no", cpu_match ? "yes" : "no",
                  tb_remainder_match ? "yes" : "no", verification_input_valid ? "yes" : "no",
-                 m_sc2_engine_replay_input_polls, m_sc2_engine_replay_endpoint_state_size,
+                 m_sc2_engine_replay_input_polls,
+                 m_sc2_engine_external_profile_complete &&
+                         !m_sc2_engine_external_profile_overflow ?
+                     "yes" : "no",
+                 m_sc2_engine_replay_endpoint_state_size,
                  replayed_state_size, differing_state_bytes, state_match ? 0 : state_difference,
                  state_match ? 0 : last_state_difference,
                  state_match || state_difference >= endpoint_state.size() ?
