@@ -13,6 +13,7 @@
 #include "Common/Config/Config.h"
 #include "Common/DynamicLibrary.h"
 #include "Common/FileUtil.h"
+#include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 #include "Common/Timer.h"
 #include "Core/Core.h"
@@ -41,6 +42,19 @@
 #endif
 
 StaticRecompCore* g_static_recomp_core = nullptr;
+
+struct StaticRecompCore::Sc2TransactionReplayContract
+{
+  u64 transaction_id = 0;
+  CPUState entry_guest{};
+  u64 entry_tb_remainder = 0;
+  std::vector<NetPlay::Sc2EngineInputPoll> input_polls;
+  std::vector<Sc2UpdateExternalEffect> external_effects;
+  std::map<u64, std::vector<std::pair<u32, u8>>> handler_post_ram;
+  std::map<u64, CPUState> handler_post_guest;
+  std::map<u64, u64> handler_post_tb_remainder;
+  std::map<u64, std::pair<std::size_t, std::size_t>> handler_effect_ranges;
+};
 
 bool StaticRecompCoveredAt(u32 pc)
 {
@@ -312,16 +326,29 @@ void StaticRecompCore::Init()
     }
   }
 
-  if (const char* const transaction_history =
-          std::getenv("RINGOUT_SC2_TRANSACTION_HISTORY_PROBE");
-      transaction_history != nullptr &&
-      std::strcmp(transaction_history, "HEADLESS_ISOLATED") == 0 &&
+  const char* const transaction_history =
+      std::getenv("RINGOUT_SC2_TRANSACTION_HISTORY_PROBE");
+  const char* const transaction_replay =
+      std::getenv("RINGOUT_SC2_TRANSACTION_REPLAY_PROBE");
+  if (((transaction_history != nullptr &&
+        std::strcmp(transaction_history, "HEADLESS_ISOLATED") == 0) ||
+       (transaction_replay != nullptr &&
+        std::strcmp(transaction_replay, "HEADLESS_ISOLATED") == 0)) &&
       !m_sc2_engine_replay_probe_enabled)
   {
     m_sc2_transaction_history_enabled = true;
+    m_sc2_transaction_replay_probe_enabled =
+        transaction_replay != nullptr &&
+        std::strcmp(transaction_replay, "HEADLESS_ISOLATED") == 0;
     std::fprintf(stderr,
                  "[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 "
                  "begin_pc=0x80011c80 end_pc=0x8001bcb0\n");
+    if (m_sc2_transaction_replay_probe_enabled)
+    {
+      std::fprintf(stderr,
+                   "[sc2-transaction-replay] enabled transactions=3 passes=2 "
+                   "corrected_input=remote-a\n");
+    }
   }
 
   // The "interpreter fallback" is really Dolphin's JIT whenever one exists, so
@@ -555,7 +582,417 @@ void StaticRecompCore::Sc2RollbackTransactionWriteTrampoline(const u32 offset, c
           offset, size, std::span<const u8>{core->m_guest.ram, core->m_guest.ram_size}))
   {
     core->m_sc2_transaction_history_faulted = true;
+    return;
   }
+  if (core->m_sc2_transaction_replay_active)
+    return;
+  Sc2EngineDirectCallWriteTrampoline(offset, size, user);
+}
+
+void StaticRecompCore::InjectSc2TransactionReplayInput(const u32 pc)
+{
+  if (!m_sc2_engine_replay_input_update_span || !m_sc2_engine_speculative_active ||
+      pc != 0x80183708 || m_guest.lr != 0x801bfa80 || m_guest.gpr[29] >= 4)
+  {
+    return;
+  }
+
+  const int pad = static_cast<int>(m_guest.gpr[29]);
+  GCPadStatus status{};
+  bool resolved = false;
+  if (!NetPlay::ConsumeSc2EngineInputReplay(pad, true, &status, &resolved))
+  {
+    m_sc2_update_external_valid = false;
+    std::fprintf(stderr, "[sc2-input-inject] missing replay poll pad=%d\n", pad);
+    return;
+  }
+  if (!resolved)
+    return;
+
+  u32 hi = 0;
+  u32 low = 0;
+  if (!m_system.GetSerialInterface().EncodeGCControllerPadStatus(pad, status, &hi, &low))
+  {
+    m_sc2_update_external_valid = false;
+    std::fprintf(stderr, "[sc2-input-inject] unsupported device pad=%d\n", pad);
+    return;
+  }
+  const u32 address = m_guest.gpr[30];
+  const u32 offset = address - 0x80000000u;
+  if (m_sc2_transaction_replay_active &&
+      (address < 0x80000000u || offset > m_guest.ram_size || 8 > m_guest.ram_size - offset ||
+       !m_sc2_transaction_store->RecordWrite(
+           offset, 8, std::span<const u8>{m_guest.ram, m_guest.ram_size})))
+  {
+    m_sc2_update_external_valid = false;
+    std::fprintf(stderr, "[sc2-input-inject] failed to journal replay slot pad=%d\n", pad);
+    return;
+  }
+  GuestWrite32(address, hi);
+  GuestWrite32(address + 4, low);
+  std::fprintf(stderr,
+               "[sc2-input-inject] pad=%d hi=0x%08x low=0x%08x corrected=%s\n", pad, hi,
+               low,
+               (m_sc2_engine_replay_corrected_input || m_sc2_transaction_replay_active) ?
+                   "yes" :
+                   "no");
+}
+
+bool StaticRecompCore::StartSc2TransactionReplayStep(const u64 transaction_id,
+                                                      const CPUState& entry_guest,
+                                                      const u64 entry_tb_remainder)
+{
+  if (transaction_id < m_sc2_transaction_replay_first ||
+      transaction_id > m_sc2_transaction_replay_through)
+  {
+    return false;
+  }
+  const std::size_t index =
+      static_cast<std::size_t>(transaction_id - m_sc2_transaction_replay_first);
+  if (index >= m_sc2_transaction_replay_contracts.size() ||
+      !m_sc2_transaction_replay_contracts[index])
+  {
+    return false;
+  }
+  const Sc2TransactionReplayContract& contract =
+      *m_sc2_transaction_replay_contracts[index];
+  if (contract.transaction_id != transaction_id || contract.input_polls.empty() ||
+      !NetPlay::BeginSc2EngineInputReplayFrom(
+          contract.input_polls, transaction_id == m_sc2_transaction_replay_first))
+  {
+    return false;
+  }
+
+  m_sc2_update_external_effects = contract.external_effects;
+  m_sc2_update_handler_post_ram = contract.handler_post_ram;
+  m_sc2_update_handler_post_guest = contract.handler_post_guest;
+  m_sc2_update_handler_post_tb_remainder = contract.handler_post_tb_remainder;
+  m_sc2_update_handler_effect_ranges = contract.handler_effect_ranges;
+  m_sc2_update_external_replay_index = 0;
+  m_sc2_update_external_keyed_replay = true;
+  m_sc2_update_external_replay_used.assign(contract.external_effects.size(), false);
+  m_sc2_update_external_replay_reserved.assign(contract.external_effects.size(), false);
+  for (const auto& [key, range] : contract.handler_effect_ranges)
+  {
+    static_cast<void>(key);
+    const auto [begin, end] = range;
+    if (begin > end || end > m_sc2_update_external_replay_reserved.size())
+      return false;
+    std::fill(m_sc2_update_external_replay_reserved.begin() + begin,
+              m_sc2_update_external_replay_reserved.begin() + end, true);
+  }
+  m_sc2_update_external_valid = true;
+  m_sc2_update_external_capture = false;
+  m_sc2_update_external_replay = true;
+  m_sc2_engine_external_profile_active = false;
+  m_sc2_engine_replay_input_update_span = true;
+  m_sc2_engine_speculative_active = true;
+  m_sc2_transaction_replay_active = true;
+  m_sc2_transaction_history_active = true;
+  m_sc2_transaction_replay_current = transaction_id;
+
+  u8* const ram = m_guest.ram;
+  const u32 ram_size = m_guest.ram_size;
+  u8* const mem2 = m_guest.mem2;
+  const u32 mem2_size = m_guest.mem2_size;
+  m_guest = entry_guest;
+  m_guest.ram = ram;
+  m_guest.ram_size = ram_size;
+  m_guest.mem2 = mem2;
+  m_guest.mem2_size = mem2_size;
+  m_tb_cycle_remainder = entry_tb_remainder;
+  m_sc2_engine_set_mem_journal(&StaticRecompCore::Sc2RollbackTransactionWriteTrampoline, this);
+  std::fprintf(stderr,
+               "[sc2-transaction-replay] pass=%u transaction=%llu polls=%zu effects=%zu "
+               "handlers=%zu begin\n",
+               m_sc2_transaction_replay_pass,
+               static_cast<unsigned long long>(transaction_id), contract.input_polls.size(),
+               contract.external_effects.size(), contract.handler_post_ram.size());
+  return true;
+}
+
+bool StaticRecompCore::StartSc2TransactionReplayPass()
+{
+  if (!m_sc2_transaction_store || m_sc2_transaction_replay_contracts.empty())
+    return false;
+  const Sc2TransactionReplayContract& first = *m_sc2_transaction_replay_contracts.front();
+  const Sc2TransactionReplayContract& last = *m_sc2_transaction_replay_contracts.back();
+  const auto first_batch = std::find_if(first.input_polls.begin(), first.input_polls.end(),
+                                        [](const auto& poll) { return poll.batch_id.has_value(); });
+  const auto last_batch = std::find_if(last.input_polls.rbegin(), last.input_polls.rend(),
+                                       [](const auto& poll) { return poll.batch_id.has_value(); });
+  if (first_batch == first.input_polls.end() || last_batch == last.input_polls.rend())
+    return false;
+  const auto plan =
+      m_sc2_transaction_store->PlanCorrection(*first_batch->batch_id, *last_batch->batch_id);
+  std::vector<u8> auxiliary(sizeof(CPUState) + sizeof(u64));
+  if (!m_sc2_transaction_store->Restore(
+          plan, std::span<u8>{m_guest.ram, m_guest.ram_size}, auxiliary))
+  {
+    return false;
+  }
+  CPUState entry_guest{};
+  u64 entry_tb_remainder = 0;
+  std::memcpy(&entry_guest, auxiliary.data(), sizeof(CPUState));
+  std::memcpy(&entry_tb_remainder, auxiliary.data() + sizeof(CPUState), sizeof(u64));
+  ++m_sc2_transaction_replay_pass;
+  return StartSc2TransactionReplayStep(m_sc2_transaction_replay_first, entry_guest,
+                                       entry_tb_remainder);
+}
+
+bool StaticRecompCore::TryStartSc2TransactionReplayProbe()
+{
+  if (!m_sc2_transaction_replay_probe_enabled || m_sc2_transaction_replay_probe_attempted ||
+      !m_sc2_transaction_store)
+  {
+    return false;
+  }
+  const std::optional<u64> latest =
+      m_sc2_transaction_store->GetTimeline().GetLatestCompletedTransaction();
+  if (!latest || *latest < 3)
+    return false;
+  const u64 first = *latest - 2;
+  std::vector<std::unique_ptr<Sc2TransactionReplayContract>> contracts;
+  contracts.reserve(3);
+  for (u64 id = first; id <= *latest; ++id)
+  {
+    const auto* const transaction = m_sc2_transaction_store->GetTimeline().Find(id);
+    const auto& source = m_sc2_transaction_contracts[id % m_sc2_transaction_contracts.size()];
+    if (!transaction || transaction->consumed_batches.empty() || !source ||
+        source->transaction_id != id || source->input_polls.empty() ||
+        !std::ranges::any_of(source->input_polls, [](const auto& poll) {
+          return poll.pad_num == 1 && poll.result;
+        }))
+    {
+      return false;
+    }
+    contracts.push_back(std::make_unique<Sc2TransactionReplayContract>(*source));
+  }
+
+  m_sc2_transaction_replay_probe_attempted = true;
+  m_sc2_transaction_replay_first = first;
+  m_sc2_transaction_replay_through = *latest;
+  m_sc2_transaction_replay_frontier = m_sc2_transaction_id;
+  m_sc2_transaction_replay_contracts = std::move(contracts);
+  m_sc2_transaction_replay_fifo_was_running =
+      Core::GetState(m_system) == Core::State::Running;
+  m_system.GetFifo().PauseAndLock();
+  m_sc2_transaction_replay_fifo_locked = true;
+  SyncOut();
+  {
+    const State::ScopedRollbackSnapshot rollback_snapshot_scope;
+    m_sc2_transaction_replay_canonical_state_size =
+        State::SaveToBuffer(m_system, m_sc2_transaction_replay_canonical_state);
+  }
+  if (m_sc2_transaction_replay_canonical_state_size == 0)
+  {
+    AbortSc2TransactionReplay("canonical-state-capture");
+    return false;
+  }
+  m_sc2_transaction_replay_canonical_ram.assign(m_guest.ram,
+                                                 m_guest.ram + m_guest.ram_size);
+  m_sc2_transaction_replay_canonical_guest = m_guest;
+  m_sc2_transaction_replay_canonical_tb_remainder = m_tb_cycle_remainder;
+  m_sc2_transaction_replay_pass = 0;
+  m_sc2_transaction_replay_perturbed_polls = 0;
+  if (!StartSc2TransactionReplayPass())
+  {
+    AbortSc2TransactionReplay("first-pass-start");
+    return false;
+  }
+  return true;
+}
+
+void StaticRecompCore::AbortSc2TransactionReplay(const char* const reason)
+{
+  if (m_sc2_engine_set_mem_journal)
+    m_sc2_engine_set_mem_journal(nullptr, nullptr);
+  NetPlay::EndSc2EngineInputReplay();
+  bool state_restored = true;
+  if (m_sc2_transaction_replay_canonical_state_size != 0)
+  {
+    const State::ScopedRollbackSnapshot rollback_snapshot_scope;
+    state_restored = State::LoadFromBuffer(
+        m_system,
+        std::span<u8>{m_sc2_transaction_replay_canonical_state.data(),
+                      m_sc2_transaction_replay_canonical_state_size});
+  }
+  if (m_guest.ram != nullptr &&
+      m_sc2_transaction_replay_canonical_ram.size() == m_guest.ram_size)
+  {
+    std::memcpy(m_guest.ram, m_sc2_transaction_replay_canonical_ram.data(), m_guest.ram_size);
+    u8* const ram = m_guest.ram;
+    const u32 ram_size = m_guest.ram_size;
+    u8* const mem2 = m_guest.mem2;
+    const u32 mem2_size = m_guest.mem2_size;
+    m_guest = m_sc2_transaction_replay_canonical_guest;
+    m_guest.ram = ram;
+    m_guest.ram_size = ram_size;
+    m_guest.mem2 = mem2;
+    m_guest.mem2_size = mem2_size;
+    m_tb_cycle_remainder = m_sc2_transaction_replay_canonical_tb_remainder;
+  }
+  if (m_sc2_transaction_replay_fifo_locked)
+  {
+    m_system.GetFifo().RestoreState(m_sc2_transaction_replay_fifo_was_running);
+    m_sc2_transaction_replay_fifo_locked = false;
+  }
+  m_sc2_transaction_replay_active = false;
+  m_sc2_engine_speculative_active = false;
+  m_sc2_update_external_replay = false;
+  m_sc2_update_external_keyed_replay = false;
+  m_sc2_transaction_history_active = false;
+  m_sc2_transaction_history_enabled = false;
+  std::fprintf(stderr,
+               "[sc2-transaction-replay] stopped reason=%s canonical_state_bytes=%zu "
+               "state_restored=%s\n",
+               reason, m_sc2_transaction_replay_canonical_state_size,
+               state_restored ? "yes" : "no");
+}
+
+void StaticRecompCore::FinishSc2TransactionReplayStep()
+{
+  m_sc2_engine_set_mem_journal(nullptr, nullptr);
+  std::size_t perturbed_polls = 0;
+  bool valid = NetPlay::FinishSc2EngineInputReplay(&perturbed_polls) &&
+               m_sc2_update_external_valid;
+  m_sc2_transaction_replay_perturbed_polls += perturbed_polls;
+
+  const std::size_t index = static_cast<std::size_t>(
+      m_sc2_transaction_replay_current - m_sc2_transaction_replay_first);
+  const Sc2TransactionReplayContract& contract =
+      *m_sc2_transaction_replay_contracts[index];
+  std::optional<u64> last_batch;
+  for (const auto& poll : contract.input_polls)
+  {
+    if (poll.batch_id && poll.batch_id != last_batch)
+    {
+      valid = m_sc2_transaction_store->RecordConsumedBatch(*poll.batch_id) && valid;
+      last_batch = poll.batch_id;
+    }
+  }
+  valid = m_sc2_transaction_store->CompleteTransaction(m_sc2_video_frame) && valid;
+  m_sc2_transaction_history_active = false;
+  m_sc2_update_external_replay = false;
+  m_sc2_update_external_keyed_replay = false;
+  std::fprintf(stderr,
+               "[sc2-transaction-replay] pass=%u transaction=%llu perturbed_polls=%zu "
+               "effects=%zu/%zu result=%s\n",
+               m_sc2_transaction_replay_pass,
+               static_cast<unsigned long long>(m_sc2_transaction_replay_current),
+               perturbed_polls, m_sc2_update_external_replay_index,
+               m_sc2_update_external_effects.size(), valid ? "ok" : "failed");
+  if (!valid)
+  {
+    std::fprintf(stderr, "[sc2-transaction-replay] result=failed reason=contract\n");
+    AbortSc2TransactionReplay("contract");
+    return;
+  }
+
+  if (m_sc2_transaction_replay_current < m_sc2_transaction_replay_through)
+  {
+    const u64 next = m_sc2_transaction_replay_current + 1;
+    const Sc2TransactionReplayContract& next_contract =
+        *m_sc2_transaction_replay_contracts[static_cast<std::size_t>(
+            next - m_sc2_transaction_replay_first)];
+    std::vector<u8> auxiliary(sizeof(CPUState) + sizeof(u64));
+    std::memcpy(auxiliary.data(), &next_contract.entry_guest, sizeof(CPUState));
+    std::memcpy(auxiliary.data() + sizeof(CPUState), &next_contract.entry_tb_remainder,
+                sizeof(u64));
+    if (!m_sc2_transaction_store->BeginTransaction(
+            next, m_sc2_video_frame, std::span<const u8>{m_guest.ram, m_guest.ram_size},
+            auxiliary) ||
+        !StartSc2TransactionReplayStep(next, next_contract.entry_guest,
+                                       next_contract.entry_tb_remainder))
+    {
+      std::fprintf(stderr,
+                   "[sc2-transaction-replay] result=failed reason=next-transaction\n");
+      AbortSc2TransactionReplay("next-transaction");
+    }
+    return;
+  }
+
+  if (m_sc2_transaction_replay_pass == 1)
+  {
+    m_sc2_transaction_replay_reference_ram.assign(m_guest.ram,
+                                                   m_guest.ram + m_guest.ram_size);
+    m_sc2_transaction_replay_reference_guest = m_guest;
+    m_sc2_transaction_replay_reference_tb_remainder = m_tb_cycle_remainder;
+    std::vector<bool> owned(m_guest.ram_size, false);
+    m_sc2_transaction_replay_owned_offsets.clear();
+    for (u64 id = m_sc2_transaction_replay_first;
+         id <= m_sc2_transaction_replay_through; ++id)
+    {
+      for (const u32 offset : m_sc2_transaction_store->GetUndoRing().GetWriteOffsets(id))
+      {
+        if (!owned[offset])
+        {
+          owned[offset] = true;
+          m_sc2_transaction_replay_owned_offsets.push_back(offset);
+        }
+      }
+    }
+    std::ranges::sort(m_sc2_transaction_replay_owned_offsets);
+    std::size_t corrected_bytes = 0;
+    std::vector<u8> owned_digest_bytes;
+    owned_digest_bytes.reserve(m_sc2_transaction_replay_owned_offsets.size() * 5);
+    for (const u32 offset : m_sc2_transaction_replay_owned_offsets)
+    {
+      owned_digest_bytes.push_back(static_cast<u8>(offset >> 24));
+      owned_digest_bytes.push_back(static_cast<u8>(offset >> 16));
+      owned_digest_bytes.push_back(static_cast<u8>(offset >> 8));
+      owned_digest_bytes.push_back(static_cast<u8>(offset));
+      owned_digest_bytes.push_back(m_sc2_transaction_replay_reference_ram[offset]);
+      if (m_sc2_transaction_replay_reference_ram[offset] !=
+          m_sc2_transaction_replay_canonical_ram[offset])
+      {
+        ++corrected_bytes;
+      }
+    }
+    const u32 owned_crc32 =
+        Common::ComputeCRC32(owned_digest_bytes.data(), owned_digest_bytes.size());
+    std::fprintf(stderr,
+                 "[sc2-transaction-replay] corrected-reference transactions=3 "
+                 "owned_bytes=%zu corrected_bytes=%zu owned_crc32=%08x perturbed_polls=%zu\n",
+                 m_sc2_transaction_replay_owned_offsets.size(), corrected_bytes,
+                 owned_crc32, m_sc2_transaction_replay_perturbed_polls);
+    if (corrected_bytes == 0 || !StartSc2TransactionReplayPass())
+    {
+      std::fprintf(stderr,
+                   "[sc2-transaction-replay] result=failed reason=reference-or-second-pass\n");
+      AbortSc2TransactionReplay("reference-or-second-pass");
+    }
+    return;
+  }
+
+  std::size_t differing_bytes = 0;
+  for (std::size_t offset = 0; offset < m_sc2_transaction_replay_reference_ram.size(); ++offset)
+  {
+    if (m_sc2_transaction_replay_reference_ram[offset] != m_guest.ram[offset])
+      ++differing_bytes;
+  }
+  std::size_t owned_differing_bytes = 0;
+  for (const u32 offset : m_sc2_transaction_replay_owned_offsets)
+  {
+    if (m_sc2_transaction_replay_reference_ram[offset] != m_guest.ram[offset])
+      ++owned_differing_bytes;
+  }
+  const bool cpu_match =
+      std::memcmp(&m_sc2_transaction_replay_reference_guest, &m_guest, sizeof(CPUState)) == 0;
+  const bool tb_match =
+      m_sc2_transaction_replay_reference_tb_remainder == m_tb_cycle_remainder;
+  const bool exact = owned_differing_bytes == 0 && cpu_match && tb_match &&
+                     m_sc2_transaction_replay_perturbed_polls >= 2;
+  std::fprintf(stderr,
+               "[sc2-transaction-replay] result=%s transactions=3 passes=2 "
+               "game_ram_match=%s cpu_match=%s tb_remainder_match=%s owned_bytes=%zu "
+               "owned_differing_bytes=%zu external_differing_bytes=%zu perturbed_polls=%zu\n",
+               exact ? "ok" : "failed", owned_differing_bytes == 0 ? "yes" : "no",
+               cpu_match ? "yes" : "no", tb_match ? "yes" : "no",
+               m_sc2_transaction_replay_owned_offsets.size(), owned_differing_bytes,
+               differing_bytes - owned_differing_bytes,
+               m_sc2_transaction_replay_perturbed_polls);
+  AbortSc2TransactionReplay(exact ? "complete" : "verification");
 }
 
 void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
@@ -574,6 +1011,8 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
       m_sc2_transaction_history_active = false;
     }
     m_sc2_transaction_store.reset();
+    for (auto& contract : m_sc2_transaction_contracts)
+      contract.reset();
     m_sc2_transaction_id = 1;
     if (m_sc2_transaction_epoch != std::numeric_limits<u64>::max())
       ++m_sc2_transaction_epoch;
@@ -587,8 +1026,24 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
   constexpr u32 BEGIN_PC = 0x80011c80;
   constexpr u32 BEGIN_LR = 0x8001bbf8;
   constexpr u32 END_PC = 0x8001bcb0;
+  if (m_sc2_transaction_replay_active)
+  {
+    InjectSc2TransactionReplayInput(pc);
+    if (ReplaySc2UpdateSystemHandler(pc))
+      return;
+    if (pc == END_PC)
+      FinishSc2TransactionReplayStep();
+    return;
+  }
+  if (m_sc2_transaction_history_active)
+  {
+    ObserveSc2EngineIndirectCall(pc);
+    ObserveSc2EngineDirectCall(pc);
+  }
   if (pc == BEGIN_PC && m_guest.lr == BEGIN_LR)
   {
+    if (TryStartSc2TransactionReplayProbe())
+      return;
     if (m_sc2_transaction_history_active || m_lockstep_verifier->IsEnabled() || m_watch_armed)
     {
       m_sc2_transaction_history_faulted = true;
@@ -600,6 +1055,7 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
       constexpr std::size_t MAX_UNIQUE_BYTES = 1024 * 1024;
       m_sc2_transaction_store = std::make_unique<NetPlay::Sc2RollbackTransactionStore>(
           m_guest.ram_size, CAPACITY, MAX_UNIQUE_BYTES, sizeof(CPUState) + sizeof(u64));
+      m_sc2_transaction_contracts.resize(CAPACITY);
       m_sc2_engine_set_mem_journal = reinterpret_cast<Sc2EngineSetMemJournalFn>(
           m_library.GetSymbolAddress("ppc_set_mem_write_journal"));
       if (m_sc2_transaction_store->GetConfigurationStatus() !=
@@ -611,6 +1067,44 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
       }
     }
 
+    m_sc2_update_external_effects.clear();
+    m_sc2_update_original_write_blocks.clear();
+    m_sc2_update_original_last_writer.clear();
+    m_sc2_update_handler_post_ram.clear();
+    m_sc2_update_handler_post_guest.clear();
+    m_sc2_update_handler_post_tb_remainder.clear();
+    m_sc2_update_handler_effect_ranges.clear();
+    m_sc2_update_external_replay_index = 0;
+    m_sc2_update_external_valid = true;
+    m_sc2_update_external_capture = true;
+    m_sc2_update_external_replay = false;
+    m_sc2_engine_replay_input_update_span = true;
+    m_sc2_engine_external_read_count = 0;
+    m_sc2_engine_external_write_count = 0;
+    m_sc2_engine_external_reads.clear();
+    m_sc2_engine_external_writes.clear();
+    m_sc2_engine_external_read_blocks.clear();
+    m_sc2_engine_external_write_blocks.clear();
+    m_sc2_engine_external_entry_fallback_count = m_hook_fallback_instructions;
+    m_sc2_engine_external_profile_overflow = false;
+    m_sc2_engine_external_profile_complete = false;
+    m_sc2_engine_external_profile_active = true;
+    m_sc2_engine_direct_calls.clear();
+    m_sc2_engine_direct_call_target = BEGIN_PC;
+    m_sc2_engine_direct_call_return = END_PC;
+    m_sc2_engine_direct_call_entry_reads = 0;
+    m_sc2_engine_direct_call_entry_writes = 0;
+    m_sc2_engine_direct_call_entry_fallbacks = m_hook_fallback_instructions;
+    m_sc2_engine_direct_call_completed = 0;
+    m_sc2_engine_direct_call_overflow = false;
+    m_sc2_engine_direct_call_active = true;
+    static_cast<void>(
+        m_sc2_engine_direct_calls[(static_cast<u64>(END_PC) << 32) | BEGIN_PC]);
+    m_sc2_engine_indirect_calls.clear();
+    m_sc2_engine_indirect_call_completed = 0;
+    m_sc2_engine_indirect_call_active = false;
+    m_sc2_engine_indirect_call_overflow = false;
+
     std::vector<u8> auxiliary(sizeof(CPUState) + sizeof(u64));
     std::memcpy(auxiliary.data(), &m_guest, sizeof(CPUState));
     std::memcpy(auxiliary.data() + sizeof(CPUState), &m_tb_cycle_remainder, sizeof(u64));
@@ -621,6 +1115,12 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
       m_sc2_transaction_history_faulted = true;
       return;
     }
+    auto contract = std::make_unique<Sc2TransactionReplayContract>();
+    contract->transaction_id = m_sc2_transaction_id;
+    contract->entry_guest = m_guest;
+    contract->entry_tb_remainder = m_tb_cycle_remainder;
+    m_sc2_transaction_contracts[m_sc2_transaction_id % m_sc2_transaction_contracts.size()] =
+        std::move(contract);
     NetPlay::BeginSc2EngineInputCapture();
     m_sc2_engine_set_mem_journal(&StaticRecompCore::Sc2RollbackTransactionWriteTrampoline, this);
     m_sc2_transaction_video_frame = m_sc2_video_frame;
@@ -636,33 +1136,55 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
   m_sc2_engine_set_mem_journal(nullptr, nullptr);
   std::size_t polls = 0;
   std::vector<u64> batches;
-  const bool input_valid = NetPlay::FinishSc2EngineInputCapture(&polls, &batches);
+  std::vector<NetPlay::Sc2EngineInputPoll> input_polls;
+  const bool input_valid =
+      NetPlay::FinishSc2EngineInputCapture(&polls, &batches, &input_polls);
   // Boot/menu updates can legitimately run before NetPlay has assigned an SI
   // batch. Retain them as inputless transactions; the mapper will never select
   // them for an input correction, but later retained descendants still need a
   // contiguous sparse undo lineage.
   const u64 fallback_delta = m_hook_fallback_instructions - m_sc2_transaction_entry_fallbacks;
-  bool valid = input_valid && fallback_delta == 0;
+  bool valid = input_valid && fallback_delta == 0 && m_sc2_update_external_valid &&
+               !m_sc2_engine_direct_call_active && !m_sc2_engine_direct_call_overflow &&
+               !m_sc2_engine_indirect_call_active && !m_sc2_engine_indirect_call_overflow;
   for (const u64 batch : batches)
     valid = m_sc2_transaction_store->RecordConsumedBatch(batch) && valid;
   valid = m_sc2_transaction_store->CompleteTransaction(m_sc2_video_frame) && valid;
   const std::optional<std::size_t> unique_bytes =
       m_sc2_transaction_store->GetUndoRing().GetUniqueBytes(m_sc2_transaction_id);
   valid = unique_bytes.has_value() && valid;
+  if (valid)
+  {
+    auto& contract =
+        m_sc2_transaction_contracts[m_sc2_transaction_id % m_sc2_transaction_contracts.size()];
+    valid = contract && contract->transaction_id == m_sc2_transaction_id;
+    if (valid)
+    {
+      contract->input_polls = std::move(input_polls);
+      contract->external_effects = m_sc2_update_external_effects;
+      contract->handler_post_ram = m_sc2_update_handler_post_ram;
+      contract->handler_post_guest = m_sc2_update_handler_post_guest;
+      contract->handler_post_tb_remainder = m_sc2_update_handler_post_tb_remainder;
+      contract->handler_effect_ranges = m_sc2_update_handler_effect_ranges;
+    }
+  }
+  m_sc2_update_external_capture = false;
+  m_sc2_engine_external_profile_active = false;
   const u64 elapsed_us = Common::Timer::NowUs() - m_sc2_transaction_begin_us;
   const u64 first_batch = batches.empty() ? 0 : batches.front();
   const u64 last_batch = batches.empty() ? 0 : batches.back();
   std::fprintf(stderr,
                "[sc2-transaction-history] epoch=%llu transaction=%llu "
                "video_frames=%llu..%llu polls=%zu batches=%zu unique_bytes=%zu "
-               "first_batch=%llu last_batch=%llu elapsed_us=%llu input_valid=%s "
+               "first_batch=%llu last_batch=%llu effects=%zu handlers=%zu elapsed_us=%llu input_valid=%s "
                "fallback_instructions=%llu result=%s\n",
                static_cast<unsigned long long>(m_sc2_transaction_epoch),
                static_cast<unsigned long long>(m_sc2_transaction_id),
                static_cast<unsigned long long>(m_sc2_transaction_video_frame),
                static_cast<unsigned long long>(m_sc2_video_frame), polls, batches.size(),
                unique_bytes.value_or(0), static_cast<unsigned long long>(first_batch),
-               static_cast<unsigned long long>(last_batch),
+               static_cast<unsigned long long>(last_batch), m_sc2_update_external_effects.size(),
+               m_sc2_update_handler_post_ram.size(),
                static_cast<unsigned long long>(elapsed_us),
                input_valid ? "yes" : "no", static_cast<unsigned long long>(fallback_delta),
                valid ? "ok" : "failed");
@@ -886,6 +1408,32 @@ bool StaticRecompCore::ReplaySc2UpdateExternalRead(const u32 address, const u8 s
 {
   if (!m_sc2_update_external_replay)
     return false;
+  if (m_sc2_update_external_keyed_replay)
+  {
+    for (std::size_t index = 0; index < m_sc2_update_external_effects.size(); ++index)
+    {
+      const auto& effect = m_sc2_update_external_effects[index];
+      if (!m_sc2_update_external_replay_used[index] &&
+          !m_sc2_update_external_replay_reserved[index] && !effect.write &&
+          effect.address == address && effect.size == size)
+      {
+        m_sc2_update_external_replay_used[index] = true;
+        ++m_sc2_update_external_replay_index;
+        *value = effect.value;
+        return true;
+      }
+    }
+    if (m_sc2_update_external_valid)
+    {
+      std::fprintf(stderr,
+                   "[sc2-update-effects] keyed mismatch actual=read address=0x%08x "
+                   "size=%u pc=0x%08x\n",
+                   address, size, m_guest.pc);
+    }
+    m_sc2_update_external_valid = false;
+    *value = 0;
+    return true;
+  }
   if (m_sc2_update_external_replay_index >= m_sc2_update_external_effects.size())
   {
     if (m_sc2_update_external_valid)
@@ -917,6 +1465,30 @@ bool StaticRecompCore::ReplaySc2UpdateExternalWrite(const u32 address, const u8 
 {
   if (!m_sc2_update_external_replay)
     return false;
+  if (m_sc2_update_external_keyed_replay)
+  {
+    for (std::size_t index = 0; index < m_sc2_update_external_effects.size(); ++index)
+    {
+      const auto& effect = m_sc2_update_external_effects[index];
+      if (!m_sc2_update_external_replay_used[index] &&
+          !m_sc2_update_external_replay_reserved[index] && effect.write &&
+          effect.address == address && effect.size == size && effect.value == value)
+      {
+        m_sc2_update_external_replay_used[index] = true;
+        ++m_sc2_update_external_replay_index;
+        return true;
+      }
+    }
+    if (m_sc2_update_external_valid)
+    {
+      std::fprintf(stderr,
+                   "[sc2-update-effects] keyed mismatch actual=write address=0x%08x "
+                   "size=%u value=0x%llx pc=0x%08x\n",
+                   address, size, static_cast<unsigned long long>(value), m_guest.pc);
+    }
+    m_sc2_update_external_valid = false;
+    return true;
+  }
   if (m_sc2_update_external_replay_index >= m_sc2_update_external_effects.size())
   {
     if (m_sc2_update_external_valid)
@@ -1141,19 +1713,29 @@ void StaticRecompCore::Sc2EngineDirectCallWriteTrampoline(const u32 offset, cons
     return;
   const u64 key = (static_cast<u64>(core->m_sc2_engine_direct_call_return) << 32) |
                   core->m_sc2_engine_direct_call_target;
-  auto& pages = core->m_sc2_engine_direct_calls[key].written_pages;
-  auto& bytes = core->m_sc2_engine_direct_calls[key].written_bytes;
-  auto& offsets = core->m_sc2_engine_direct_calls[key].written_offsets;
-  for (u32 page = offset / PAGE_BYTES; page <= last_offset / PAGE_BYTES; ++page)
-    pages[page] = true;
-  for (u32 byte = offset; byte <= last_offset; ++byte)
+  auto& direct_profile = core->m_sc2_engine_direct_calls[key];
+  if (core->m_sc2_transaction_history_enabled && !core->m_sc2_engine_replay_probe_enabled)
   {
-    if (!core->m_sc2_engine_speculative_active)
-      core->m_sc2_update_original_last_writer[byte] = core->m_guest.pc;
-    if (!bytes[byte])
+    // The continuous transaction route only needs exact sparse postimages for
+    // the intercepted indirect system handlers below. Avoid tracking the root
+    // transaction twice: its complete preimage already lives in the undo ring.
+  }
+  else
+  {
+    auto& pages = direct_profile.written_pages;
+    auto& bytes = direct_profile.written_bytes;
+    auto& offsets = direct_profile.written_offsets;
+    for (u32 page = offset / PAGE_BYTES; page <= last_offset / PAGE_BYTES; ++page)
+      pages[page] = true;
+    for (u32 byte = offset; byte <= last_offset; ++byte)
     {
-      bytes[byte] = true;
-      offsets.push_back(byte);
+      if (!core->m_sc2_engine_speculative_active)
+        core->m_sc2_update_original_last_writer[byte] = core->m_guest.pc;
+      if (!bytes[byte])
+      {
+        bytes[byte] = true;
+        offsets.push_back(byte);
+      }
     }
   }
 
@@ -1162,17 +1744,29 @@ void StaticRecompCore::Sc2EngineDirectCallWriteTrampoline(const u32 offset, cons
     const u64 indirect_key =
         (static_cast<u64>(core->m_sc2_engine_indirect_call_return) << 32) |
         core->m_sc2_engine_indirect_call_target;
-    auto& indirect_pages = core->m_sc2_engine_indirect_calls[indirect_key].written_pages;
-    auto& indirect_bytes = core->m_sc2_engine_indirect_calls[indirect_key].written_bytes;
-    auto& indirect_offsets = core->m_sc2_engine_indirect_calls[indirect_key].written_offsets;
-    for (u32 page = offset / PAGE_BYTES; page <= last_offset / PAGE_BYTES; ++page)
-      indirect_pages[page] = true;
-    for (u32 byte = offset; byte <= last_offset; ++byte)
+    auto& indirect_profile = core->m_sc2_engine_indirect_calls[indirect_key];
+    if (core->m_sc2_transaction_history_enabled && !core->m_sc2_engine_replay_probe_enabled)
     {
-      if (!indirect_bytes[byte])
+      for (u32 byte = offset; byte <= last_offset; ++byte)
       {
-        indirect_bytes[byte] = true;
-        indirect_offsets.push_back(byte);
+        if (indirect_profile.sparse_written_offsets.insert(byte).second)
+          indirect_profile.written_offsets.push_back(byte);
+      }
+    }
+    else
+    {
+      auto& indirect_pages = indirect_profile.written_pages;
+      auto& indirect_bytes = indirect_profile.written_bytes;
+      auto& indirect_offsets = indirect_profile.written_offsets;
+      for (u32 page = offset / PAGE_BYTES; page <= last_offset / PAGE_BYTES; ++page)
+        indirect_pages[page] = true;
+      for (u32 byte = offset; byte <= last_offset; ++byte)
+      {
+        if (!indirect_bytes[byte])
+        {
+          indirect_bytes[byte] = true;
+          indirect_offsets.push_back(byte);
+        }
       }
     }
   }
@@ -1205,8 +1799,11 @@ void StaticRecompCore::ObserveSc2EngineIndirectCall(const u32 pc)
         (m_sc2_engine_indirect_call_target == 0x8001af10 ||
          m_sc2_engine_indirect_call_target == 0x8001f0c0))
     {
-      m_sc2_update_handler_post_ram[key].assign(m_guest.ram,
-                                                m_guest.ram + m_guest.ram_size);
+      auto& postimage = m_sc2_update_handler_post_ram[key];
+      postimage.clear();
+      postimage.reserve(profile.written_offsets.size());
+      for (const u32 offset : profile.written_offsets)
+        postimage.emplace_back(offset, m_guest.ram[offset]);
       m_sc2_update_handler_post_guest[key] = m_guest;
       m_sc2_update_handler_post_tb_remainder[key] = m_tb_cycle_remainder;
       m_sc2_update_handler_effect_ranges[key] = {
@@ -1236,7 +1833,11 @@ void StaticRecompCore::ObserveSc2EngineIndirectCall(const u32 pc)
     return;
   }
   auto& profile = m_sc2_engine_indirect_calls[key];
-  if (profile.written_pages.empty())
+  if (m_sc2_transaction_history_enabled && !m_sc2_engine_replay_probe_enabled)
+  {
+    profile.sparse_written_offsets.reserve(4096);
+  }
+  else if (profile.written_pages.empty())
   {
     profile.written_pages.assign((m_guest.ram_size + 4095) / 4096, false);
     profile.written_bytes.assign(m_guest.ram_size, false);
@@ -1261,12 +1862,10 @@ bool StaticRecompCore::ReplaySc2UpdateSystemHandler(const u32 pc)
   const auto post_ram = m_sc2_update_handler_post_ram.find(key);
   const auto post_guest = m_sc2_update_handler_post_guest.find(key);
   const auto post_tb = m_sc2_update_handler_post_tb_remainder.find(key);
-  const auto profile = m_sc2_engine_indirect_calls.find(key);
   const auto effect_range = m_sc2_update_handler_effect_ranges.find(key);
   if (post_ram == m_sc2_update_handler_post_ram.end() ||
       post_guest == m_sc2_update_handler_post_guest.end() ||
       post_tb == m_sc2_update_handler_post_tb_remainder.end() ||
-      profile == m_sc2_engine_indirect_calls.end() ||
       effect_range == m_sc2_update_handler_effect_ranges.end())
   {
     m_sc2_update_external_valid = false;
@@ -1274,14 +1873,43 @@ bool StaticRecompCore::ReplaySc2UpdateSystemHandler(const u32 pc)
                  "[sc2-update-handler] missing captured postimage target=0x%08x\n", pc);
     return false;
   }
-  for (const u32 offset : profile->second.written_offsets)
-    m_guest.ram[offset] = post_ram->second[offset];
+  for (const auto [offset, value] : post_ram->second)
+  {
+    if (m_sc2_transaction_replay_active &&
+        !m_sc2_transaction_store->RecordWrite(
+            offset, 1, std::span<const u8>{m_guest.ram, m_guest.ram_size}))
+    {
+      m_sc2_update_external_valid = false;
+      std::fprintf(stderr,
+                   "[sc2-update-handler] failed to journal postimage target=0x%08x\n", pc);
+      return false;
+    }
+    m_guest.ram[offset] = value;
+  }
   const auto [effect_begin, effect_end] = effect_range->second;
-  if (effect_begin > effect_end || effect_end > m_sc2_update_external_effects.size() ||
-      m_sc2_update_external_replay_index > effect_begin)
+  if (effect_begin > effect_end || effect_end > m_sc2_update_external_effects.size())
+  {
     m_sc2_update_external_valid = false;
+  }
+  else if (m_sc2_update_external_keyed_replay)
+  {
+    for (std::size_t index = effect_begin; index < effect_end; ++index)
+    {
+      if (!m_sc2_update_external_replay_used[index])
+      {
+        m_sc2_update_external_replay_used[index] = true;
+        ++m_sc2_update_external_replay_index;
+      }
+    }
+  }
+  else if (m_sc2_update_external_replay_index > effect_begin)
+  {
+    m_sc2_update_external_valid = false;
+  }
   else
+  {
     m_sc2_update_external_replay_index = effect_end;
+  }
   u8* const ram = m_guest.ram;
   const u32 ram_size = m_guest.ram_size;
   u8* const mem2 = m_guest.mem2;
@@ -1291,9 +1919,10 @@ bool StaticRecompCore::ReplaySc2UpdateSystemHandler(const u32 pc)
   m_guest.ram_size = ram_size;
   m_guest.mem2 = mem2;
   m_guest.mem2_size = mem2_size;
+  m_tb_cycle_remainder = post_tb->second;
   std::fprintf(stderr,
                "[sc2-update-handler] replayed target=0x%08x bytes=%zu effects=%zu\n",
-               pc, profile->second.written_offsets.size(), effect_end - effect_begin);
+               pc, post_ram->second.size(), effect_end - effect_begin);
   return true;
 }
 
@@ -1382,39 +2011,7 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
   // they cannot poll the rollback scheduler again. Consume the bounded input
   // journal here and replace the just-copied slot before SC2's own controller
   // conversion reads it.
-  if (m_sc2_engine_replay_input_update_span && m_sc2_engine_speculative_active &&
-      pc == 0x80183708 && m_guest.lr == 0x801bfa80 && m_guest.gpr[29] < 4)
-  {
-    const int pad = static_cast<int>(m_guest.gpr[29]);
-    GCPadStatus status{};
-    bool resolved = false;
-    if (!NetPlay::ConsumeSc2EngineInputReplay(pad, true, &status, &resolved))
-    {
-      m_sc2_update_external_valid = false;
-      std::fprintf(stderr, "[sc2-input-inject] missing replay poll pad=%d\n", pad);
-    }
-    else if (resolved)
-    {
-      u32 hi = 0;
-      u32 low = 0;
-      if (!m_system.GetSerialInterface().EncodeGCControllerPadStatus(pad, status, &hi, &low))
-      {
-        m_sc2_update_external_valid = false;
-        std::fprintf(stderr, "[sc2-input-inject] unsupported device pad=%d\n", pad);
-      }
-      else
-      {
-        // 0x801bfa0c has already copied the SI register shadow to r30 by this
-        // dispatch boundary. Replace that call-local output directly; the
-        // following game code consumes it after 0x80183708 returns.
-        GuestWrite32(m_guest.gpr[30], hi);
-        GuestWrite32(m_guest.gpr[30] + 4, low);
-        std::fprintf(stderr,
-                     "[sc2-input-inject] pad=%d hi=0x%08x low=0x%08x corrected=%s\n", pad,
-                     hi, low, m_sc2_engine_replay_corrected_input ? "yes" : "no");
-      }
-    }
-  }
+  InjectSc2TransactionReplayInput(pc);
 
   if (ReplaySc2UpdateSystemHandler(pc))
     return;

@@ -127,6 +127,7 @@ public:
   const char* GetName() const override { return "StaticRecomp"; }
 
 private:
+  struct Sc2TransactionReplayContract;
   // JitBaseBlockCache with no generated blocks; exists so generic
   // icache-invalidation plumbing in JitInterface has a real object to talk
   // to, and to feed every invalidation into the SMC demotion guard (D4).
@@ -298,6 +299,13 @@ private:
   void ReportSc2EngineMemoryProfile();
   void ProbeSc2EngineReplay(u32 pc);
   void ObserveSc2RollbackTransaction(u32 pc);
+  bool TryStartSc2TransactionReplayProbe();
+  bool StartSc2TransactionReplayPass();
+  bool StartSc2TransactionReplayStep(u64 transaction_id, const CPUState& entry_guest,
+                                     u64 entry_tb_remainder);
+  void AbortSc2TransactionReplay(const char* reason);
+  void FinishSc2TransactionReplayStep();
+  void InjectSc2TransactionReplayInput(u32 pc);
   void ObserveSc2EngineExternalAccess(bool write, u32 address, u8 size);
   void ReportSc2EngineExternalProfile();
   void ObserveSc2EngineDirectCall(u32 pc);
@@ -330,6 +338,17 @@ private:
   bool m_sc2_transaction_history_enabled = false;
   bool m_sc2_transaction_history_active = false;
   bool m_sc2_transaction_history_faulted = false;
+  bool m_sc2_transaction_replay_probe_enabled = false;
+  bool m_sc2_transaction_replay_probe_attempted = false;
+  bool m_sc2_transaction_replay_active = false;
+  bool m_sc2_transaction_replay_fifo_locked = false;
+  bool m_sc2_transaction_replay_fifo_was_running = false;
+  u32 m_sc2_transaction_replay_pass = 0;
+  u64 m_sc2_transaction_replay_first = 0;
+  u64 m_sc2_transaction_replay_current = 0;
+  u64 m_sc2_transaction_replay_through = 0;
+  u64 m_sc2_transaction_replay_frontier = 0;
+  std::size_t m_sc2_transaction_replay_perturbed_polls = 0;
   u64 m_sc2_transaction_epoch = 1;
   u64 m_sc2_transaction_id = 1;
   u64 m_sc2_transaction_video_frame = 0;
@@ -337,6 +356,18 @@ private:
   u64 m_sc2_transaction_entry_fallbacks = 0;
   u64 m_sc2_transaction_begin_us = 0;
   std::unique_ptr<NetPlay::Sc2RollbackTransactionStore> m_sc2_transaction_store;
+  std::vector<std::unique_ptr<Sc2TransactionReplayContract>> m_sc2_transaction_contracts;
+  std::vector<std::unique_ptr<Sc2TransactionReplayContract>>
+      m_sc2_transaction_replay_contracts;
+  std::vector<u8> m_sc2_transaction_replay_canonical_ram;
+  std::vector<u8> m_sc2_transaction_replay_reference_ram;
+  std::vector<u32> m_sc2_transaction_replay_owned_offsets;
+  Common::UniqueBuffer<u8> m_sc2_transaction_replay_canonical_state;
+  std::size_t m_sc2_transaction_replay_canonical_state_size = 0;
+  CPUState m_sc2_transaction_replay_canonical_guest{};
+  CPUState m_sc2_transaction_replay_reference_guest{};
+  u64 m_sc2_transaction_replay_canonical_tb_remainder = 0;
+  u64 m_sc2_transaction_replay_reference_tb_remainder = 0;
   bool m_sc2_engine_replay_have_entry = false;
   bool m_sc2_engine_replay_replaying = false;
   bool m_sc2_engine_replay_completed = false;
@@ -398,6 +429,7 @@ private:
     // survives an update rewind.
     std::vector<bool> written_bytes;
     std::vector<u32> written_offsets;
+    std::unordered_set<u32> sparse_written_offsets;
   };
   std::map<u64, Sc2EngineDirectCallProfile> m_sc2_engine_direct_calls;
   using Sc2EngineSetMemJournalFn = void (*)(void (*)(u32, u32, void*), void*);
@@ -429,6 +461,9 @@ private:
   };
   std::vector<Sc2UpdateExternalEffect> m_sc2_update_external_effects;
   std::size_t m_sc2_update_external_replay_index = 0;
+  bool m_sc2_update_external_keyed_replay = false;
+  std::vector<bool> m_sc2_update_external_replay_used;
+  std::vector<bool> m_sc2_update_external_replay_reserved;
   bool m_sc2_update_external_capture = false;
   bool m_sc2_update_external_replay = false;
   bool m_sc2_update_external_valid = true;
@@ -437,7 +472,7 @@ private:
   std::map<u64, u64> m_sc2_update_replay_write_blocks;
   std::vector<bool> m_sc2_update_replay_written_bytes;
   std::vector<u32> m_sc2_update_replay_written_offsets;
-  std::map<u64, std::vector<u8>> m_sc2_update_handler_post_ram;
+  std::map<u64, std::vector<std::pair<u32, u8>>> m_sc2_update_handler_post_ram;
   std::map<u64, CPUState> m_sc2_update_handler_post_guest;
   std::map<u64, u64> m_sc2_update_handler_post_tb_remainder;
   std::map<u64, std::pair<std::size_t, std::size_t>> m_sc2_update_handler_effect_ranges;

@@ -24,6 +24,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--selective-input-update-replay-probe] \
          [--selective-input-corrected-replay-probe] \
          [--transaction-history-probe] \
+         [--transaction-replay-probe] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -109,6 +110,11 @@ with a corrected remote A input and requires two exact corrected endpoints.
 history, including inputless boot gaps and exact network SI batch ownership.
 It requires --hook-profile and remains a shadow gate: ordinary player rollback
 continues to use the broad state store during the run.
+
+--transaction-replay-probe rewinds three retained real SC2 update transactions,
+toggles remote A in the oldest transaction, replays the corrected branch twice,
+and requires exact full-MEM1, CPU, and timebase agreement between both passes.
+It is an isolated correctness oracle and requires --hook-profile.
 EOF
   exit 2
 }
@@ -146,6 +152,7 @@ SELECTIVE_UPDATE_REPLAY_PROBE=0
 SELECTIVE_INPUT_UPDATE_REPLAY_PROBE=0
 SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE=0
 TRANSACTION_HISTORY_PROBE=0
+TRANSACTION_REPLAY_PROBE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -189,6 +196,7 @@ while [ "$#" -gt 0 ]; do
     --selective-input-update-replay-probe) SELECTIVE_INPUT_UPDATE_REPLAY_PROBE=1; shift ;;
     --selective-input-corrected-replay-probe) SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE=1; shift ;;
     --transaction-history-probe) TRANSACTION_HISTORY_PROBE=1; shift ;;
+    --transaction-replay-probe) TRANSACTION_REPLAY_PROBE=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -217,9 +225,16 @@ if [ "$HOOK_PROFILE" -eq 1 ]; then
 fi
 [ "$TRANSACTION_HISTORY_PROBE" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
   fail "--transaction-history-probe requires --hook-profile"
+[ "$TRANSACTION_REPLAY_PROBE" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
+  fail "--transaction-replay-probe requires --hook-profile"
+[ $((TRANSACTION_HISTORY_PROBE + TRANSACTION_REPLAY_PROBE)) -le 1 ] ||
+  fail "transaction history and transaction replay probes are mutually exclusive"
 [ "$TRANSACTION_HISTORY_PROBE" -eq 0 ] ||
   [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE)) -eq 0 ] ||
   fail "--transaction-history-probe cannot be combined with a replay probe"
+[ "$TRANSACTION_REPLAY_PROBE" -eq 0 ] ||
+  [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE)) -eq 0 ] ||
+  fail "--transaction-replay-probe cannot be combined with another replay probe"
 [ "$HOOK_IDLE_CONTROL" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
   fail "--hook-idle-control requires --hook-profile"
 [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 0 ] || {
@@ -453,7 +468,7 @@ verify_hook_profiles() {
         }
         END { if (networked < 100 || best < 10) exit 1 }
       ' "$log" || fail "$peer did not retain ten consecutive safe networked SC2 transactions"
-      sed -nE 's/^\[sc2-transaction-history\] epoch=[0-9]+ transaction=[0-9]+ video_frames=([0-9]+\.\.[0-9]+) polls=([0-9]+) batches=1 unique_bytes=([0-9]+) first_batch=([0-9]+) last_batch=([0-9]+) elapsed_us=[0-9]+ input_valid=yes fallback_instructions=0 result=ok$/\1 \2 \3 \4 \5/p' "$log" |
+      sed -nE 's/^\[sc2-transaction-history\] epoch=[0-9]+ transaction=[0-9]+ video_frames=([0-9]+\.\.[0-9]+) polls=([0-9]+) batches=1 unique_bytes=([0-9]+) first_batch=([0-9]+) last_batch=([0-9]+) effects=([0-9]+) handlers=([0-9]+) elapsed_us=[0-9]+ input_valid=yes fallback_instructions=0 result=ok$/\1 \2 \3 \4 \5 \6 \7/p' "$log" |
         sort -u > "$history_tmp/$peer"
     done
     comm -12 "$history_tmp/host" "$history_tmp/guest" > "$history_tmp/common"
@@ -462,6 +477,23 @@ verify_hook_profiles() {
       fail "peers did not agree on at least 100 networked SC2 transaction mappings"
     }
     rm -rf "$history_tmp"
+  fi
+  if [ "$TRANSACTION_REPLAY_PROBE" -eq 1 ]; then
+    for peer in host guest; do
+      log="$evidence/$peer/log.txt"
+      grep -Fq '[sc2-transaction-replay] enabled transactions=3 passes=2 corrected_input=remote-a' "$log" ||
+        fail "$peer did not enable the three-transaction SC2 replay oracle"
+      grep -Eq '^\[sc2-transaction-replay\] corrected-reference transactions=3 owned_bytes=[1-9][0-9]* corrected_bytes=[1-9][0-9]* owned_crc32=[0-9a-f]{8} perturbed_polls=[1-9][0-9]*$' "$log" ||
+        fail "$peer SC2 transaction correction did not alter game state"
+      grep -Eq '^\[sc2-transaction-replay\] result=ok transactions=3 passes=2 game_ram_match=yes cpu_match=yes tb_remainder_match=yes owned_bytes=[1-9][0-9]* owned_differing_bytes=0 external_differing_bytes=[0-9]+ perturbed_polls=[2-9][0-9]*$' "$log" ||
+        fail "$peer SC2 transaction replay did not reach an exact corrected endpoint twice"
+      grep -Eq '^\[sc2-transaction-replay\] stopped reason=complete canonical_state_bytes=[1-9][0-9]* state_restored=yes$' "$log" ||
+        fail "$peer did not safely re-anchor renderer and device state after SC2 replay"
+    done
+    diff -u \
+      <(grep -E '^\[sc2-transaction-replay\] corrected-reference ' "$evidence/host/log.txt") \
+      <(grep -E '^\[sc2-transaction-replay\] corrected-reference ' "$evidence/guest/log.txt") \
+      >/dev/null || fail "peers produced different corrected SC2 game-state digests"
   fi
   if [ "$ENGINE_REPLAY_PROBE" -eq 1 ] || [ "$ENGINE_REPLAY_CORRECTED_INPUT_PROBE" -eq 1 ] ||
      [ "$UPDATE_REPLAY_PROBE" -eq 1 ] ||
@@ -670,6 +702,9 @@ elif [ "$SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE" -eq 1 ]; then
 fi
 if [ "$TRANSACTION_HISTORY_PROBE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_TRANSACTION_HISTORY_PROBE=HEADLESS_ISOLATED)
+fi
+if [ "$TRANSACTION_REPLAY_PROBE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_TRANSACTION_REPLAY_PROBE=HEADLESS_ISOLATED)
 fi
 if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
   run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)

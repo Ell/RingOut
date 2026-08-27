@@ -46,6 +46,7 @@ public:
 
   std::optional<std::uint64_t> GetActiveFrame() const { return m_active_frame; }
   std::optional<std::size_t> GetUniqueBytes(std::uint64_t frame) const;
+  std::span<const std::uint32_t> GetWriteOffsets(std::uint64_t frame) const;
   bool IsActiveFrameValid() const { return m_active_frame.has_value() && !m_active_overflow; }
 
 private:

@@ -133,12 +133,30 @@ for peer in host guest; do
     frame=$((transaction * 2))
     batch=$((1000 + transaction))
     printf '%s\n' \
-      "[sc2-transaction-history] epoch=1 transaction=$transaction video_frames=$frame..$frame polls=2 batches=1 unique_bytes=24829 first_batch=$batch last_batch=$batch elapsed_us=500 input_valid=yes fallback_instructions=0 result=ok" \
+      "[sc2-transaction-history] epoch=1 transaction=$transaction video_frames=$frame..$frame polls=2 batches=1 unique_bytes=24829 first_batch=$batch last_batch=$batch effects=6 handlers=2 elapsed_us=500 input_valid=yes fallback_instructions=0 result=ok" \
       >> "$WORK/transaction-history/$peer/log.txt"
   done
 done
 "$HARNESS" --verify-existing "$WORK/transaction-history" --hook-profile \
   --transaction-history-probe >/dev/null
+cp -a "$WORK/hook-profile" "$WORK/transaction-replay"
+for peer in host guest; do
+  printf '%s\n' \
+    '[sc2-transaction-replay] enabled transactions=3 passes=2 corrected_input=remote-a' \
+    '[sc2-transaction-replay] corrected-reference transactions=3 owned_bytes=24829 corrected_bytes=41 owned_crc32=1234abcd perturbed_polls=1' \
+    '[sc2-transaction-replay] result=ok transactions=3 passes=2 game_ram_match=yes cpu_match=yes tb_remainder_match=yes owned_bytes=24829 owned_differing_bytes=0 external_differing_bytes=892 perturbed_polls=2' \
+    '[sc2-transaction-replay] stopped reason=complete canonical_state_bytes=49360152 state_restored=yes' \
+    >> "$WORK/transaction-replay/$peer/log.txt"
+done
+"$HARNESS" --verify-existing "$WORK/transaction-replay" --hook-profile \
+  --transaction-replay-probe >/dev/null
+sed -i 's/owned_differing_bytes=0/owned_differing_bytes=1/' \
+  "$WORK/transaction-replay/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/transaction-replay" --hook-profile \
+    --transaction-replay-probe >/dev/null 2>&1; then
+  echo "divergent SC2 transaction replay unexpectedly passed" >&2
+  exit 1
+fi
 sed -i 's/differing_state_bytes=0/differing_state_bytes=1/' \
   "$WORK/engine-replay/guest/log.txt"
 if "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \

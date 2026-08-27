@@ -40,6 +40,10 @@ int main()
   JournalWrite(ring, memory, 4, {90, 91, 92, 93});
   JournalWrite(ring, memory, 6, {80, 81, 82, 83});
   Check(ring.GetUniqueBytes(10) == 6, "overlapping writes retain first preimage once");
+  Check(std::vector<std::uint32_t>(ring.GetWriteOffsets(10).begin(),
+                                   ring.GetWriteOffsets(10).end()) ==
+            std::vector<std::uint32_t>({4, 5, 6, 7, 8, 9}),
+        "exact transaction-owned offsets are exposed in first-write order");
 
   auxiliary = {3, 4};
   Check(ring.BeginFrame(11, memory, auxiliary), "second frame begins");

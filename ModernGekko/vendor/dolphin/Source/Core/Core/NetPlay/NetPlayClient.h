@@ -442,11 +442,25 @@ unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot);
 // replays then consume this bounded CPU-thread journal without advancing
 // network input state a second time. These calls are inert outside the
 // explicitly armed research probe.
+struct Sc2EngineInputPoll
+{
+  int pad_num = 0;
+  bool batching = false;
+  bool result = false;
+  GCPadStatus status{};
+  std::optional<u64> batch_id;
+
+  bool operator==(const Sc2EngineInputPoll&) const = default;
+};
+
 void BeginSc2EngineInputCapture();
 bool FinishSc2EngineInputCapture(std::size_t* captured_polls,
-                                 std::vector<u64>* consumed_batches = nullptr);
+                                 std::vector<u64>* consumed_batches = nullptr,
+                                 std::vector<Sc2EngineInputPoll>* polls = nullptr);
 void SetSc2EngineInputBatch(std::optional<u64> batch_id);
 bool BeginSc2EngineInputReplay(bool perturb_remote_a = false);
+bool BeginSc2EngineInputReplayFrom(std::span<const Sc2EngineInputPoll> polls,
+                                   bool perturb_remote_a = false);
 bool ConsumeSc2EngineInputReplay(int pad_num, bool batching, GCPadStatus* status,
                                  bool* result);
 bool FinishSc2EngineInputReplay(std::size_t* perturbed_polls = nullptr);

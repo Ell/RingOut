@@ -102,15 +102,6 @@ enum class Sc2EngineInputMode
   Replay,
 };
 
-struct Sc2EngineInputPoll
-{
-  int pad_num = 0;
-  bool batching = false;
-  bool result = false;
-  GCPadStatus status{};
-  std::optional<u64> batch_id;
-};
-
 // All users are on Dolphin's CPU thread. Keeping the probe journal thread-local
 // also makes it impossible for the netplay socket thread to observe a partial
 // capture or consume a replay entry.
@@ -177,7 +168,8 @@ void BeginSc2EngineInputCapture()
 }
 
 bool FinishSc2EngineInputCapture(std::size_t* const captured_polls,
-                                 std::vector<u64>* const consumed_batches)
+                                 std::vector<u64>* const consumed_batches,
+                                 std::vector<Sc2EngineInputPoll>* const polls)
 {
   const bool valid = s_sc2_engine_input_mode == Sc2EngineInputMode::Capture &&
                      s_sc2_engine_input_valid;
@@ -196,6 +188,8 @@ bool FinishSc2EngineInputCapture(std::size_t* const captured_polls,
       }
     }
   }
+  if (polls)
+    *polls = s_sc2_engine_input_polls;
   return valid;
 }
 
@@ -213,6 +207,19 @@ bool BeginSc2EngineInputReplay(const bool perturb_remote_a)
   s_sc2_engine_input_perturbed_polls = 0;
   s_sc2_engine_input_mode = Sc2EngineInputMode::Replay;
   return true;
+}
+
+bool BeginSc2EngineInputReplayFrom(const std::span<const Sc2EngineInputPoll> polls,
+                                   const bool perturb_remote_a)
+{
+  if (s_sc2_engine_input_mode != Sc2EngineInputMode::Disabled || polls.empty() ||
+      polls.size() > SC2_ENGINE_INPUT_POLL_LIMIT)
+  {
+    return false;
+  }
+  s_sc2_engine_input_polls.assign(polls.begin(), polls.end());
+  s_sc2_engine_input_valid = true;
+  return BeginSc2EngineInputReplay(perturb_remote_a);
 }
 
 bool ConsumeSc2EngineInputReplay(const int pad_num, const bool batching,

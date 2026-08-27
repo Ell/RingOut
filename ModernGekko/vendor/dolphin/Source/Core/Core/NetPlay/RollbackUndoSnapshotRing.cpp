@@ -157,6 +157,14 @@ RollbackUndoSnapshotRing::GetUniqueBytes(const std::uint64_t frame) const
   return slot ? std::optional{slot->offsets.size()} : std::nullopt;
 }
 
+std::span<const std::uint32_t>
+RollbackUndoSnapshotRing::GetWriteOffsets(const std::uint64_t frame) const
+{
+  const Slot* const slot = Find(frame);
+  return slot ? std::span<const std::uint32_t>{slot->offsets} :
+                std::span<const std::uint32_t>{};
+}
+
 RollbackUndoSnapshotRing::Slot* RollbackUndoSnapshotRing::Find(const std::uint64_t frame)
 {
   if (m_status != ConfigurationStatus::Valid)
