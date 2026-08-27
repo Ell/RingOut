@@ -12,6 +12,8 @@ trap 'rm -rf "$WORK"' EXIT
   "$REPO/.github/input-scripts/rollback-fault-correction.txt" >/dev/null
 "$HARNESS" --validate-fault-script \
   "$REPO/.github/input-scripts/rollback-fault-horizon.txt" >/dev/null
+"$HARNESS" --validate-fault-script \
+  "$REPO/.github/input-scripts/rollback-fault-sc2-transaction.txt" >/dev/null
 printf '%s\n' '  # indented comment' 'delay 7 9 # inline comment' \
   > "$WORK/commented-fault.txt"
 "$HARNESS" --validate-fault-script "$WORK/commented-fault.txt" >/dev/null
@@ -127,7 +129,7 @@ done
 cp -a "$WORK/hook-profile" "$WORK/transaction-history"
 for peer in host guest; do
   printf '%s\n' \
-    '[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 begin_pc=0x80011c80 end_pc=0x8001bcb0' \
+    '[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 begin_pc=0x80011c80 end=video-frame-boundary' \
     >> "$WORK/transaction-history/$peer/log.txt"
   for transaction in $(seq 1 100); do
     frame=$((transaction * 2))
@@ -155,6 +157,32 @@ sed -i 's/owned_differing_bytes=0/owned_differing_bytes=1/' \
 if "$HARNESS" --verify-existing "$WORK/transaction-replay" --hook-profile \
     --transaction-replay-probe >/dev/null 2>&1; then
   echo "divergent SC2 transaction replay unexpectedly passed" >&2
+  exit 1
+fi
+
+cp -a "$WORK/hook-profile" "$WORK/transaction-live-correction"
+sed -i '/^\[rollback live\] correction committed$/d' \
+  "$WORK/transaction-live-correction/guest/log.txt"
+printf '%s\n' \
+  '[rollback live] SC2 selective correction claimed first_batch=4242 replay_through_batch=4244' \
+  '[rollback live] SC2 selective correction committed' \
+  '[sc2-transaction-live] committed transactions=3 owned_bytes=24829 corrected_bytes=41 owned_crc32=1234abcd canonical_state_bytes=49360152' \
+  >> "$WORK/transaction-live-correction/guest/log.txt"
+"$HARNESS" --verify-existing "$WORK/transaction-live-correction" --hook-profile \
+  --transaction-live-correction-probe \
+  --fault-script "$REPO/.github/input-scripts/rollback-fault-correction.txt" >/dev/null
+printf '%s\n' '[rollback live] correction committed' \
+  >> "$WORK/transaction-live-correction/guest/log.txt"
+"$HARNESS" --verify-existing "$WORK/transaction-live-correction" --hook-profile \
+  --transaction-live-correction-probe \
+  --fault-script "$REPO/.github/input-scripts/rollback-fault-correction.txt" >/dev/null
+sed -i '/SC2 selective correction committed/d;/^\[sc2-transaction-live\] committed /d' \
+  "$WORK/transaction-live-correction/guest/log.txt"
+if "$HARNESS" --verify-existing "$WORK/transaction-live-correction" --hook-profile \
+    --transaction-live-correction-probe \
+    --fault-script "$REPO/.github/input-scripts/rollback-fault-correction.txt" \
+    >/dev/null 2>&1; then
+  echo "broad-only fallback unexpectedly passed the SC2 live correction gate" >&2
   exit 1
 fi
 sed -i 's/differing_state_bytes=0/differing_state_bytes=1/' \

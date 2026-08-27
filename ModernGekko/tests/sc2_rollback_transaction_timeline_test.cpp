@@ -37,8 +37,12 @@ int main()
   Check(corrected.status == Timeline::PlanStatus::Ready &&
             corrected.restore_transaction == 11 && corrected.replay_through_transaction == 12,
         "correction maps to the exact consuming transaction");
-  Check(timeline.PlanCorrection(45, 49).status == Timeline::PlanStatus::NotConsumedByGame,
-        "hardware-only poll correction does not rewind game state");
+  const auto correction_between_game_polls = timeline.PlanCorrection(45, 49);
+  Check(correction_between_game_polls.status == Timeline::PlanStatus::Ready &&
+            correction_between_game_polls.restore_transaction == 12,
+        "correction range selects its earliest game-consumed batch");
+  Check(timeline.PlanCorrection(45, 47).status == Timeline::PlanStatus::NotConsumedByGame,
+        "hardware-only correction range does not rewind game state");
   Check(timeline.PlanCorrection(49, 48).status == Timeline::PlanStatus::InvalidCorrectionRange,
         "invalid correction interval fails closed");
 

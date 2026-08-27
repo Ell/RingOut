@@ -25,6 +25,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--selective-input-corrected-replay-probe] \
          [--transaction-history-probe] \
          [--transaction-replay-probe] \
+         [--transaction-live-correction-probe] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -115,6 +116,12 @@ continues to use the broad state store during the run.
 toggles remote A in the oldest transaction, replays the corrected branch twice,
 and requires exact full-MEM1, CPU, and timebase agreement between both passes.
 It is an isolated correctness oracle and requires --hook-profile.
+
+--transaction-live-correction-probe routes the injected late network input
+through retained SC2 transactions and requires the selective commit marker,
+safe renderer re-anchoring, and later cross-peer confirmed-state agreement. It
+requires --hook-profile. Hardware-only corrections may use the explicit broad
+fallback, but a run cannot pass without a real selective game-state commit.
 EOF
   exit 2
 }
@@ -153,6 +160,7 @@ SELECTIVE_INPUT_UPDATE_REPLAY_PROBE=0
 SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE=0
 TRANSACTION_HISTORY_PROBE=0
 TRANSACTION_REPLAY_PROBE=0
+TRANSACTION_LIVE_CORRECTION_PROBE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -197,6 +205,7 @@ while [ "$#" -gt 0 ]; do
     --selective-input-corrected-replay-probe) SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE=1; shift ;;
     --transaction-history-probe) TRANSACTION_HISTORY_PROBE=1; shift ;;
     --transaction-replay-probe) TRANSACTION_REPLAY_PROBE=1; shift ;;
+    --transaction-live-correction-probe) TRANSACTION_LIVE_CORRECTION_PROBE=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -227,14 +236,21 @@ fi
   fail "--transaction-history-probe requires --hook-profile"
 [ "$TRANSACTION_REPLAY_PROBE" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
   fail "--transaction-replay-probe requires --hook-profile"
-[ $((TRANSACTION_HISTORY_PROBE + TRANSACTION_REPLAY_PROBE)) -le 1 ] ||
-  fail "transaction history and transaction replay probes are mutually exclusive"
+[ "$TRANSACTION_LIVE_CORRECTION_PROBE" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
+  fail "--transaction-live-correction-probe requires --hook-profile"
+[ "$TRANSACTION_LIVE_CORRECTION_PROBE" -eq 0 ] || [ -n "$FAULT_SCRIPT" ] ||
+  fail "--transaction-live-correction-probe requires --fault-script"
+[ $((TRANSACTION_HISTORY_PROBE + TRANSACTION_REPLAY_PROBE + TRANSACTION_LIVE_CORRECTION_PROBE)) -le 1 ] ||
+  fail "SC2 transaction probes are mutually exclusive"
 [ "$TRANSACTION_HISTORY_PROBE" -eq 0 ] ||
   [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE)) -eq 0 ] ||
   fail "--transaction-history-probe cannot be combined with a replay probe"
 [ "$TRANSACTION_REPLAY_PROBE" -eq 0 ] ||
   [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE)) -eq 0 ] ||
   fail "--transaction-replay-probe cannot be combined with another replay probe"
+[ "$TRANSACTION_LIVE_CORRECTION_PROBE" -eq 0 ] ||
+  [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE)) -eq 0 ] ||
+  fail "--transaction-live-correction-probe cannot be combined with another replay probe"
 [ "$HOOK_IDLE_CONTROL" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
   fail "--hook-idle-control requires --hook-profile"
 [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 0 ] || {
@@ -300,7 +316,13 @@ verify_logs() {
   [ -s "$host_log" ] && [ -s "$guest_log" ] || fail "one or both peer logs are empty"
   grep -Fq '[rollback live] negotiated' "$host_log" || fail "host did not negotiate rollback"
   grep -Fq '[rollback live] negotiated' "$guest_log" || fail "guest did not negotiate rollback"
-  if [ "$PRODUCTION" -eq 1 ]; then
+  if [ "$TRANSACTION_LIVE_CORRECTION_PROBE" -eq 1 ]; then
+    grep -Fq '[rollback live] SC2 selective correction committed' "$host_log" "$guest_log" ||
+      fail "SC2 selective path did not commit the injected correction"
+    grep -Eq '^\[sc2-transaction-live\] committed transactions=[1-9][0-9]* owned_bytes=[1-9][0-9]* corrected_bytes=[1-9][0-9]* owned_crc32=[0-9a-f]{8} canonical_state_bytes=[1-9][0-9]*$' \
+      "$host_log" "$guest_log" ||
+      fail "SC2 transaction path produced no corrected state commit"
+  elif [ "$PRODUCTION" -eq 1 ]; then
     grep -Fq '[rollback live] active' "$host_log" || fail "host did not activate rollback"
     grep -Fq '[rollback live] active' "$guest_log" || fail "guest did not activate rollback"
     if [ -n "$FAULT_SCRIPT" ]; then
@@ -452,7 +474,7 @@ verify_hook_profiles() {
     history_tmp="$(mktemp -d /tmp/ringout-sc2-history-compare.XXXXXXXX)"
     for peer in host guest; do
       log="$evidence/$peer/log.txt"
-      grep -Fq '[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 begin_pc=0x80011c80 end_pc=0x8001bcb0' "$log" ||
+      grep -Fq '[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 begin_pc=0x80011c80 end=video-frame-boundary' "$log" ||
         fail "$peer did not enable bounded SC2 transaction history"
       awk '
         /^\[sc2-transaction-history\] epoch=/ {
@@ -706,6 +728,10 @@ fi
 if [ "$TRANSACTION_REPLAY_PROBE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_TRANSACTION_REPLAY_PROBE=HEADLESS_ISOLATED)
 fi
+if [ "$TRANSACTION_LIVE_CORRECTION_PROBE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_LIVE_TRANSACTION_ROLLBACK=HEADLESS_ISOLATED
+    RINGOUT_ROLLBACK_FAULT_ARM_AT_HOOK=1)
+fi
 if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
   run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)
 fi
@@ -737,6 +763,7 @@ fi
   echo "renderer_path=$([ "$WINDOWED_RUN" -eq 1 ] && echo windowed || echo headless)"
   echo "threading_path=$([ "$DUAL_CORE_RUN" -eq 1 ] && echo dual-core-experiment || echo rollback-safe-default)"
   echo "sc2_hook_profile=$([ "$HOOK_PROFILE" -eq 1 ] && echo complete || echo disabled)"
+  echo "sc2_live_transaction_correction=$([ "$TRANSACTION_LIVE_CORRECTION_PROBE" -eq 1 ] && echo committed || echo disabled)"
   if [ "$HOOK_PROFILE" -eq 1 ]; then
     echo "sc2_hook_profile_warmup_frames=$HOOK_PROFILE_WARMUP"
     echo "sc2_hook_profile_sample_frames=$HOOK_PROFILE_SAMPLE"
@@ -774,6 +801,8 @@ elif [ "$PRODUCTION" -eq 1 ]; then
   echo "PASS: two real-game peers activated ordinary player rollback and completed the route."
 elif [ "$EXPECT_HORIZON" -eq 1 ]; then
   echo "PASS: two real-game peers stalled at the prediction horizon and resumed."
+elif [ "$TRANSACTION_LIVE_CORRECTION_PROBE" -eq 1 ]; then
+  echo "PASS: two real-game peers corrected injected late input through retained SC2 transactions."
 else
   echo "PASS: two real-game peers negotiated rollback and corrected injected late input."
 fi

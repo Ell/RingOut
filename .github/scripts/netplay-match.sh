@@ -124,11 +124,16 @@ launch() {
   local -a rollback_oracle_env=()
   local -a diagnostic_args=()
   local -a hook_profile_env=()
+  local -a determinism_dump_env=()
   [ "${WINDOWED:-0}" = "1" ] && mode=()
   [ "${RINGOUT_NETPLAY_DIAGNOSTICS:-0}" = "1" ] &&
     diagnostic_args=(--netplay-diagnostics)
   if [ -n "${RINGOUT_SC2_HOOK_PROFILE_ARM_ROUTE:-}" ]; then
     hook_profile_env=("RINGOUT_SC2_HOOK_PROFILE_ARM_FILE=$d/hook-profile.arm")
+  fi
+  if [ -n "${RINGOUT_DETERMINISM_DUMP_DIR:-}" ]; then
+    mkdir -p "$RINGOUT_DETERMINISM_DUMP_DIR"
+    determinism_dump_env=("RINGOUT_DETERMINISM_DUMP=$RINGOUT_DETERMINISM_DUMP_DIR/$name.mem1.bin")
   fi
   if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ] ||
      [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||
@@ -159,6 +164,9 @@ launch() {
       # rollback packets therefore guarantees that a bounded early window can
       # carry a real input edge and exercise correction on the guest.
       rollback_test_env+=("RINGOUT_ROLLBACK_FAULT_SCRIPT=$RINGOUT_ROLLBACK_FAULT_SCRIPT")
+      if [ "${RINGOUT_ROLLBACK_FAULT_ARM_AT_HOOK:-0}" = "1" ]; then
+        rollback_test_env+=("RINGOUT_ROLLBACK_FAULT_ARM_FILE=$d/hook-profile.arm")
+      fi
     fi
   fi
   if [ -n "${RINGOUT_EXPECT_DIGEST_MISMATCH_FRAME:-}" ]; then
@@ -176,6 +184,7 @@ launch() {
       -u RINGOUT_ROLLBACK_DIGEST_FAULT_FRAME \
       RINGOUT_DETERMINISM_LOG="$d/hash.log" \
       "${hook_profile_env[@]}" \
+      "${determinism_dump_env[@]}" \
       "${rollback_oracle_env[@]}" \
       "${rollback_test_env[@]}" \
       ./bin/moderngekko-run "${mode[@]}" --user-dir "$d/user" --game ./game \

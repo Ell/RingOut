@@ -137,7 +137,11 @@ void SetIsThrottlerTempDisabled(bool disable)
 
 void FrameUpdateOnCPUThread()
 {
-  StaticRecompVideoFrameBoundary();
+  // A selective SC2 replay ends immediately before scheduler/output work. Its
+  // corrected RAM has already been published onto the later canonical machine
+  // frontier, so this replay-derived historical frame callback must not run.
+  if (StaticRecompVideoFrameBoundary())
+    return;
   if (NetPlay::IsNetPlayRunning() && !NetPlay::NetPlayClient::IsLiveRollbackSessionActive() &&
       NetPlay::IsLiveRollbackReplayDerivedOutboundAllowed())
     NetPlay::NetPlayClient::SendTimeBase();

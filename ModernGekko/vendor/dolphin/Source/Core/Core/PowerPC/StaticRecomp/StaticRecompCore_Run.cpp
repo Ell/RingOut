@@ -806,7 +806,11 @@ void StaticRecompCore::Run()
 
           const u32 dbg_pc_before = m_guest.pc;
           ObserveSc2RollbackTransaction(m_guest.pc);
-          if (m_frame_dispatch_profiler && m_frame_dispatch_profile_armed)
+          // Hidden rollback resimulation is not physical gameplay. Including it
+          // makes the corrected peer's hook profile depend on correction depth
+          // and can even select replay-only dispatch candidates.
+          if (m_frame_dispatch_profiler && m_frame_dispatch_profile_armed &&
+              !m_sc2_transaction_replay_active)
           {
             m_frame_dispatch_profiler->RecordDispatch(m_guest.pc, m_guest.lr);
             ProfileSc2EngineMemory(m_guest.pc);

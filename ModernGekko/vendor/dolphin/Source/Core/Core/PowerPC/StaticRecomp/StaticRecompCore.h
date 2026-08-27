@@ -28,6 +28,7 @@ namespace NetPlay
 {
 class RollbackUndoSnapshotRing;
 class Sc2RollbackTransactionStore;
+struct Sc2EngineInputPoll;
 }
 
 namespace PowerPC
@@ -88,7 +89,8 @@ public:
   bool IsModuleActive() const;
   bool DispatchableAt(u32 address);
   bool FastDispatchableAt(u32 address) const;
-  void NotifyVideoFrameBoundary();
+  bool NotifyVideoFrameBoundary();
+  void InvalidateSc2RollbackTransactionHistory();
   bool InstallDispatchHook(StaticRecompDispatchHook* hook);
   void UninstallDispatchHook(StaticRecompDispatchHook* hook);
 
@@ -300,9 +302,11 @@ private:
   void ProbeSc2EngineReplay(u32 pc);
   void ObserveSc2RollbackTransaction(u32 pc);
   bool TryStartSc2TransactionReplayProbe();
+  bool TryStartSc2LiveTransactionRollback();
   bool StartSc2TransactionReplayPass();
   bool StartSc2TransactionReplayStep(u64 transaction_id, const CPUState& entry_guest,
                                      u64 entry_tb_remainder);
+  bool FinishSc2RecordedTransaction();
   void AbortSc2TransactionReplay(const char* reason);
   void FinishSc2TransactionReplayStep();
   void InjectSc2TransactionReplayInput(u32 pc);
@@ -339,6 +343,12 @@ private:
   bool m_sc2_transaction_history_active = false;
   bool m_sc2_transaction_history_faulted = false;
   bool m_sc2_transaction_replay_probe_enabled = false;
+  bool m_sc2_transaction_live_enabled = false;
+  bool m_sc2_transaction_live_correction = false;
+  u64 m_sc2_transaction_live_first_incorrect_batch = 0;
+  u64 m_sc2_transaction_live_replay_through_batch = 0;
+  u64 m_sc2_transaction_live_restore_frame = 0;
+  u64 m_sc2_transaction_live_replay_through_frame = 0;
   bool m_sc2_transaction_replay_probe_attempted = false;
   bool m_sc2_transaction_replay_active = false;
   bool m_sc2_transaction_replay_fifo_locked = false;
@@ -355,10 +365,16 @@ private:
   u64 m_sc2_video_frame = 0;
   u64 m_sc2_transaction_entry_fallbacks = 0;
   u64 m_sc2_transaction_begin_us = 0;
+  u32 m_sc2_transaction_replay_boundary_pc = 0;
+  u32 m_sc2_transaction_replay_boundary_lr = 0;
+  u64 m_sc2_transaction_pending_gap_id = 0;
+  std::vector<u8> m_sc2_transaction_pending_gap_endpoint_ram;
   std::unique_ptr<NetPlay::Sc2RollbackTransactionStore> m_sc2_transaction_store;
   std::vector<std::unique_ptr<Sc2TransactionReplayContract>> m_sc2_transaction_contracts;
   std::vector<std::unique_ptr<Sc2TransactionReplayContract>>
       m_sc2_transaction_replay_contracts;
+  std::vector<std::vector<NetPlay::Sc2EngineInputPoll>>
+      m_sc2_transaction_live_authoritative_polls;
   std::vector<u8> m_sc2_transaction_replay_canonical_ram;
   std::vector<u8> m_sc2_transaction_replay_reference_ram;
   std::vector<u32> m_sc2_transaction_replay_owned_offsets;
@@ -505,7 +521,8 @@ bool StaticRecompCoveredAt(u32 pc);
 
 // Called at Dolphin's video frame boundary. It is a no-op unless the opt-in
 // SC2 hook discovery profiler is active.
-void StaticRecompVideoFrameBoundary();
+bool StaticRecompVideoFrameBoundary();
+void StaticRecompInvalidateSc2RollbackTransactionHistory();
 
 bool InstallStaticRecompDispatchHook(StaticRecompDispatchHook* hook);
 void UninstallStaticRecompDispatchHook(StaticRecompDispatchHook* hook);

@@ -138,6 +138,11 @@ public:
   // input dependency of its own.
   std::optional<u64> GetLastAppliedBatchThroughEmulatedFrame(u64 emulated_frame) const;
   std::optional<ReplayTrigger> GetReplayTrigger() const;
+  // SC2's game-owned transaction driver performs its own sparse restore and
+  // replay. Once that driver has published the exact corrected frontier, it
+  // acknowledges the same immutable trigger without asking the broad emulator
+  // coordinator to restore a second time.
+  bool AcknowledgeSelectiveReplay(const ReplayTrigger& trigger);
 
   // True only after this complete emulated frame consumed at least one SI
   // batch and every consumed batch through its final poll has authoritative

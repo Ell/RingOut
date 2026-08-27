@@ -43,7 +43,7 @@ public:
                             LiveRollbackOutputGate& output_gate);
 
   ActivationStatus Activate(u64 initial_frame);
-  BoundaryStatus CompleteCurrentFrame();
+  BoundaryStatus CompleteCurrentFrame(bool start_pending_rollback = true);
   void Deactivate();
 
   bool IsActive() const { return m_active; }

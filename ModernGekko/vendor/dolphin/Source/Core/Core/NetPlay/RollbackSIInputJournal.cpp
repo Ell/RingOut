@@ -277,6 +277,18 @@ RollbackSIInputJournal::GetReplayTrigger() const
       .replay_through_emulated_frame = replay_through->second.emulated_frame};
 }
 
+bool RollbackSIInputJournal::AcknowledgeSelectiveReplay(const ReplayTrigger& trigger)
+{
+  std::lock_guard guard(m_mutex);
+  const std::optional<Timeline::RollbackRequest> pending = m_timeline.GetPendingRollback();
+  if (!pending || *pending != trigger.timeline_request)
+    return false;
+  if (!m_timeline.AcknowledgeRollback(trigger.timeline_request))
+    return false;
+  PruneMetadata();
+  return true;
+}
+
 bool RollbackSIInputJournal::AcknowledgeAndCommitReplay(const ReplayTrigger& trigger,
                                                         RollbackCoordinator& coordinator)
 {

@@ -35,7 +35,8 @@ LiveRollbackFrameBoundary::Activate(const u64 initial_frame)
   return ActivationStatus::Active;
 }
 
-LiveRollbackFrameBoundary::BoundaryStatus LiveRollbackFrameBoundary::CompleteCurrentFrame()
+LiveRollbackFrameBoundary::BoundaryStatus
+LiveRollbackFrameBoundary::CompleteCurrentFrame(const bool start_pending_rollback)
 {
   if (!m_active)
     return BoundaryStatus::Inactive;
@@ -53,7 +54,7 @@ LiveRollbackFrameBoundary::BoundaryStatus LiveRollbackFrameBoundary::CompleteCur
     {
       return Fault();
     }
-    if (m_journal.GetReplayTrigger())
+    if (start_pending_rollback && m_journal.GetReplayTrigger())
       return StartPendingRollback(false);
     if (m_current_frame == std::numeric_limits<u64>::max())
       return Fault();

@@ -183,6 +183,9 @@ bool TestVariablePollJournalAndReplayTrigger() {
   CHECK(corrected_11.inputs.pads[1].button == PAD_BUTTON_Y);
   CHECK(corrected_12.inputs.pads[1].button == PAD_BUTTON_X);
   CHECK(journal.GetConfirmedThroughBatch() == 12);
+  CHECK(journal.AcknowledgeSelectiveReplay(*current_trigger));
+  CHECK(!journal.GetReplayTrigger());
+  CHECK(!journal.AcknowledgeSelectiveReplay(*current_trigger));
   return true;
 }
 

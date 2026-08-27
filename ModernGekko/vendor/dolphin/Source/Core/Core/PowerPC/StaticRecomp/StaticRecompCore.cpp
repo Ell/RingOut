@@ -48,6 +48,12 @@ struct StaticRecompCore::Sc2TransactionReplayContract
   u64 transaction_id = 0;
   CPUState entry_guest{};
   u64 entry_tb_remainder = 0;
+  std::shared_ptr<std::vector<u8>> entry_ram;
+  std::shared_ptr<std::vector<u8>> entry_l1;
+  std::vector<u8> replay_predicted_endpoint_ram;
+  u32 boundary_pc = 0;
+  u32 boundary_lr = 0;
+  std::vector<std::pair<u32, u8>> next_entry_gap_postimage;
   std::vector<NetPlay::Sc2EngineInputPoll> input_polls;
   std::vector<Sc2UpdateExternalEffect> external_effects;
   std::map<u64, std::vector<std::pair<u32, u8>>> handler_post_ram;
@@ -62,10 +68,17 @@ bool StaticRecompCoveredAt(u32 pc)
          g_static_recomp_core->DispatchableAt(pc);
 }
 
-void StaticRecompVideoFrameBoundary()
+bool StaticRecompVideoFrameBoundary()
 {
   if (g_static_recomp_core)
-    g_static_recomp_core->NotifyVideoFrameBoundary();
+    return g_static_recomp_core->NotifyVideoFrameBoundary();
+  return false;
+}
+
+void StaticRecompInvalidateSc2RollbackTransactionHistory()
+{
+  if (g_static_recomp_core)
+    g_static_recomp_core->InvalidateSc2RollbackTransactionHistory();
 }
 
 bool InstallStaticRecompDispatchHook(StaticRecompDispatchHook* const hook)
@@ -330,24 +343,36 @@ void StaticRecompCore::Init()
       std::getenv("RINGOUT_SC2_TRANSACTION_HISTORY_PROBE");
   const char* const transaction_replay =
       std::getenv("RINGOUT_SC2_TRANSACTION_REPLAY_PROBE");
+  const char* const transaction_live =
+      std::getenv("RINGOUT_SC2_LIVE_TRANSACTION_ROLLBACK");
   if (((transaction_history != nullptr &&
         std::strcmp(transaction_history, "HEADLESS_ISOLATED") == 0) ||
        (transaction_replay != nullptr &&
-        std::strcmp(transaction_replay, "HEADLESS_ISOLATED") == 0)) &&
+        std::strcmp(transaction_replay, "HEADLESS_ISOLATED") == 0) ||
+       (transaction_live != nullptr &&
+        std::strcmp(transaction_live, "HEADLESS_ISOLATED") == 0)) &&
       !m_sc2_engine_replay_probe_enabled)
   {
     m_sc2_transaction_history_enabled = true;
     m_sc2_transaction_replay_probe_enabled =
         transaction_replay != nullptr &&
         std::strcmp(transaction_replay, "HEADLESS_ISOLATED") == 0;
+    m_sc2_transaction_live_enabled =
+        transaction_live != nullptr &&
+        std::strcmp(transaction_live, "HEADLESS_ISOLATED") == 0;
     std::fprintf(stderr,
                  "[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 "
-                 "begin_pc=0x80011c80 end_pc=0x8001bcb0\n");
+                 "begin_pc=0x80011c80 end=video-frame-boundary\n");
     if (m_sc2_transaction_replay_probe_enabled)
     {
       std::fprintf(stderr,
                    "[sc2-transaction-replay] enabled transactions=3 passes=2 "
                    "corrected_input=remote-a\n");
+    }
+    if (m_sc2_transaction_live_enabled)
+    {
+      std::fprintf(stderr,
+                   "[sc2-transaction-live] enabled mode=headless-isolated broad-anchor=yes\n");
     }
   }
 
@@ -549,15 +574,22 @@ void StaticRecompCore::UninstallDispatchHook(StaticRecompDispatchHook* const hoo
   m_dispatch_hook_pcs.clear();
 }
 
-void StaticRecompCore::NotifyVideoFrameBoundary()
+bool StaticRecompCore::NotifyVideoFrameBoundary()
 {
+  if (m_sc2_transaction_replay_active)
+  {
+    FinishSc2TransactionReplayStep();
+    return true;
+  }
+  if (m_sc2_transaction_history_active)
+    FinishSc2RecordedTransaction();
   ++m_sc2_video_frame;
   if (m_frame_dispatch_profiler)
   {
     if (!m_frame_dispatch_profile_armed)
     {
       if (!File::Exists(m_frame_dispatch_profile_arm_file))
-        return;
+        return false;
       m_frame_dispatch_profile_armed = true;
       std::fprintf(stderr, "[sc2-hook-profile] armed file=%s\n",
                    m_frame_dispatch_profile_arm_file.c_str());
@@ -565,12 +597,19 @@ void StaticRecompCore::NotifyVideoFrameBoundary()
       // not count that empty partial interval as sample frame zero; recording
       // begins immediately after this return and the next boundary closes the
       // first complete profiled frame.
-      return;
+      return false;
     }
     m_frame_dispatch_profiler->EndVideoFrame();
     if (m_frame_dispatch_profiler->IsComplete())
       ReportFrameDispatchProfile();
   }
+  return false;
+}
+
+void StaticRecompCore::InvalidateSc2RollbackTransactionHistory()
+{
+  if (m_sc2_transaction_history_enabled)
+    m_sc2_transaction_history_faulted = true;
 }
 
 void StaticRecompCore::Sc2RollbackTransactionWriteTrampoline(const u32 offset, const u32 size,
@@ -654,16 +693,19 @@ bool StaticRecompCore::StartSc2TransactionReplayStep(const u64 transaction_id,
   {
     return false;
   }
-  const Sc2TransactionReplayContract& contract =
-      *m_sc2_transaction_replay_contracts[index];
+  Sc2TransactionReplayContract& contract = *m_sc2_transaction_replay_contracts[index];
   if (contract.transaction_id != transaction_id || contract.input_polls.empty() ||
       !NetPlay::BeginSc2EngineInputReplayFrom(
-          contract.input_polls, transaction_id == m_sc2_transaction_replay_first))
+          contract.input_polls,
+          m_sc2_transaction_replay_probe_enabled &&
+              transaction_id == m_sc2_transaction_replay_first))
   {
     return false;
   }
 
   m_sc2_update_external_effects = contract.external_effects;
+  m_sc2_transaction_replay_boundary_pc = contract.boundary_pc;
+  m_sc2_transaction_replay_boundary_lr = contract.boundary_lr;
   m_sc2_update_handler_post_ram = contract.handler_post_ram;
   m_sc2_update_handler_post_guest = contract.handler_post_guest;
   m_sc2_update_handler_post_tb_remainder = contract.handler_post_tb_remainder;
@@ -678,8 +720,11 @@ bool StaticRecompCore::StartSc2TransactionReplayStep(const u64 transaction_id,
     const auto [begin, end] = range;
     if (begin > end || end > m_sc2_update_external_replay_reserved.size())
       return false;
-    std::fill(m_sc2_update_external_replay_reserved.begin() + begin,
-              m_sc2_update_external_replay_reserved.begin() + end, true);
+    if (!m_sc2_transaction_live_correction)
+    {
+      std::fill(m_sc2_update_external_replay_reserved.begin() + begin,
+                m_sc2_update_external_replay_reserved.begin() + end, true);
+    }
   }
   m_sc2_update_external_valid = true;
   m_sc2_update_external_capture = false;
@@ -735,6 +780,14 @@ bool StaticRecompCore::StartSc2TransactionReplayPass()
   u64 entry_tb_remainder = 0;
   std::memcpy(&entry_guest, auxiliary.data(), sizeof(CPUState));
   std::memcpy(&entry_tb_remainder, auxiliary.data() + sizeof(CPUState), sizeof(u64));
+  if (!first.entry_ram || first.entry_ram->size() != m_guest.ram_size)
+    return false;
+  std::memcpy(m_guest.ram, first.entry_ram->data(), m_guest.ram_size);
+  auto& memory = m_system.GetMemory();
+  if (!first.entry_l1 || first.entry_l1->size() != memory.GetL1CacheSize())
+    return false;
+  if (!first.entry_l1->empty())
+    std::memcpy(memory.GetL1Cache(), first.entry_l1->data(), first.entry_l1->size());
   ++m_sc2_transaction_replay_pass;
   return StartSc2TransactionReplayStep(m_sc2_transaction_replay_first, entry_guest,
                                        entry_tb_remainder);
@@ -803,8 +856,116 @@ bool StaticRecompCore::TryStartSc2TransactionReplayProbe()
   return true;
 }
 
+bool StaticRecompCore::TryStartSc2LiveTransactionRollback()
+{
+  if (!m_sc2_transaction_live_enabled || m_sc2_transaction_replay_active ||
+      !m_sc2_transaction_store)
+  {
+    return false;
+  }
+  const std::optional<NetPlay::Sc2LiveRollbackCorrection> correction =
+      NetPlay::ClaimSc2LiveRollbackCorrection();
+  if (!correction)
+    return false;
+
+  const auto plan = m_sc2_transaction_store->PlanCorrection(
+      correction->first_incorrect_batch_id, correction->replay_through_batch_id);
+  if (plan.status == NetPlay::Sc2RollbackTransactionTimeline::PlanStatus::NotConsumedByGame)
+  {
+    NetPlay::CancelSc2LiveRollbackCorrection();
+    std::fprintf(stderr,
+                 "[sc2-transaction-live] hardware-only correction requires broad fallback "
+                 "first_batch=%llu replay_through_batch=%llu\n",
+                 static_cast<unsigned long long>(correction->first_incorrect_batch_id),
+                 static_cast<unsigned long long>(correction->replay_through_batch_id));
+    return false;
+  }
+  if (plan.status != NetPlay::Sc2RollbackTransactionTimeline::PlanStatus::Ready ||
+      plan.restore_transaction > plan.replay_through_transaction ||
+      plan.replay_through_transaction - plan.restore_transaction >=
+          m_sc2_transaction_contracts.size())
+  {
+    NetPlay::CancelSc2LiveRollbackCorrection();
+    return false;
+  }
+
+  std::vector<std::unique_ptr<Sc2TransactionReplayContract>> contracts;
+  std::vector<std::vector<NetPlay::Sc2EngineInputPoll>> authoritative_polls;
+  contracts.reserve(static_cast<std::size_t>(plan.replay_through_transaction -
+                                              plan.restore_transaction + 1));
+  authoritative_polls.reserve(contracts.capacity());
+  for (u64 id = plan.restore_transaction; id <= plan.replay_through_transaction; ++id)
+  {
+    const auto& source = m_sc2_transaction_contracts[id % m_sc2_transaction_contracts.size()];
+    if (!source || source->transaction_id != id || source->input_polls.empty())
+    {
+      NetPlay::CancelSc2LiveRollbackCorrection();
+      return false;
+    }
+    auto contract = std::make_unique<Sc2TransactionReplayContract>(*source);
+    std::vector<NetPlay::Sc2EngineInputPoll> authoritative;
+    if (!NetPlay::ResolveSc2LiveRollbackPolls(contract->input_polls, &authoritative))
+    {
+      NetPlay::CancelSc2LiveRollbackCorrection();
+      return false;
+    }
+    authoritative_polls.push_back(std::move(authoritative));
+    contracts.push_back(std::move(contract));
+  }
+
+  m_sc2_transaction_live_correction = true;
+  m_sc2_transaction_live_first_incorrect_batch = correction->first_incorrect_batch_id;
+  m_sc2_transaction_live_replay_through_batch = correction->replay_through_batch_id;
+  m_sc2_transaction_live_restore_frame = correction->restore_before_emulated_frame;
+  m_sc2_transaction_live_replay_through_frame = correction->replay_through_emulated_frame;
+  m_sc2_transaction_replay_first = plan.restore_transaction;
+  m_sc2_transaction_replay_through = plan.replay_through_transaction;
+  m_sc2_transaction_replay_frontier = m_sc2_transaction_id;
+  m_sc2_transaction_replay_contracts = std::move(contracts);
+  m_sc2_transaction_live_authoritative_polls = std::move(authoritative_polls);
+  m_sc2_transaction_replay_fifo_was_running =
+      Core::GetState(m_system) == Core::State::Running;
+  m_system.GetFifo().PauseAndLock();
+  m_sc2_transaction_replay_fifo_locked = true;
+  SyncOut();
+  {
+    const State::ScopedRollbackSnapshot rollback_snapshot_scope;
+    m_sc2_transaction_replay_canonical_state_size =
+        State::SaveToBuffer(m_system, m_sc2_transaction_replay_canonical_state);
+  }
+  if (m_sc2_transaction_replay_canonical_state_size == 0)
+  {
+    AbortSc2TransactionReplay("live-canonical-state-capture");
+    return false;
+  }
+  m_sc2_transaction_replay_canonical_ram.assign(m_guest.ram,
+                                                 m_guest.ram + m_guest.ram_size);
+  m_sc2_transaction_replay_canonical_guest = m_guest;
+  m_sc2_transaction_replay_canonical_tb_remainder = m_tb_cycle_remainder;
+  m_sc2_transaction_replay_pass = 0;
+  m_sc2_transaction_replay_perturbed_polls = 0;
+  std::fprintf(stderr,
+               "[sc2-transaction-live] correction first_batch=%llu replay_through_batch=%llu "
+               "transactions=%llu..%llu\n",
+               static_cast<unsigned long long>(correction->first_incorrect_batch_id),
+               static_cast<unsigned long long>(correction->replay_through_batch_id),
+               static_cast<unsigned long long>(plan.restore_transaction),
+               static_cast<unsigned long long>(plan.replay_through_transaction));
+  if (!StartSc2TransactionReplayPass())
+  {
+    AbortSc2TransactionReplay("live-first-pass-start");
+    return false;
+  }
+  return true;
+}
+
 void StaticRecompCore::AbortSc2TransactionReplay(const char* const reason)
 {
+  if (m_sc2_transaction_live_correction)
+  {
+    NetPlay::CancelSc2LiveRollbackCorrection();
+    m_sc2_transaction_live_correction = false;
+  }
   if (m_sc2_engine_set_mem_journal)
     m_sc2_engine_set_mem_journal(nullptr, nullptr);
   NetPlay::EndSc2EngineInputReplay();
@@ -860,8 +1021,7 @@ void StaticRecompCore::FinishSc2TransactionReplayStep()
 
   const std::size_t index = static_cast<std::size_t>(
       m_sc2_transaction_replay_current - m_sc2_transaction_replay_first);
-  const Sc2TransactionReplayContract& contract =
-      *m_sc2_transaction_replay_contracts[index];
+  Sc2TransactionReplayContract& contract = *m_sc2_transaction_replay_contracts[index];
   std::optional<u64> last_batch;
   for (const auto& poll : contract.input_polls)
   {
@@ -875,6 +1035,20 @@ void StaticRecompCore::FinishSc2TransactionReplayStep()
   m_sc2_transaction_history_active = false;
   m_sc2_update_external_replay = false;
   m_sc2_update_external_keyed_replay = false;
+  if (m_sc2_transaction_live_correction && m_sc2_transaction_replay_pass == 1)
+  {
+    contract.replay_predicted_endpoint_ram.assign(m_guest.ram,
+                                                   m_guest.ram + m_guest.ram_size);
+  }
+  for (const auto& [offset, value] : contract.next_entry_gap_postimage)
+  {
+    const bool authoritative_delta =
+        m_sc2_transaction_live_correction && m_sc2_transaction_replay_pass == 2 &&
+        contract.replay_predicted_endpoint_ram.size() == m_guest.ram_size &&
+        m_guest.ram[offset] != contract.replay_predicted_endpoint_ram[offset];
+    if (!authoritative_delta)
+      m_guest.ram[offset] = value;
+  }
   std::fprintf(stderr,
                "[sc2-transaction-replay] pass=%u transaction=%llu perturbed_polls=%zu "
                "effects=%zu/%zu result=%s\n",
@@ -909,6 +1083,142 @@ void StaticRecompCore::FinishSc2TransactionReplayStep()
                    "[sc2-transaction-replay] result=failed reason=next-transaction\n");
       AbortSc2TransactionReplay("next-transaction");
     }
+    return;
+  }
+
+  if (m_sc2_transaction_live_correction)
+  {
+    if (m_sc2_transaction_replay_pass == 1)
+    {
+      m_sc2_transaction_replay_reference_ram.assign(m_guest.ram,
+                                                     m_guest.ram + m_guest.ram_size);
+      m_sc2_transaction_replay_reference_guest = m_guest;
+      m_sc2_transaction_replay_reference_tb_remainder = m_tb_cycle_remainder;
+      if (m_sc2_transaction_live_authoritative_polls.size() !=
+          m_sc2_transaction_replay_contracts.size())
+      {
+        AbortSc2TransactionReplay("live-authoritative-contracts");
+        return;
+      }
+      for (std::size_t contract_index = 0;
+           contract_index < m_sc2_transaction_replay_contracts.size(); ++contract_index)
+      {
+        m_sc2_transaction_replay_contracts[contract_index]->input_polls =
+            m_sc2_transaction_live_authoritative_polls[contract_index];
+      }
+      std::fprintf(stderr,
+                   "[sc2-transaction-live] captured predicted endpoint; "
+                   "replaying authoritative branch\n");
+      if (!StartSc2TransactionReplayPass())
+        AbortSc2TransactionReplay("live-authoritative-pass-start");
+      return;
+    }
+    if (m_sc2_transaction_replay_pass != 2 ||
+        m_sc2_transaction_replay_reference_ram.size() != m_guest.ram_size)
+    {
+      AbortSc2TransactionReplay("live-authoritative-pass");
+      return;
+    }
+
+    std::vector<bool> owned(m_guest.ram_size, false);
+    m_sc2_transaction_replay_owned_offsets.clear();
+    for (u64 id = m_sc2_transaction_replay_first;
+         id <= m_sc2_transaction_replay_through; ++id)
+    {
+      for (const u32 offset : m_sc2_transaction_store->GetUndoRing().GetWriteOffsets(id))
+      {
+        if (!owned[offset])
+        {
+          owned[offset] = true;
+          m_sc2_transaction_replay_owned_offsets.push_back(offset);
+        }
+      }
+    }
+    std::ranges::sort(m_sc2_transaction_replay_owned_offsets);
+    std::vector<std::pair<u32, u8>> corrected_postimage;
+    for (const u32 offset : m_sc2_transaction_replay_owned_offsets)
+    {
+      if (m_guest.ram[offset] != m_sc2_transaction_replay_reference_ram[offset])
+      {
+        corrected_postimage.emplace_back(offset, m_guest.ram[offset]);
+      }
+    }
+    std::vector<u8> owned_digest_bytes;
+    owned_digest_bytes.reserve(m_sc2_transaction_replay_owned_offsets.size() * 5);
+    for (const auto& [offset, value] : corrected_postimage)
+    {
+      owned_digest_bytes.push_back(static_cast<u8>(offset >> 24));
+      owned_digest_bytes.push_back(static_cast<u8>(offset >> 16));
+      owned_digest_bytes.push_back(static_cast<u8>(offset >> 8));
+      owned_digest_bytes.push_back(static_cast<u8>(offset));
+      owned_digest_bytes.push_back(value);
+    }
+    const u32 owned_crc32 =
+        Common::ComputeCRC32(owned_digest_bytes.data(), owned_digest_bytes.size());
+    bool state_restored = false;
+    {
+      const State::ScopedRollbackSnapshot rollback_snapshot_scope;
+      state_restored = State::LoadFromBuffer(
+          m_system,
+          std::span<u8>{m_sc2_transaction_replay_canonical_state.data(),
+                        m_sc2_transaction_replay_canonical_state_size});
+    }
+    if (!state_restored)
+    {
+      AbortSc2TransactionReplay("live-canonical-state-restore");
+      return;
+    }
+    u8* const ram = m_guest.ram;
+    const u32 ram_size = m_guest.ram_size;
+    u8* const mem2 = m_guest.mem2;
+    const u32 mem2_size = m_guest.mem2_size;
+    m_guest = m_sc2_transaction_replay_canonical_guest;
+    m_guest.ram = ram;
+    m_guest.ram_size = ram_size;
+    m_guest.mem2 = mem2;
+    m_guest.mem2_size = mem2_size;
+    m_tb_cycle_remainder = m_sc2_transaction_replay_canonical_tb_remainder;
+    for (const auto [offset, value] : corrected_postimage)
+      m_guest.ram[offset] = value;
+
+    const NetPlay::Sc2LiveRollbackCorrection correction{
+        .first_incorrect_batch_id = m_sc2_transaction_live_first_incorrect_batch,
+        .replay_through_batch_id = m_sc2_transaction_live_replay_through_batch,
+        .restore_before_emulated_frame = m_sc2_transaction_live_restore_frame,
+        .replay_through_emulated_frame = m_sc2_transaction_live_replay_through_frame};
+    if (!NetPlay::CommitSc2LiveRollbackCorrection(correction))
+    {
+      AbortSc2TransactionReplay("live-journal-commit");
+      return;
+    }
+    if (m_sc2_transaction_replay_fifo_locked)
+    {
+      m_system.GetFifo().RestoreState(m_sc2_transaction_replay_fifo_was_running);
+      m_sc2_transaction_replay_fifo_locked = false;
+    }
+    m_sc2_transaction_replay_active = false;
+    m_sc2_engine_speculative_active = false;
+    m_sc2_update_external_replay = false;
+    m_sc2_update_external_keyed_replay = false;
+    m_sc2_transaction_history_active = false;
+    m_sc2_transaction_live_correction = false;
+    std::fprintf(stderr,
+                 "[sc2-transaction-live] committed transactions=%llu owned_bytes=%zu "
+                 "corrected_bytes=%zu owned_crc32=%08x canonical_state_bytes=%zu\n",
+                 static_cast<unsigned long long>(m_sc2_transaction_replay_through -
+                                                 m_sc2_transaction_replay_first + 1),
+                 m_sc2_transaction_replay_owned_offsets.size(), corrected_postimage.size(),
+                 owned_crc32,
+                 m_sc2_transaction_replay_canonical_state_size);
+    // Every retained contract describes the old predicted branch. Reusing an
+    // overlapping contract after this commit can silently undo an earlier
+    // correction, so establish a fresh history epoch at the corrected frontier.
+    InvalidateSc2RollbackTransactionHistory();
+    ObserveSc2RollbackTransaction(m_guest.pc);
+    // The first call discards the stale epoch. The canonical CPU frontier is
+    // the BEGIN_PC of the transaction which had not run when correction began,
+    // so the second call starts its new sparse journal before dispatch resumes.
+    ObserveSc2RollbackTransaction(m_guest.pc);
     return;
   }
 
@@ -995,10 +1305,94 @@ void StaticRecompCore::FinishSc2TransactionReplayStep()
   AbortSc2TransactionReplay(exact ? "complete" : "verification");
 }
 
+bool StaticRecompCore::FinishSc2RecordedTransaction()
+{
+  if (!m_sc2_transaction_history_active || !m_sc2_transaction_store)
+    return false;
+
+  m_sc2_engine_set_mem_journal(nullptr, nullptr);
+  std::size_t polls = 0;
+  std::vector<u64> batches;
+  std::vector<NetPlay::Sc2EngineInputPoll> input_polls;
+  const bool input_valid =
+      NetPlay::FinishSc2EngineInputCapture(&polls, &batches, &input_polls);
+  const u64 fallback_delta = m_hook_fallback_instructions - m_sc2_transaction_entry_fallbacks;
+  // The video-frame callback is reached from inside the outer update call, so
+  // the direct/indirect-call profilers can legitimately have an open call at
+  // this cut.  Replay ends at the same callback and does not need to resume the
+  // profiling stack.  Overflow still invalidates the captured contract.
+  bool valid = input_valid && fallback_delta == 0 && m_sc2_update_external_valid &&
+               !m_sc2_engine_direct_call_overflow && !m_sc2_engine_indirect_call_overflow;
+  for (const u64 batch : batches)
+    valid = m_sc2_transaction_store->RecordConsumedBatch(batch) && valid;
+  valid = m_sc2_transaction_store->CompleteTransaction(m_sc2_video_frame) && valid;
+  const std::optional<std::size_t> unique_bytes =
+      m_sc2_transaction_store->GetUndoRing().GetUniqueBytes(m_sc2_transaction_id);
+  valid = unique_bytes.has_value() && valid;
+  if (valid)
+  {
+    auto& contract =
+        m_sc2_transaction_contracts[m_sc2_transaction_id % m_sc2_transaction_contracts.size()];
+    valid = contract && contract->transaction_id == m_sc2_transaction_id;
+    if (valid)
+    {
+      contract->input_polls = std::move(input_polls);
+      contract->boundary_pc = m_guest.pc;
+      contract->boundary_lr = m_guest.lr;
+      contract->external_effects = m_sc2_update_external_effects;
+      contract->handler_post_ram = m_sc2_update_handler_post_ram;
+      contract->handler_post_guest = m_sc2_update_handler_post_guest;
+      contract->handler_post_tb_remainder = m_sc2_update_handler_post_tb_remainder;
+      contract->handler_effect_ranges = m_sc2_update_handler_effect_ranges;
+    }
+  }
+  if (valid)
+  {
+    m_sc2_transaction_pending_gap_id = m_sc2_transaction_id;
+    m_sc2_transaction_pending_gap_endpoint_ram.assign(m_guest.ram,
+                                                       m_guest.ram + m_guest.ram_size);
+  }
+  m_sc2_update_external_capture = false;
+  m_sc2_engine_external_profile_active = false;
+  const u64 elapsed_us = Common::Timer::NowUs() - m_sc2_transaction_begin_us;
+  const u64 first_batch = batches.empty() ? 0 : batches.front();
+  const u64 last_batch = batches.empty() ? 0 : batches.back();
+  std::fprintf(stderr,
+               "[sc2-transaction-history] epoch=%llu transaction=%llu "
+               "video_frames=%llu..%llu polls=%zu batches=%zu unique_bytes=%zu "
+               "first_batch=%llu last_batch=%llu effects=%zu handlers=%zu elapsed_us=%llu "
+               "input_valid=%s fallback_instructions=%llu direct_open=%s "
+               "indirect_open=%s result=%s\n",
+               static_cast<unsigned long long>(m_sc2_transaction_epoch),
+               static_cast<unsigned long long>(m_sc2_transaction_id),
+               static_cast<unsigned long long>(m_sc2_transaction_video_frame),
+               static_cast<unsigned long long>(m_sc2_video_frame), polls, batches.size(),
+               unique_bytes.value_or(0), static_cast<unsigned long long>(first_batch),
+               static_cast<unsigned long long>(last_batch), m_sc2_update_external_effects.size(),
+               m_sc2_update_handler_post_ram.size(), static_cast<unsigned long long>(elapsed_us),
+               input_valid ? "yes" : "no", static_cast<unsigned long long>(fallback_delta),
+               m_sc2_engine_direct_call_active ? "yes" : "no",
+               m_sc2_engine_indirect_call_active ? "yes" : "no", valid ? "ok" : "failed");
+  m_sc2_transaction_history_active = false;
+  if (!valid || m_sc2_transaction_id == std::numeric_limits<u64>::max())
+  {
+    m_sc2_transaction_history_faulted = true;
+    return false;
+  }
+  ++m_sc2_transaction_id;
+  return true;
+}
+
 void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
 {
   if (!m_sc2_transaction_history_enabled || m_guest.ram == nullptr || m_guest.ram_size == 0)
   {
+    return;
+  }
+  if (m_sc2_transaction_replay_active && pc == m_sc2_transaction_replay_boundary_pc &&
+      m_guest.lr == m_sc2_transaction_replay_boundary_lr)
+  {
+    FinishSc2TransactionReplayStep();
     return;
   }
   if (m_sc2_transaction_history_faulted)
@@ -1013,6 +1407,8 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
     m_sc2_transaction_store.reset();
     for (auto& contract : m_sc2_transaction_contracts)
       contract.reset();
+    m_sc2_transaction_pending_gap_id = 0;
+    m_sc2_transaction_pending_gap_endpoint_ram.clear();
     m_sc2_transaction_id = 1;
     if (m_sc2_transaction_epoch != std::numeric_limits<u64>::max())
       ++m_sc2_transaction_epoch;
@@ -1031,20 +1427,39 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
     InjectSc2TransactionReplayInput(pc);
     if (ReplaySc2UpdateSystemHandler(pc))
       return;
-    if (pc == END_PC)
-      FinishSc2TransactionReplayStep();
     return;
   }
-  if (m_sc2_transaction_history_active)
+  if (m_sc2_transaction_history_active && !(pc == BEGIN_PC && m_guest.lr == BEGIN_LR))
   {
     ObserveSc2EngineIndirectCall(pc);
     ObserveSc2EngineDirectCall(pc);
   }
   if (pc == BEGIN_PC && m_guest.lr == BEGIN_LR)
   {
+    if (m_sc2_transaction_pending_gap_id != 0)
+    {
+      auto& previous = m_sc2_transaction_contracts[
+          m_sc2_transaction_pending_gap_id % m_sc2_transaction_contracts.size()];
+      if (!previous || previous->transaction_id != m_sc2_transaction_pending_gap_id ||
+          m_sc2_transaction_pending_gap_endpoint_ram.size() != m_guest.ram_size)
+      {
+        m_sc2_transaction_history_faulted = true;
+        return;
+      }
+      previous->next_entry_gap_postimage.clear();
+      for (u32 offset = 0; offset < m_guest.ram_size; ++offset)
+      {
+        if (m_sc2_transaction_pending_gap_endpoint_ram[offset] != m_guest.ram[offset])
+          previous->next_entry_gap_postimage.emplace_back(offset, m_guest.ram[offset]);
+      }
+      m_sc2_transaction_pending_gap_id = 0;
+      m_sc2_transaction_pending_gap_endpoint_ram.clear();
+    }
+    if (TryStartSc2LiveTransactionRollback())
+      return;
     if (TryStartSc2TransactionReplayProbe())
       return;
-    if (m_sc2_transaction_history_active || m_lockstep_verifier->IsEnabled() || m_watch_armed)
+    if (m_lockstep_verifier->IsEnabled() || m_watch_armed)
     {
       m_sc2_transaction_history_faulted = true;
       return;
@@ -1115,12 +1530,28 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
       m_sc2_transaction_history_faulted = true;
       return;
     }
+    auto& contract_slot =
+        m_sc2_transaction_contracts[m_sc2_transaction_id % m_sc2_transaction_contracts.size()];
+    std::shared_ptr<std::vector<u8>> entry_ram;
+    std::shared_ptr<std::vector<u8>> entry_l1;
+    if (contract_slot && contract_slot->entry_ram && contract_slot->entry_ram.use_count() == 1)
+      entry_ram = contract_slot->entry_ram;
+    else
+      entry_ram = std::make_shared<std::vector<u8>>();
+    if (contract_slot && contract_slot->entry_l1 && contract_slot->entry_l1.use_count() == 1)
+      entry_l1 = contract_slot->entry_l1;
+    else
+      entry_l1 = std::make_shared<std::vector<u8>>();
+    entry_ram->assign(m_guest.ram, m_guest.ram + m_guest.ram_size);
+    auto& memory = m_system.GetMemory();
+    entry_l1->assign(memory.GetL1Cache(), memory.GetL1Cache() + memory.GetL1CacheSize());
     auto contract = std::make_unique<Sc2TransactionReplayContract>();
     contract->transaction_id = m_sc2_transaction_id;
     contract->entry_guest = m_guest;
     contract->entry_tb_remainder = m_tb_cycle_remainder;
-    m_sc2_transaction_contracts[m_sc2_transaction_id % m_sc2_transaction_contracts.size()] =
-        std::move(contract);
+    contract->entry_ram = std::move(entry_ram);
+    contract->entry_l1 = std::move(entry_l1);
+    contract_slot = std::move(contract);
     NetPlay::BeginSc2EngineInputCapture();
     m_sc2_engine_set_mem_journal(&StaticRecompCore::Sc2RollbackTransactionWriteTrampoline, this);
     m_sc2_transaction_video_frame = m_sc2_video_frame;
@@ -1130,71 +1561,6 @@ void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
     return;
   }
 
-  if (pc != END_PC || !m_sc2_transaction_history_active)
-    return;
-
-  m_sc2_engine_set_mem_journal(nullptr, nullptr);
-  std::size_t polls = 0;
-  std::vector<u64> batches;
-  std::vector<NetPlay::Sc2EngineInputPoll> input_polls;
-  const bool input_valid =
-      NetPlay::FinishSc2EngineInputCapture(&polls, &batches, &input_polls);
-  // Boot/menu updates can legitimately run before NetPlay has assigned an SI
-  // batch. Retain them as inputless transactions; the mapper will never select
-  // them for an input correction, but later retained descendants still need a
-  // contiguous sparse undo lineage.
-  const u64 fallback_delta = m_hook_fallback_instructions - m_sc2_transaction_entry_fallbacks;
-  bool valid = input_valid && fallback_delta == 0 && m_sc2_update_external_valid &&
-               !m_sc2_engine_direct_call_active && !m_sc2_engine_direct_call_overflow &&
-               !m_sc2_engine_indirect_call_active && !m_sc2_engine_indirect_call_overflow;
-  for (const u64 batch : batches)
-    valid = m_sc2_transaction_store->RecordConsumedBatch(batch) && valid;
-  valid = m_sc2_transaction_store->CompleteTransaction(m_sc2_video_frame) && valid;
-  const std::optional<std::size_t> unique_bytes =
-      m_sc2_transaction_store->GetUndoRing().GetUniqueBytes(m_sc2_transaction_id);
-  valid = unique_bytes.has_value() && valid;
-  if (valid)
-  {
-    auto& contract =
-        m_sc2_transaction_contracts[m_sc2_transaction_id % m_sc2_transaction_contracts.size()];
-    valid = contract && contract->transaction_id == m_sc2_transaction_id;
-    if (valid)
-    {
-      contract->input_polls = std::move(input_polls);
-      contract->external_effects = m_sc2_update_external_effects;
-      contract->handler_post_ram = m_sc2_update_handler_post_ram;
-      contract->handler_post_guest = m_sc2_update_handler_post_guest;
-      contract->handler_post_tb_remainder = m_sc2_update_handler_post_tb_remainder;
-      contract->handler_effect_ranges = m_sc2_update_handler_effect_ranges;
-    }
-  }
-  m_sc2_update_external_capture = false;
-  m_sc2_engine_external_profile_active = false;
-  const u64 elapsed_us = Common::Timer::NowUs() - m_sc2_transaction_begin_us;
-  const u64 first_batch = batches.empty() ? 0 : batches.front();
-  const u64 last_batch = batches.empty() ? 0 : batches.back();
-  std::fprintf(stderr,
-               "[sc2-transaction-history] epoch=%llu transaction=%llu "
-               "video_frames=%llu..%llu polls=%zu batches=%zu unique_bytes=%zu "
-               "first_batch=%llu last_batch=%llu effects=%zu handlers=%zu elapsed_us=%llu input_valid=%s "
-               "fallback_instructions=%llu result=%s\n",
-               static_cast<unsigned long long>(m_sc2_transaction_epoch),
-               static_cast<unsigned long long>(m_sc2_transaction_id),
-               static_cast<unsigned long long>(m_sc2_transaction_video_frame),
-               static_cast<unsigned long long>(m_sc2_video_frame), polls, batches.size(),
-               unique_bytes.value_or(0), static_cast<unsigned long long>(first_batch),
-               static_cast<unsigned long long>(last_batch), m_sc2_update_external_effects.size(),
-               m_sc2_update_handler_post_ram.size(),
-               static_cast<unsigned long long>(elapsed_us),
-               input_valid ? "yes" : "no", static_cast<unsigned long long>(fallback_delta),
-               valid ? "ok" : "failed");
-  m_sc2_transaction_history_active = false;
-  if (!valid || m_sc2_transaction_id == std::numeric_limits<u64>::max())
-  {
-    m_sc2_transaction_history_faulted = true;
-    return;
-  }
-  ++m_sc2_transaction_id;
 }
 
 void StaticRecompCore::ReportFrameDispatchProfile()
@@ -1472,7 +1838,8 @@ bool StaticRecompCore::ReplaySc2UpdateExternalWrite(const u32 address, const u8 
       const auto& effect = m_sc2_update_external_effects[index];
       if (!m_sc2_update_external_replay_used[index] &&
           !m_sc2_update_external_replay_reserved[index] && effect.write &&
-          effect.address == address && effect.size == size && effect.value == value)
+          effect.address == address && effect.size == size &&
+          (m_sc2_transaction_live_correction || effect.value == value))
       {
         m_sc2_update_external_replay_used[index] = true;
         ++m_sc2_update_external_replay_index;
@@ -1525,9 +1892,12 @@ void StaticRecompCore::RecordSc2UpdateExternalRead(const u32 address, const u8 s
       m_sc2_engine_indirect_call_active &&
       (m_sc2_engine_indirect_call_target == 0x8001af10 ||
        m_sc2_engine_indirect_call_target == 0x8001f0c0);
-  if (!m_sc2_update_external_capture || (!capture_input_span && !capture_update_handler))
+  const bool capture_retained_transaction = m_sc2_transaction_history_active;
+  if (!m_sc2_update_external_capture && !capture_retained_transaction)
     return;
-  constexpr std::size_t MAX_EFFECTS = 256;
+  if (!capture_retained_transaction && !capture_input_span && !capture_update_handler)
+    return;
+  constexpr std::size_t MAX_EFFECTS = 16384;
   if (m_sc2_update_external_effects.size() >= MAX_EFFECTS)
   {
     m_sc2_update_external_valid = false;
@@ -1545,9 +1915,12 @@ void StaticRecompCore::RecordSc2UpdateExternalWrite(const u32 address, const u8 
       m_sc2_engine_indirect_call_active &&
       (m_sc2_engine_indirect_call_target == 0x8001af10 ||
        m_sc2_engine_indirect_call_target == 0x8001f0c0);
-  if (!m_sc2_update_external_capture || (!capture_input_span && !capture_update_handler))
+  const bool capture_retained_transaction = m_sc2_transaction_history_active;
+  if (!m_sc2_update_external_capture && !capture_retained_transaction)
     return;
-  constexpr std::size_t MAX_EFFECTS = 256;
+  if (!capture_retained_transaction && !capture_input_span && !capture_update_handler)
+    return;
+  constexpr std::size_t MAX_EFFECTS = 16384;
   if (m_sc2_update_external_effects.size() >= MAX_EFFECTS)
   {
     m_sc2_update_external_valid = false;
@@ -1853,6 +2226,11 @@ void StaticRecompCore::ObserveSc2EngineIndirectCall(const u32 pc)
 
 bool StaticRecompCore::ReplaySc2UpdateSystemHandler(const u32 pc)
 {
+  // Captured postimages are sufficient for a same-input replay oracle, but a
+  // live corrected branch must execute the handler against corrected game
+  // state. Its external MMIO remains contained by keyed effect replay.
+  if (m_sc2_transaction_live_correction)
+    return false;
   if (!m_sc2_engine_speculative_active ||
       (pc != 0x8001af10 && pc != 0x8001f0c0) || m_guest.lr != 0x8000988c)
   {

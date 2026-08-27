@@ -47,6 +47,8 @@ struct SerializedWiimoteState;
 namespace NetPlay
 {
 class LiveRollbackOutputGate;
+struct Sc2EngineInputPoll;
+struct Sc2LiveRollbackCorrection;
 
 class NetPlayUI
 {
@@ -184,6 +186,11 @@ public:
   // session has faulted and emulation must stop rather than expose stale state.
   static bool UpdateLiveRollbackFrameBoundary();
   static bool IsLiveRollbackSessionActive();
+  static std::optional<Sc2LiveRollbackCorrection> ClaimSc2LiveRollbackCorrection();
+  static bool ResolveSc2LiveRollbackPolls(std::span<const Sc2EngineInputPoll> captured,
+                                          std::vector<Sc2EngineInputPoll>* authoritative);
+  static bool CommitSc2LiveRollbackCorrection(const Sc2LiveRollbackCorrection& correction);
+  static void CancelSc2LiveRollbackCorrection();
   bool DoAllPlayersHaveGame();
 
   PadMappingArray GetPadMapping() const;
@@ -289,6 +296,11 @@ private:
   bool GetLiveRollbackPads(int pad_nb, bool batching, GCPadStatus* pad_status, bool* handled);
   bool UpdateLiveRollbackFrameBoundaryImpl();
   bool IsLiveRollbackSessionActiveImpl() const;
+  std::optional<Sc2LiveRollbackCorrection> ClaimSc2LiveRollbackCorrectionImpl();
+  bool ResolveSc2LiveRollbackPollsImpl(std::span<const Sc2EngineInputPoll> captured,
+                                       std::vector<Sc2EngineInputPoll>* authoritative);
+  bool CommitSc2LiveRollbackCorrectionImpl(const Sc2LiveRollbackCorrection& correction);
+  void CancelSc2LiveRollbackCorrectionImpl();
   // CPU-thread lifecycle normally owns these objects. Off-CPU callers must
   // hold crit_netplay_client, the barrier shared by both CPU entry points.
   void DeactivateLiveRollbackImpl();
@@ -360,7 +372,8 @@ private:
   void OnGameDigestError(sf::Packet& packet);
   void OnGameDigestAbort();
   bool LoadRollbackFaultScript();
-  bool SendRollbackPacketWithFaults(sf::Packet&& packet);
+  bool SendRollbackPacketWithFaults(sf::Packet&& packet,
+                                    const RollbackSIInputPacket& input);
 
   struct LiveRollbackState;
 
@@ -419,6 +432,8 @@ private:
   Common::SPSCQueue<RollbackSIInputPacket> m_rollback_input_queue;
   std::vector<RollbackFaultAction> m_rollback_fault_actions;
   std::vector<DelayedRollbackPacket> m_delayed_rollback_packets;
+  std::string m_rollback_fault_arm_file;
+  bool m_rollback_fault_armed = false;
   u64 m_rollback_send_ordinal = 0;
   std::unique_ptr<LiveRollbackState> m_live_rollback;
 
@@ -453,6 +468,16 @@ struct Sc2EngineInputPoll
   bool operator==(const Sc2EngineInputPoll&) const = default;
 };
 
+struct Sc2LiveRollbackCorrection
+{
+  u64 first_incorrect_batch_id = 0;
+  u64 replay_through_batch_id = 0;
+  u64 restore_before_emulated_frame = 0;
+  u64 replay_through_emulated_frame = 0;
+
+  bool operator==(const Sc2LiveRollbackCorrection&) const = default;
+};
+
 void BeginSc2EngineInputCapture();
 bool FinishSc2EngineInputCapture(std::size_t* captured_polls,
                                  std::vector<u64>* consumed_batches = nullptr,
@@ -465,4 +490,9 @@ bool ConsumeSc2EngineInputReplay(int pad_num, bool batching, GCPadStatus* status
                                  bool* result);
 bool FinishSc2EngineInputReplay(std::size_t* perturbed_polls = nullptr);
 void EndSc2EngineInputReplay();
+std::optional<Sc2LiveRollbackCorrection> ClaimSc2LiveRollbackCorrection();
+bool ResolveSc2LiveRollbackPolls(std::span<const Sc2EngineInputPoll> captured,
+                                 std::vector<Sc2EngineInputPoll>* authoritative);
+bool CommitSc2LiveRollbackCorrection(const Sc2LiveRollbackCorrection& correction);
+void CancelSc2LiveRollbackCorrection();
 }  // namespace NetPlay

@@ -898,3 +898,60 @@ above additionally passed the 600-frame continuous-sync oracle and two-peer
 engine-boundary gate. Selective state size, Windows behavior at `7ad94d48`,
 renderer-backed replay, and live selective replay remain unverified and are not
 claimed.
+
+## 2026-08-26 live selective-correction investigation
+
+Worktree `codex/sc2-slippi-rollback` at pushed base `f9963c33` gained an
+isolated live path which maps a late SI batch to retained SC2 update
+transactions, executes predicted and authoritative hidden branches from the
+same complete RAM/L1/CPU entry state, restores the canonical emulator anchor,
+and publishes the corrected game postimage. This remains test-only behind
+`RINGOUT_SC2_LIVE_TRANSACTION_ROLLBACK=HEADLESS_ISOLATED`; it is not a player
+rollback claim.
+
+One bounded two-process run passed after excluding hidden replay dispatches
+from the physical-gameplay hook profiler. It committed one correction on each
+peer and produced byte-identical confirmed-state logs:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --fault-script .github/input-scripts/rollback-fault-sc2-engine.txt \
+  --work /tmp/ringout-live-rollback.sc2-profiler-guard-39157 \
+  --hook-profile --hook-warmup-frames 0 --hook-sample-frames 60 \
+  --hook-diagnostic-limit 0 --transaction-live-correction-probe \
+  --play-seconds 30 --port 39157
+sha256sum /tmp/ringout-live-rollback.sc2-profiler-guard-39157/{host,guest}/confirmed-state.log
+```
+
+Both hashes were
+`c0d18d40122219a0fbeef66d9da3771e00832d4890ffd29a40bdfa769cb6dbd8`.
+The two commits changed 19 of 25,832 transaction-owned bytes and 16 of 25,382
+transaction-owned bytes. No GPU/FIFO failure was reported.
+
+That pass is not sufficient. A 64-instruction repeated-delay stress schedule
+diverged at confirmed logical frame 1080 after five host and six guest
+corrections (`/tmp/ringout-live-rollback.sc2-stress-39158`). Invalidating every
+retained contract after selective and broad commits removed stale overlapping
+history, but a later run still diverged at frame 1020
+(`/tmp/ringout-live-rollback.sc2-stress-epoch-39159`). Per-peer MEM1 dumps from
+`/tmp/ringout-mismatch-dumps-39160` contained 4,397 differing bytes, proving
+the generated-module transaction write set omitted persistent canonical state.
+
+Two attempted expansions were rejected:
+
+- publishing every deterministic predicted-versus-authoritative MEM1 endpoint
+  difference changed roughly 2,150-11,481 bytes per correction and desynced;
+  the set includes presentation/device memory whose RAM image cannot be
+  changed without matching emulated GPU state;
+- retaining every generated-module write between the video cut and the next
+  update expanded ownership to about 72,462 bytes but desynced at frame 480;
+  that interval also crosses non-game output work and is not a valid state
+  boundary.
+
+The release boundary therefore remains unchanged: broad full-emulator rollback
+is the correctness fallback, while Slippi-class selective rollback requires a
+game-owned battle-state profile or game patch which excludes GX/audio/device
+state and a stress corpus that passes repeated corrections. A single successful
+selective correction must not enable this path for players.

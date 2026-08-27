@@ -1601,6 +1601,14 @@ bool NetPlayClient::LoadRollbackFaultScript()
   if (!isolated_test && !production_gate_test)
     return false;
 
+  if (const char* const arm_file = std::getenv("RINGOUT_ROLLBACK_FAULT_ARM_FILE");
+      arm_file != nullptr)
+  {
+    if (!isolated_test || *arm_file == '\0')
+      return false;
+    m_rollback_fault_arm_file = arm_file;
+  }
+
   std::ifstream script(path);
   if (!script)
     return false;
@@ -1648,8 +1656,20 @@ bool NetPlayClient::LoadRollbackFaultScript()
                             }) == m_rollback_fault_actions.end();
 }
 
-bool NetPlayClient::SendRollbackPacketWithFaults(sf::Packet&& packet)
+bool NetPlayClient::SendRollbackPacketWithFaults(sf::Packet&& packet,
+                                                 const RollbackSIInputPacket& input)
 {
+  if (!m_rollback_fault_arm_file.empty() && !m_rollback_fault_armed)
+  {
+    if (!File::Exists(m_rollback_fault_arm_file))
+    {
+      SendAsync(std::move(packet), ROLLBACK_INPUT_CHANNEL);
+      return true;
+    }
+    m_rollback_fault_armed = true;
+    std::fprintf(stderr, "[rollback fault] armed file=%s\n",
+                 m_rollback_fault_arm_file.c_str());
+  }
   if (m_rollback_send_ordinal == std::numeric_limits<u64>::max())
     return false;
   const u64 ordinal = ++m_rollback_send_ordinal;
@@ -1659,6 +1679,42 @@ bool NetPlayClient::SendRollbackPacketWithFaults(sf::Packet&& packet)
   bool send_current = true;
   if (action != m_rollback_fault_actions.end() && action->send_ordinal == ordinal)
   {
+    const u64 first_batch = input.batch_count == 0 ? 0 : input.batches[0].batch_id;
+    const u64 last_batch =
+        input.batch_count == 0 ? 0 : input.batches[input.batch_count - 1].batch_id;
+    u16 buttons = 0;
+    for (std::size_t batch = 0; batch < input.batch_count; ++batch)
+    {
+      for (std::size_t pad = 0; pad < input.batches[batch].pads.size(); ++pad)
+      {
+        if ((input.batches[batch].pad_mask & (u8{1} << pad)) != 0)
+          buttons |= input.batches[batch].pads[pad].button;
+      }
+    }
+    std::fprintf(stderr,
+                 "[rollback fault] action=%s send_ordinal=%llu release_after=%llu "
+                 "batches=%zu first_batch=%llu last_batch=%llu buttons=0x%04x\n",
+                 action->drop ? "drop" : "delay", static_cast<unsigned long long>(ordinal),
+                 static_cast<unsigned long long>(action->release_after_send_ordinal),
+                 input.batch_count, static_cast<unsigned long long>(first_batch),
+                 static_cast<unsigned long long>(last_batch), buttons);
+    for (std::size_t batch = 0; batch < input.batch_count; ++batch)
+    {
+      for (std::size_t pad = 0; pad < input.batches[batch].pads.size(); ++pad)
+      {
+        if ((input.batches[batch].pad_mask & (u8{1} << pad)) == 0)
+          continue;
+        std::fprintf(stderr,
+                     "[rollback fault batch] send_ordinal=%llu batch=%llu pad=%zu "
+                     "buttons=0x%04x stick=%u,%u connected=%s\n",
+                     static_cast<unsigned long long>(ordinal),
+                     static_cast<unsigned long long>(input.batches[batch].batch_id), pad,
+                     input.batches[batch].pads[pad].button,
+                     input.batches[batch].pads[pad].stickX,
+                     input.batches[batch].pads[pad].stickY,
+                     input.batches[batch].pads[pad].isConnected ? "yes" : "no");
+      }
+    }
     if (action->drop)
     {
       send_current = false;
@@ -1719,7 +1775,7 @@ bool NetPlayClient::SendRollbackSIInput(const RollbackSIInputPacket& input)
   packet << MessageID::RollbackSIInput << static_cast<u16>(encoded.size);
   for (std::size_t i = 0; i < encoded.size; ++i)
     packet << payload[i];
-  return SendRollbackPacketWithFaults(std::move(packet));
+  return SendRollbackPacketWithFaults(std::move(packet), input);
 }
 
 bool NetPlayClient::SendRollbackStateDigest(const RollbackStateDigest& digest)
@@ -1903,6 +1959,7 @@ bool NetPlayClient::StartGame(const std::string& path)
   }
   m_rollback_input_event.Reset();
   m_delayed_rollback_packets.clear();
+  m_rollback_fault_armed = false;
   m_rollback_send_ordinal = 0;
 
   m_timebase_frame = 0;
@@ -2336,6 +2393,56 @@ bool NetPlayClient::IsLiveRollbackSessionActive()
 {
   std::lock_guard lk(crit_netplay_client);
   return netplay_client != nullptr && netplay_client->IsLiveRollbackSessionActiveImpl();
+}
+
+std::optional<Sc2LiveRollbackCorrection> NetPlayClient::ClaimSc2LiveRollbackCorrection()
+{
+  std::lock_guard lk(crit_netplay_client);
+  return netplay_client ? netplay_client->ClaimSc2LiveRollbackCorrectionImpl() : std::nullopt;
+}
+
+bool NetPlayClient::ResolveSc2LiveRollbackPolls(
+    const std::span<const Sc2EngineInputPoll> captured,
+    std::vector<Sc2EngineInputPoll>* const authoritative)
+{
+  std::lock_guard lk(crit_netplay_client);
+  return netplay_client &&
+         netplay_client->ResolveSc2LiveRollbackPollsImpl(captured, authoritative);
+}
+
+bool NetPlayClient::CommitSc2LiveRollbackCorrection(
+    const Sc2LiveRollbackCorrection& correction)
+{
+  std::lock_guard lk(crit_netplay_client);
+  return netplay_client && netplay_client->CommitSc2LiveRollbackCorrectionImpl(correction);
+}
+
+void NetPlayClient::CancelSc2LiveRollbackCorrection()
+{
+  std::lock_guard lk(crit_netplay_client);
+  if (netplay_client)
+    netplay_client->CancelSc2LiveRollbackCorrectionImpl();
+}
+
+std::optional<Sc2LiveRollbackCorrection> ClaimSc2LiveRollbackCorrection()
+{
+  return NetPlayClient::ClaimSc2LiveRollbackCorrection();
+}
+
+bool ResolveSc2LiveRollbackPolls(const std::span<const Sc2EngineInputPoll> captured,
+                                 std::vector<Sc2EngineInputPoll>* const authoritative)
+{
+  return NetPlayClient::ResolveSc2LiveRollbackPolls(captured, authoritative);
+}
+
+bool CommitSc2LiveRollbackCorrection(const Sc2LiveRollbackCorrection& correction)
+{
+  return NetPlayClient::CommitSc2LiveRollbackCorrection(correction);
+}
+
+void CancelSc2LiveRollbackCorrection()
+{
+  NetPlayClient::CancelSc2LiveRollbackCorrection();
 }
 
 bool NetPlayClient::DoAllPlayersHaveGame()

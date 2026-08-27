@@ -18,6 +18,7 @@
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SystemTimers.h"
+#include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 #include "Core/System.h"
 #include "VideoCommon/Fifo.h"
 #include "VideoCommon/OnScreenDisplay.h"
@@ -32,6 +33,14 @@ constexpr std::size_t ROLLBACK_REDUNDANT_BATCHES = 3;
 u8 PadBit(const std::size_t pad)
 {
   return static_cast<u8>(u8{1} << pad);
+}
+
+Sc2LiveRollbackCorrection ToSc2Correction(const RollbackSIInputJournal::ReplayTrigger& trigger)
+{
+  return {.first_incorrect_batch_id = trigger.first_incorrect_batch_id,
+          .replay_through_batch_id = trigger.replay_through_batch_id,
+          .restore_before_emulated_frame = trigger.restore_before_emulated_frame,
+          .replay_through_emulated_frame = trigger.replay_through_emulated_frame};
 }
 
 }  // namespace
@@ -85,6 +94,18 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
         return false;
       }
       live->digest_fault_frame = frame;
+    }
+    if (const char* const selective =
+            std::getenv("RINGOUT_SC2_LIVE_TRANSACTION_ROLLBACK");
+        selective != nullptr && std::string_view(selective) == "HEADLESS_ISOLATED")
+    {
+      if (test_ack == nullptr || std::string_view(test_ack) != "HEADLESS_ISOLATED")
+      {
+        std::fprintf(stderr,
+                     "[rollback live] activation refused: SC2 selective route not isolated\n");
+        return false;
+      }
+      live->sc2_selective_enabled = true;
     }
 
     if (const char* const path = std::getenv("RINGOUT_ROLLBACK_CONFIRMED_LOG");
@@ -216,7 +237,8 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
     }
   }
 
-  const auto status = live.frame_boundary->CompleteCurrentFrame();
+  const auto status =
+      live.frame_boundary->CompleteCurrentFrame(!live.sc2_selective_enabled);
   const auto capture_completed_state = [&]() {
     const std::optional<u64> next_frame = live.frame_boundary->GetCurrentFrame();
     if (!next_frame || *next_frame == 0)
@@ -320,8 +342,18 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
     live.last_poll_frame.reset();
     live.next_poll_ordinal = 0;
     m_rollback_performance_stats.EndCorrection();
+    // A broad correction resimulates the canonical machine but any selective
+    // SC2 contracts were captured from the pre-correction branch.
+    StaticRecompInvalidateSc2RollbackTransactionHistory();
     DisplayPlayersPing();
     std::fprintf(stderr, "[rollback live] correction committed\n");
+    if (live.sc2_selective_rearm_after_broad)
+    {
+      live.sc2_selective_enabled = true;
+      live.sc2_selective_rearm_after_broad = false;
+      std::fprintf(stderr,
+                   "[rollback live] SC2 selective correction rearmed after broad fallback\n");
+    }
     std::fflush(stderr);
     return capture_completed_state() && publish_confirmed_states();
   case LiveRollbackFrameBoundary::BoundaryStatus::Inactive:
@@ -336,6 +368,111 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
 bool NetPlayClient::IsLiveRollbackSessionActiveImpl() const
 {
   return (m_live_rollback && m_live_rollback->active) || GetRollbackNetplaySession().enabled;
+}
+
+std::optional<Sc2LiveRollbackCorrection>
+NetPlayClient::ClaimSc2LiveRollbackCorrectionImpl()
+{
+  if (!Core::IsCPUThread() || !m_live_rollback || !m_live_rollback->active ||
+      !m_live_rollback->sc2_selective_enabled || !m_live_rollback->scheduler)
+  {
+    return std::nullopt;
+  }
+  LiveRollbackState& live = *m_live_rollback;
+  const std::optional<RollbackSIInputJournal::ReplayTrigger> pending =
+      live.scheduler->GetReplayTrigger();
+  if (!pending)
+    return std::nullopt;
+  if (live.sc2_selective_trigger && *live.sc2_selective_trigger != *pending)
+    return std::nullopt;
+  if (!live.sc2_selective_trigger)
+  {
+    live.sc2_selective_trigger = *pending;
+    m_rollback_performance_stats.BeginCorrection(
+        pending->restore_before_emulated_frame, pending->replay_through_emulated_frame,
+        Common::Timer::NowMs());
+    std::fprintf(stderr,
+                 "[rollback live] SC2 selective correction claimed first_batch=%llu "
+                 "replay_through_batch=%llu\n",
+                 static_cast<unsigned long long>(pending->first_incorrect_batch_id),
+                 static_cast<unsigned long long>(pending->replay_through_batch_id));
+  }
+  return ToSc2Correction(*pending);
+}
+
+bool NetPlayClient::ResolveSc2LiveRollbackPollsImpl(
+    const std::span<const Sc2EngineInputPoll> captured,
+    std::vector<Sc2EngineInputPoll>* const authoritative)
+{
+  if (!Core::IsCPUThread() || authoritative == nullptr || !m_live_rollback ||
+      !m_live_rollback->active || !m_live_rollback->sc2_selective_trigger ||
+      !m_live_rollback->scheduler)
+  {
+    return false;
+  }
+  authoritative->assign(captured.begin(), captured.end());
+  for (Sc2EngineInputPoll& poll : *authoritative)
+  {
+    if (!poll.batch_id)
+      continue;
+    if (poll.pad_num < 0 ||
+        poll.pad_num >= static_cast<int>(RollbackInputTimeline::PAD_COUNT))
+    {
+      return false;
+    }
+    const auto resolved = m_live_rollback->scheduler->GetJournal().ResolveBatch(*poll.batch_id);
+    if (!resolved)
+      return false;
+    const u8 mask = PadBit(static_cast<std::size_t>(poll.pad_num));
+    const GCPadStatus captured_status = poll.status;
+    poll.result = (resolved.inputs.active_pad_mask & mask) != 0;
+    poll.status = resolved.inputs.pads[static_cast<std::size_t>(poll.pad_num)];
+    std::fprintf(stderr,
+                 "[rollback live] SC2 poll resolved batch=%llu pad=%d "
+                 "captured_buttons=0x%04x authoritative_buttons=0x%04x "
+                 "captured_stick=%u,%u authoritative_stick=%u,%u\n",
+                 static_cast<unsigned long long>(*poll.batch_id), poll.pad_num,
+                 captured_status.button, poll.status.button, captured_status.stickX,
+                 captured_status.stickY, poll.status.stickX, poll.status.stickY);
+  }
+  return true;
+}
+
+bool NetPlayClient::CommitSc2LiveRollbackCorrectionImpl(
+    const Sc2LiveRollbackCorrection& correction)
+{
+  if (!Core::IsCPUThread() || !m_live_rollback || !m_live_rollback->active ||
+      !m_live_rollback->sc2_selective_trigger || !m_live_rollback->scheduler ||
+      correction != ToSc2Correction(*m_live_rollback->sc2_selective_trigger))
+  {
+    return false;
+  }
+  LiveRollbackState& live = *m_live_rollback;
+  if (!live.scheduler->GetJournal().AcknowledgeSelectiveReplay(
+          *live.sc2_selective_trigger))
+  {
+    return false;
+  }
+  live.sc2_selective_trigger.reset();
+  live.digest_candidates.Reset(live.session.generation);
+  m_rollback_performance_stats.EndCorrection();
+  DisplayPlayersPing();
+  std::fprintf(stderr, "[rollback live] SC2 selective correction committed\n");
+  std::fflush(stderr);
+  return true;
+}
+
+void NetPlayClient::CancelSc2LiveRollbackCorrectionImpl()
+{
+  if (!m_live_rollback)
+    return;
+  m_live_rollback->sc2_selective_trigger.reset();
+  m_live_rollback->sc2_selective_enabled = false;
+  m_live_rollback->sc2_selective_rearm_after_broad = true;
+  m_rollback_performance_stats.EndCorrection();
+  std::fprintf(stderr,
+               "[rollback live] SC2 selective correction cancelled; broad fallback armed\n");
+  std::fflush(stderr);
 }
 
 bool NetPlayClient::GetLiveRollbackPads(const int pad_nb, const bool batching,

@@ -1,0 +1,19 @@
+# SC2 engine-frontier diagnostic schedule. The live-transaction harness arms
+# the sender from the gameplay marker, so these ordinals are relative to the
+# first automated attack and do not depend on instrumentation speed.
+delay 1 5
+delay 2 5
+delay 3 5
+delay 4 5
+delay 9 13
+delay 10 13
+delay 11 13
+delay 12 13
+delay 17 21
+delay 18 21
+delay 19 21
+delay 20 21
+delay 25 29
+delay 26 29
+delay 27 29
+delay 28 29

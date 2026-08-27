@@ -141,16 +141,25 @@ Sc2RollbackTransactionTimeline::ReplayPlan Sc2RollbackTransactionTimeline::PlanC
     const auto& batches = slot->transaction.consumed_batches;
     if (!batches.empty() && (!oldest_retained_batch || batches.front() < *oldest_retained_batch))
       oldest_retained_batch = batches.front();
-    if (std::find(batches.begin(), batches.end(), first_incorrect_batch) != batches.end())
+  }
+  if (oldest_retained_batch && first_incorrect_batch < *oldest_retained_batch)
+    return {.status = PlanStatus::HistoryUnavailable};
+  for (std::uint64_t id = oldest; id <= latest; ++id)
+  {
+    const Slot* const slot = FindSlot(id);
+    if (!slot || !slot->complete)
+      return {.status = PlanStatus::HistoryUnavailable};
+    const auto& batches = slot->transaction.consumed_batches;
+    if (std::ranges::any_of(batches, [&](const std::uint64_t batch) {
+          return batch >= first_incorrect_batch && batch <= replay_through_batch;
+        }))
     {
       return {.status = PlanStatus::Ready,
               .restore_transaction = id,
               .replay_through_transaction = latest};
     }
   }
-  return {.status = oldest_retained_batch && first_incorrect_batch < *oldest_retained_batch ?
-                       PlanStatus::HistoryUnavailable :
-                       PlanStatus::NotConsumedByGame};
+  return {.status = PlanStatus::NotConsumedByGame};
 }
 
 const Sc2RollbackTransactionTimeline::Transaction*
