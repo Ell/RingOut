@@ -306,6 +306,7 @@ private:
   void DeactivateLiveRollbackImpl();
   void FaultLiveRollbackImpl();
   void ResetLiveRollbackImpl();
+  void DumpLiveRollbackMismatchStateImpl(u32 logical_frame);
   void SendPadHostPoll(PadIndex pad_num);
 
   bool AddLocalWiimoteToBuffer(int local_wiimote, const WiimoteEmu::SerializedWiimoteState& state,

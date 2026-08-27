@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "Common/Hash.h"
+#include "Common/IOFile.h"
 #include "Common/Timer.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
@@ -117,6 +118,40 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
         std::fprintf(stderr, "[rollback live] activation refused: cannot open confirmed log\n");
         return false;
       }
+    }
+    if (const char* const path = std::getenv("RINGOUT_ROLLBACK_CONFIRMED_DUMP");
+        path != nullptr && path[0] != '\0')
+    {
+      const char* const frame_text = std::getenv("RINGOUT_ROLLBACK_CONFIRMED_DUMP_FRAME");
+      if (test_ack == nullptr || std::string_view(test_ack) != "HEADLESS_ISOLATED" ||
+          frame_text == nullptr)
+      {
+        std::fprintf(stderr,
+                     "[rollback live] activation refused: confirmed dump not isolated\n");
+        return false;
+      }
+      u32 frame = 0;
+      const std::string_view value(frame_text);
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), frame);
+      if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || frame == 0)
+      {
+        std::fprintf(stderr,
+                     "[rollback live] activation refused: invalid confirmed dump frame\n");
+        return false;
+      }
+      live->confirmed_state_dump_path = path;
+      live->confirmed_state_dump_frame = frame;
+    }
+    if (const char* const path = std::getenv("RINGOUT_ROLLBACK_MISMATCH_DUMP");
+        path != nullptr && path[0] != '\0')
+    {
+      if (test_ack == nullptr || std::string_view(test_ack) != "HEADLESS_ISOLATED")
+      {
+        std::fprintf(stderr,
+                     "[rollback live] activation refused: mismatch dump not isolated\n");
+        return false;
+      }
+      live->mismatch_state_dump_path = path;
     }
 
     if (session.base_delay_samples == 0 || session.rollback_horizon_frames >
@@ -260,6 +295,16 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
     // before reading, exactly as the determinism oracle does, so a comparison
     // cannot observe pre-copy RAM on one peer and post-copy RAM on the other.
     system.GetFifo().SyncGPUForRegisterAccess();
+    if (live.confirmed_state_dump_frame == completed_frame)
+    {
+      File::IOFile dump(live.confirmed_state_dump_path, "wb");
+      if (!dump.WriteBytes(mem1, memory.GetRamSizeReal()) || !dump.Flush())
+        return false;
+      live.confirmed_state_dump_frame.reset();
+      std::fprintf(stderr, "[rollback live] confirmed MEM1 dumped frame=%llu path=%s\n",
+                   static_cast<unsigned long long>(completed_frame),
+                   live.confirmed_state_dump_path.c_str());
+    }
     RollbackStateDigestCandidates::Candidate candidate{
         .digest = {.session_generation = live.session.generation,
                    .logical_frame = static_cast<u32>(completed_frame),
@@ -269,6 +314,18 @@ bool NetPlayClient::UpdateLiveRollbackFrameBoundaryImpl()
         .required_confirmed_batch =
             live.scheduler->GetJournal().GetLastAppliedBatchThroughEmulatedFrame(completed_frame)};
     const auto captured = live.digest_candidates.Capture(std::move(candidate));
+    if (!live.mismatch_state_dump_path.empty() &&
+        (captured == RollbackStateDigestCandidates::CaptureStatus::Captured ||
+         captured == RollbackStateDigestCandidates::CaptureStatus::Replaced))
+    {
+      auto& snapshot = live.mismatch_state_dump_candidates[static_cast<u32>(completed_frame)];
+      snapshot.assign(mem1, mem1 + memory.GetRamSizeReal());
+      constexpr std::size_t MAX_MISMATCH_DUMP_SNAPSHOTS = 2;
+      while (live.mismatch_state_dump_candidates.size() > MAX_MISMATCH_DUMP_SNAPSHOTS)
+      {
+        live.mismatch_state_dump_candidates.erase(live.mismatch_state_dump_candidates.begin());
+      }
+    }
     return captured == RollbackStateDigestCandidates::CaptureStatus::Captured ||
            captured == RollbackStateDigestCandidates::CaptureStatus::Replaced;
   };
@@ -666,6 +723,30 @@ void NetPlayClient::ResetLiveRollbackImpl()
   DeactivateLiveRollbackImpl();
   m_live_rollback.reset();
   m_pending_live_rollback_output_gate.reset();
+}
+
+void NetPlayClient::DumpLiveRollbackMismatchStateImpl(const u32 logical_frame)
+{
+  if (!m_live_rollback || m_live_rollback->mismatch_state_dump_path.empty())
+    return;
+  const auto candidate = m_live_rollback->mismatch_state_dump_candidates.find(logical_frame);
+  if (candidate == m_live_rollback->mismatch_state_dump_candidates.end())
+  {
+    std::fprintf(stderr,
+                 "[rollback live] mismatch MEM1 unavailable frame=%u retained=%zu\n",
+                 logical_frame, m_live_rollback->mismatch_state_dump_candidates.size());
+    return;
+  }
+  File::IOFile dump(m_live_rollback->mismatch_state_dump_path, "wb");
+  if (!dump.WriteBytes(candidate->second.data(), candidate->second.size()) || !dump.Flush())
+  {
+    std::fprintf(stderr, "[rollback live] mismatch MEM1 write failed frame=%u path=%s\n",
+                 logical_frame, m_live_rollback->mismatch_state_dump_path.c_str());
+    return;
+  }
+  std::fprintf(stderr, "[rollback live] mismatch MEM1 dumped frame=%u path=%s\n", logical_frame,
+               m_live_rollback->mismatch_state_dump_path.c_str());
+  std::fflush(stderr);
 }
 
 }  // namespace NetPlay

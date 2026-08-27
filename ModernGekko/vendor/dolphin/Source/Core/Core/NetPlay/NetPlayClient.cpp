@@ -1386,14 +1386,19 @@ void NetPlayClient::OnDesyncDetected(sf::Packet& packet)
   packet >> frame;
 
   std::string player = "??";
-  std::lock_guard lkp(m_crit.players);
   {
+    std::lock_guard lkp(m_crit.players);
     const auto it = m_players.find(pid_to_blame);
     if (it != m_players.end())
       player = it->second.name;
   }
 
   INFO_LOG_FMT(NETPLAY, "Player {} ({}) desynced!", player, pid_to_blame);
+
+  {
+    std::lock_guard rollback_guard(crit_netplay_client);
+    DumpLiveRollbackMismatchStateImpl(frame);
+  }
 
   m_dialog->OnDesync(frame, player);
 }

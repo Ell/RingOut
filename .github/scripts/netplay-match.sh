@@ -132,8 +132,16 @@ launch() {
     hook_profile_env=("RINGOUT_SC2_HOOK_PROFILE_ARM_FILE=$d/hook-profile.arm")
   fi
   if [ -n "${RINGOUT_DETERMINISM_DUMP_DIR:-}" ]; then
+    [ -n "${RINGOUT_DETERMINISM_DUMP_FRAME:-}" ] || {
+      echo "RINGOUT_DETERMINISM_DUMP_FRAME is required with RINGOUT_DETERMINISM_DUMP_DIR" >&2
+      return 1
+    }
     mkdir -p "$RINGOUT_DETERMINISM_DUMP_DIR"
-    determinism_dump_env=("RINGOUT_DETERMINISM_DUMP=$RINGOUT_DETERMINISM_DUMP_DIR/$name.mem1.bin")
+    determinism_dump_env=(
+      "RINGOUT_DETERMINISM_DUMP=$RINGOUT_DETERMINISM_DUMP_DIR/$name.mem1.bin"
+      "RINGOUT_ROLLBACK_CONFIRMED_DUMP=$RINGOUT_DETERMINISM_DUMP_DIR/$name.confirmed.mem1.bin"
+      "RINGOUT_ROLLBACK_CONFIRMED_DUMP_FRAME=$RINGOUT_DETERMINISM_DUMP_FRAME"
+      "RINGOUT_ROLLBACK_MISMATCH_DUMP=$RINGOUT_DETERMINISM_DUMP_DIR/$name.mismatch.mem1.bin")
   fi
   if [ "${RINGOUT_ROLLBACK_PRODUCTION:-0}" = "1" ] ||
      [ -n "${RINGOUT_ROLLBACK_FAULT_SCRIPT:-}" ] ||

@@ -4,8 +4,11 @@
 #pragma once
 
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "Core/NetPlay/DolphinRollbackStateStore.h"
 #include "Core/NetPlay/LiveRollbackFrameBoundary.h"
@@ -36,6 +39,10 @@ struct NetPlayClient::LiveRollbackState
   std::optional<u32> digest_fault_frame;
   RollbackStateDigestCandidates digest_candidates;
   std::FILE* confirmed_state_log = nullptr;
+  std::string confirmed_state_dump_path;
+  std::optional<u32> confirmed_state_dump_frame;
+  std::string mismatch_state_dump_path;
+  std::map<u32, std::vector<u8>> mismatch_state_dump_candidates;
   u32 next_poll_ordinal = 0;
   bool horizon_wait_logged = false;
   bool digest_fault_applied = false;
