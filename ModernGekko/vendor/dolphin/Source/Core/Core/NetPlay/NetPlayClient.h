@@ -443,7 +443,9 @@ unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot);
 // network input state a second time. These calls are inert outside the
 // explicitly armed research probe.
 void BeginSc2EngineInputCapture();
-bool FinishSc2EngineInputCapture(std::size_t* captured_polls);
+bool FinishSc2EngineInputCapture(std::size_t* captured_polls,
+                                 std::vector<u64>* consumed_batches = nullptr);
+void SetSc2EngineInputBatch(std::optional<u64> batch_id);
 bool BeginSc2EngineInputReplay(bool perturb_remote_a = false);
 bool ConsumeSc2EngineInputReplay(int pad_num, bool batching, GCPadStatus* status,
                                  bool* result);

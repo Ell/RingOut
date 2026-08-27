@@ -485,6 +485,7 @@ bool NetPlayClient::GetLiveRollbackPads(const int pad_nb, const bool batching,
       return false;
     }
     live.current_inputs = result.inputs;
+    live.current_input_batch = result.applied.batch_id;
   }
 
   if (!live.current_inputs ||
@@ -494,6 +495,7 @@ bool NetPlayClient::GetLiveRollbackPads(const int pad_nb, const bool batching,
     return false;
   }
   *pad_status = live.current_inputs->pads[pad_nb];
+  SetSc2EngineInputBatch(live.current_input_batch);
   return true;
 }
 

@@ -435,6 +435,8 @@ verify_hook_profiles() {
         sparse_journal_bytes="$(printf '%s\n' "$sparse_restore" | sed -E 's/.* journal_bytes=([0-9]+).*/\1/')"
         [ "$sparse_profile_bytes" = "$sparse_journal_bytes" ] ||
           fail "$peer sparse journal did not cover the complete profiled write set"
+        grep -Eq '^\[sc2-engine-replay\] input-batches count=1 [0-9]+$' "$log" ||
+          fail "$peer did not map the selective SC2 transaction to exactly one SI batch"
         grep -Eq '\[sc2-engine-replay\] selective corrected reference game_bytes=[1-9][0-9]* oracle_reset_bytes=[1-9][0-9]* perturbed_polls=[1-9][0-9]*; restored entry for verification replay' "$log" ||
           fail "$peer did not prove corrected input changed selective game state"
       elif [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
@@ -483,6 +485,12 @@ verify_hook_profiles() {
       [ "$endpoint_bytes" = "$replay_bytes" ] || fail "$peer replay state size changed"
       [ "$endpoint_tb" = "$replay_tb" ] || fail "$peer replay timebase changed"
     done
+    if [ "$SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE" -eq 1 ]; then
+      host_input_batch="$(grep -E '^\[sc2-engine-replay\] input-batches count=1 [0-9]+$' "$evidence/host/log.txt" | tail -1)"
+      guest_input_batch="$(grep -E '^\[sc2-engine-replay\] input-batches count=1 [0-9]+$' "$evidence/guest/log.txt" | tail -1)"
+      [ "$host_input_batch" = "$guest_input_batch" ] ||
+        fail "peers mapped the same SC2 transaction to different SI batches"
+    fi
   fi
 }
 

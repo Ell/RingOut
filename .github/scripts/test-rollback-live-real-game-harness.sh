@@ -117,6 +117,7 @@ for peer in host guest; do
     -e 's/corrected_input=no perturbed_polls=0 corrected_state_bytes=0/corrected_input=yes perturbed_polls=1 corrected_state_bytes=17/' \
     "$WORK/selective-input-corrected-replay/$peer/log.txt"
   printf '%s\n' \
+    '[sc2-engine-replay] input-batches count=1 4242' \
     '[sc2-engine-replay] selective restore bytes=24829 journal_bytes=24829 pages=46 effects=42; replaying update with hardware held at canonical frontier' \
     '[sc2-engine-replay] selective corrected reference game_bytes=17 oracle_reset_bytes=24829 perturbed_polls=1; restored entry for verification replay' \
     >> "$WORK/selective-input-corrected-replay/$peer/log.txt"

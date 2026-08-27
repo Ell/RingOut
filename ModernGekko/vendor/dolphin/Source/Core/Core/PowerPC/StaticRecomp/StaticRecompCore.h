@@ -357,6 +357,7 @@ private:
   std::size_t m_sc2_engine_replay_endpoint_state_size = 0;
   std::size_t m_sc2_engine_replay_original_endpoint_state_size = 0;
   std::size_t m_sc2_engine_replay_input_polls = 0;
+  std::vector<u64> m_sc2_engine_replay_input_batches;
   bool m_sc2_engine_replay_input_capture_valid = false;
   bool m_sc2_engine_replay_reference_input_valid = false;
   std::size_t m_sc2_engine_replay_reference_perturbed_polls = 0;

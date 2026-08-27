@@ -29,6 +29,7 @@ struct NetPlayClient::LiveRollbackState
   std::unique_ptr<LiveRollbackFrameBoundary> frame_boundary;
 
   std::optional<RollbackInputTimeline::ResolvedFrame> current_inputs;
+  std::optional<u64> current_input_batch;
   std::optional<u64> last_sent_future_batch;
   std::optional<u64> last_poll_frame;
   std::optional<u32> digest_fault_frame;

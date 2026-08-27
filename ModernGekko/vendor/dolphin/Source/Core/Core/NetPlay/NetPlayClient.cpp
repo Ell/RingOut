@@ -108,6 +108,7 @@ struct Sc2EngineInputPoll
   bool batching = false;
   bool result = false;
   GCPadStatus status{};
+  std::optional<u64> batch_id;
 };
 
 // All users are on Dolphin's CPU thread. Keeping the probe journal thread-local
@@ -119,6 +120,7 @@ thread_local std::size_t s_sc2_engine_input_cursor = 0;
 thread_local bool s_sc2_engine_input_valid = true;
 thread_local bool s_sc2_engine_input_perturb_remote_a = false;
 thread_local std::size_t s_sc2_engine_input_perturbed_polls = 0;
+thread_local std::optional<u64> s_sc2_engine_input_batch;
 
 bool TryReplaySc2EngineInput(const int pad_num, const bool batching, GCPadStatus* const status,
                              bool* const result)
@@ -158,7 +160,11 @@ void RecordSc2EngineInput(const int pad_num, const bool batching, const GCPadSta
     return;
   }
   s_sc2_engine_input_polls.push_back(
-      {.pad_num = pad_num, .batching = batching, .result = result, .status = status});
+      {.pad_num = pad_num,
+       .batching = batching,
+       .result = result,
+       .status = status,
+       .batch_id = s_sc2_engine_input_batch});
 }
 }  // namespace
 
@@ -170,14 +176,32 @@ void BeginSc2EngineInputCapture()
   s_sc2_engine_input_mode = Sc2EngineInputMode::Capture;
 }
 
-bool FinishSc2EngineInputCapture(std::size_t* const captured_polls)
+bool FinishSc2EngineInputCapture(std::size_t* const captured_polls,
+                                 std::vector<u64>* const consumed_batches)
 {
   const bool valid = s_sc2_engine_input_mode == Sc2EngineInputMode::Capture &&
                      s_sc2_engine_input_valid;
   s_sc2_engine_input_mode = Sc2EngineInputMode::Disabled;
   if (captured_polls)
     *captured_polls = s_sc2_engine_input_polls.size();
+  if (consumed_batches)
+  {
+    consumed_batches->clear();
+    for (const Sc2EngineInputPoll& poll : s_sc2_engine_input_polls)
+    {
+      if (poll.batch_id &&
+          (consumed_batches->empty() || consumed_batches->back() != *poll.batch_id))
+      {
+        consumed_batches->push_back(*poll.batch_id);
+      }
+    }
+  }
   return valid;
+}
+
+void SetSc2EngineInputBatch(const std::optional<u64> batch_id)
+{
+  s_sc2_engine_input_batch = batch_id;
 }
 
 bool BeginSc2EngineInputReplay(const bool perturb_remote_a)
@@ -2491,6 +2515,7 @@ bool SerialInterface::CSIDevice_GCController::NetPlay_GetInput(int pad_num, GCPa
   }
 
   std::lock_guard lk(NetPlay::crit_netplay_client);
+  NetPlay::SetSc2EngineInputBatch(std::nullopt);
 
   bool result = false;
   if (NetPlay::netplay_client)

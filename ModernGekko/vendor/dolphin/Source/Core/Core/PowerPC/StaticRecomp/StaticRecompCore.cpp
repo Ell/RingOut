@@ -1511,7 +1511,13 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
       // path with a post-load path. Discard this first pass and compare two
       // passes which both begin from the same restored entry snapshot.
       m_sc2_engine_replay_input_capture_valid =
-          NetPlay::FinishSc2EngineInputCapture(&m_sc2_engine_replay_input_polls);
+          NetPlay::FinishSc2EngineInputCapture(&m_sc2_engine_replay_input_polls,
+                                               &m_sc2_engine_replay_input_batches);
+      std::fprintf(stderr, "[sc2-engine-replay] input-batches count=%zu",
+                   m_sc2_engine_replay_input_batches.size());
+      for (const u64 batch : m_sc2_engine_replay_input_batches)
+        std::fprintf(stderr, " %llu", static_cast<unsigned long long>(batch));
+      std::fprintf(stderr, "\n");
       if (m_sc2_engine_replay_selective_update)
       {
         m_sc2_engine_replay_endpoint_guest = m_guest;
