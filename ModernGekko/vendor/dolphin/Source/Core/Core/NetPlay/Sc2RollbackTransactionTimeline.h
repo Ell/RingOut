@@ -49,6 +49,7 @@ public:
   bool BeginTransaction(std::uint64_t id, std::uint64_t emulated_frame);
   bool RecordConsumedBatch(std::uint64_t batch_id);
   bool CompleteTransaction(std::uint64_t emulated_frame);
+  bool RewindToTransaction(std::uint64_t id);
   ReplayPlan PlanCorrection(std::uint64_t first_incorrect_batch,
                             std::uint64_t replay_through_batch) const;
   const Transaction* Find(std::uint64_t id) const;
@@ -71,7 +72,7 @@ private:
   std::vector<Slot> m_slots;
   std::optional<std::uint64_t> m_active;
   std::optional<std::uint64_t> m_latest_completed;
-  std::size_t m_completed_count = 0;
+  std::size_t m_retained_completed_count = 0;
 };
 
 }  // namespace NetPlay

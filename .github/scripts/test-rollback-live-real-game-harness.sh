@@ -124,6 +124,21 @@ for peer in host guest; do
 done
 "$HARNESS" --verify-existing "$WORK/selective-input-corrected-replay" --hook-profile \
   --selective-input-corrected-replay-probe >/dev/null
+cp -a "$WORK/hook-profile" "$WORK/transaction-history"
+for peer in host guest; do
+  printf '%s\n' \
+    '[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 begin_pc=0x80011c80 end_pc=0x8001bcb0' \
+    >> "$WORK/transaction-history/$peer/log.txt"
+  for transaction in $(seq 1 100); do
+    frame=$((transaction * 2))
+    batch=$((1000 + transaction))
+    printf '%s\n' \
+      "[sc2-transaction-history] epoch=1 transaction=$transaction video_frames=$frame..$frame polls=2 batches=1 unique_bytes=24829 first_batch=$batch last_batch=$batch elapsed_us=500 input_valid=yes fallback_instructions=0 result=ok" \
+      >> "$WORK/transaction-history/$peer/log.txt"
+  done
+done
+"$HARNESS" --verify-existing "$WORK/transaction-history" --hook-profile \
+  --transaction-history-probe >/dev/null
 sed -i 's/differing_state_bytes=0/differing_state_bytes=1/' \
   "$WORK/engine-replay/guest/log.txt"
 if "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \

@@ -63,9 +63,59 @@ bool Sc2RollbackTransactionTimeline::CompleteTransaction(const std::uint64_t emu
   slot->transaction.end_emulated_frame = emulated_frame;
   slot->complete = true;
   m_latest_completed = *m_active;
-  if (m_completed_count != std::numeric_limits<std::size_t>::max())
-    ++m_completed_count;
+  m_retained_completed_count = std::min(m_retained_completed_count + 1, m_slots.size());
   m_active.reset();
+  return true;
+}
+
+bool Sc2RollbackTransactionTimeline::RewindToTransaction(const std::uint64_t id)
+{
+  if (m_active || !m_latest_completed || id > *m_latest_completed)
+    return false;
+  Slot* target = FindSlot(id);
+  if (!target || !target->complete)
+    return false;
+
+  const std::uint64_t latest = *m_latest_completed;
+  const std::uint64_t removed = latest - id + 1;
+  if (removed > m_retained_completed_count)
+    return false;
+  for (std::uint64_t current = id;; ++current)
+  {
+    const Slot* const slot = FindSlot(current);
+    if (!slot || !slot->complete)
+      return false;
+    if (current == latest)
+      break;
+  }
+
+  const std::size_t retained_after =
+      m_retained_completed_count - static_cast<std::size_t>(removed);
+  const Slot* const previous = retained_after != 0 && id != 0 ? FindSlot(id - 1) : nullptr;
+  if (retained_after != 0 && (!previous || !previous->complete))
+    return false;
+
+  for (std::uint64_t current = id; current < latest;)
+  {
+    ++current;
+    Slot& slot = m_slots[current % m_slots.size()];
+    slot.valid = false;
+    slot.complete = false;
+  }
+  target = FindSlot(id);
+  target->complete = false;
+  target->transaction.end_emulated_frame = 0;
+  target->transaction.consumed_batches.clear();
+  m_retained_completed_count -= static_cast<std::size_t>(removed);
+  if (m_retained_completed_count != 0)
+  {
+    m_latest_completed = id - 1;
+  }
+  else
+  {
+    m_latest_completed.reset();
+  }
+  m_active = id;
   return true;
 }
 
@@ -80,7 +130,7 @@ Sc2RollbackTransactionTimeline::ReplayPlan Sc2RollbackTransactionTimeline::PlanC
     return {.status = PlanStatus::HistoryUnavailable};
 
   const std::uint64_t latest = *m_latest_completed;
-  const std::uint64_t retained = std::min<std::size_t>(m_completed_count, m_slots.size());
+  const std::uint64_t retained = m_retained_completed_count;
   const std::uint64_t oldest = latest + 1 - retained;
   std::optional<std::uint64_t> oldest_retained_batch;
   for (std::uint64_t id = oldest; id <= latest; ++id)

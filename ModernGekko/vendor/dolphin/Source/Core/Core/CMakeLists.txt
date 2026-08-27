@@ -575,6 +575,8 @@ add_library(core
   NetPlay/Sc2RollbackProfile.h
   NetPlay/Sc2RollbackTransactionTimeline.cpp
   NetPlay/Sc2RollbackTransactionTimeline.h
+  NetPlay/Sc2RollbackTransactionStore.cpp
+  NetPlay/Sc2RollbackTransactionStore.h
   NetPlay/RollbackStateDigestProtocol.cpp
   NetPlay/RollbackStateDigestProtocol.h
   NetPlay/NetPlayServer.cpp

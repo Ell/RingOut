@@ -23,6 +23,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--selective-update-replay-probe] \
          [--selective-input-update-replay-probe] \
          [--selective-input-corrected-replay-probe] \
+         [--transaction-history-probe] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -103,6 +104,11 @@ the first controller conversion call at 0x80011c80 and ends after the first
 
 --selective-input-corrected-replay-probe repeats that selective transaction
 with a corrected remote A input and requires two exact corrected endpoints.
+
+--transaction-history-probe continuously records bounded sparse SC2 update
+history, including inputless boot gaps and exact network SI batch ownership.
+It requires --hook-profile and remains a shadow gate: ordinary player rollback
+continues to use the broad state store during the run.
 EOF
   exit 2
 }
@@ -139,6 +145,7 @@ UPDATE_REPLAY_PROBE=0
 SELECTIVE_UPDATE_REPLAY_PROBE=0
 SELECTIVE_INPUT_UPDATE_REPLAY_PROBE=0
 SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE=0
+TRANSACTION_HISTORY_PROBE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -181,6 +188,7 @@ while [ "$#" -gt 0 ]; do
     --selective-update-replay-probe) SELECTIVE_UPDATE_REPLAY_PROBE=1; shift ;;
     --selective-input-update-replay-probe) SELECTIVE_INPUT_UPDATE_REPLAY_PROBE=1; shift ;;
     --selective-input-corrected-replay-probe) SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE=1; shift ;;
+    --transaction-history-probe) TRANSACTION_HISTORY_PROBE=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -207,6 +215,11 @@ if [ "$HOOK_PROFILE" -eq 1 ]; then
   [ "$HOOK_PROFILE_DIAGNOSTIC_LIMIT" -le 4096 ] ||
     fail "hook diagnostic limit must be at most 4096"
 fi
+[ "$TRANSACTION_HISTORY_PROBE" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
+  fail "--transaction-history-probe requires --hook-profile"
+[ "$TRANSACTION_HISTORY_PROBE" -eq 0 ] ||
+  [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE)) -eq 0 ] ||
+  fail "--transaction-history-probe cannot be combined with a replay probe"
 [ "$HOOK_IDLE_CONTROL" -eq 0 ] || [ "$HOOK_PROFILE" -eq 1 ] ||
   fail "--hook-idle-control requires --hook-profile"
 [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 0 ] || {
@@ -419,6 +432,37 @@ verify_hook_profiles() {
       fail "peer SC2 memory profiles differ: $memory_difference"
     fi
   fi
+  if [ "$TRANSACTION_HISTORY_PROBE" -eq 1 ]; then
+    local history_tmp
+    history_tmp="$(mktemp -d /tmp/ringout-sc2-history-compare.XXXXXXXX)"
+    for peer in host guest; do
+      log="$evidence/$peer/log.txt"
+      grep -Fq '[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 begin_pc=0x80011c80 end_pc=0x8001bcb0' "$log" ||
+        fail "$peer did not enable bounded SC2 transaction history"
+      awk '
+        /^\[sc2-transaction-history\] epoch=/ {
+          split($0, e, "epoch="); split(e[2], ev, " "); epoch=ev[1]
+          split($0, b, "batches="); split(b[2], bv, " "); batches=bv[1]
+          split($0, r, "result="); result=r[2]
+          if (result == "ok" && batches == 1) {
+            if (epoch == last_epoch) run++; else run=1
+            last_epoch=epoch
+            if (run > best) best=run
+            networked++
+          } else { run=0; last_epoch=epoch }
+        }
+        END { if (networked < 100 || best < 10) exit 1 }
+      ' "$log" || fail "$peer did not retain ten consecutive safe networked SC2 transactions"
+      sed -nE 's/^\[sc2-transaction-history\] epoch=[0-9]+ transaction=[0-9]+ video_frames=([0-9]+\.\.[0-9]+) polls=([0-9]+) batches=1 unique_bytes=([0-9]+) first_batch=([0-9]+) last_batch=([0-9]+) elapsed_us=[0-9]+ input_valid=yes fallback_instructions=0 result=ok$/\1 \2 \3 \4 \5/p' "$log" |
+        sort -u > "$history_tmp/$peer"
+    done
+    comm -12 "$history_tmp/host" "$history_tmp/guest" > "$history_tmp/common"
+    [ "$(wc -l < "$history_tmp/common")" -ge 100 ] || {
+      rm -rf "$history_tmp"
+      fail "peers did not agree on at least 100 networked SC2 transaction mappings"
+    }
+    rm -rf "$history_tmp"
+  fi
   if [ "$ENGINE_REPLAY_PROBE" -eq 1 ] || [ "$ENGINE_REPLAY_CORRECTED_INPUT_PROBE" -eq 1 ] ||
      [ "$UPDATE_REPLAY_PROBE" -eq 1 ] ||
      [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ] ||
@@ -623,6 +667,9 @@ elif [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=SELECTIVE_INPUT_UPDATE_SPAN)
 elif [ "$SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=SELECTIVE_INPUT_UPDATE_CORRECTED)
+fi
+if [ "$TRANSACTION_HISTORY_PROBE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_TRANSACTION_HISTORY_PROBE=HEADLESS_ISOLATED)
 fi
 if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
   run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)

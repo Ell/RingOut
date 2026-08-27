@@ -53,6 +53,17 @@ int main()
         "evicted consumed input fails closed");
   Check(!timeline.BeginTransaction(15, 28), "nonsequential transaction identity is rejected");
 
+  Check(timeline.RewindToTransaction(11), "retained correction rewinds speculative branch");
+  Check(timeline.Find(11) == nullptr && timeline.Find(12) == nullptr && timeline.Find(13) == nullptr,
+        "rewind invalidates target completion and speculative descendants");
+  Check(timeline.RecordConsumedBatch(44), "corrected target records authoritative batch");
+  Check(timeline.CompleteTransaction(23), "corrected target completes in place");
+  Check(timeline.BeginTransaction(12, 24), "corrected branch rebuilds sequentially");
+  Check(timeline.RecordConsumedBatch(48) && timeline.CompleteTransaction(25),
+        "corrected descendant completes");
+  Check(timeline.PlanCorrection(44, 48).status == Timeline::PlanStatus::Ready,
+        "corrected branch remains rollback-addressable");
+
   Timeline invalid(0);
   Check(!invalid.IsValid() && !invalid.BeginTransaction(1, 1),
         "zero-capacity timeline is inert");

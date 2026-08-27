@@ -8,11 +8,13 @@
 
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 #include "Common/Config/Config.h"
 #include "Common/DynamicLibrary.h"
 #include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
+#include "Common/Timer.h"
 #include "Core/Core.h"
 #include "Core/Config/ConfigManager.h"
 #include "Core/Config/MainSettings.h"
@@ -22,6 +24,7 @@
 #include "Core/HW/SI/SI.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/NetPlay/RollbackUndoSnapshotRing.h"
+#include "Core/NetPlay/Sc2RollbackTransactionStore.h"
 #include "Core/PowerPC/StaticRecomp/FrameDispatchProfiler.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/RecompDeterminism.h"
@@ -309,6 +312,18 @@ void StaticRecompCore::Init()
     }
   }
 
+  if (const char* const transaction_history =
+          std::getenv("RINGOUT_SC2_TRANSACTION_HISTORY_PROBE");
+      transaction_history != nullptr &&
+      std::strcmp(transaction_history, "HEADLESS_ISOLATED") == 0 &&
+      !m_sc2_engine_replay_probe_enabled)
+  {
+    m_sc2_transaction_history_enabled = true;
+    std::fprintf(stderr,
+                 "[sc2-transaction-history] enabled capacity=10 max_unique_bytes=1048576 "
+                 "begin_pc=0x80011c80 end_pc=0x8001bcb0\n");
+  }
+
   // The "interpreter fallback" is really Dolphin's JIT whenever one exists, so
   // m_fallback_steps stays 0 on a run that fell back constantly -- read
   // m_fallback_jit_used instead. STATICRECOMP_NO_FALLBACK_JIT forces the true
@@ -431,6 +446,13 @@ void StaticRecompCore::ReportGQRSurvey() const
 
 void StaticRecompCore::Shutdown()
 {
+  if (m_sc2_transaction_history_active)
+  {
+    if (m_sc2_engine_set_mem_journal)
+      m_sc2_engine_set_mem_journal(nullptr, nullptr);
+    NetPlay::EndSc2EngineInputReplay();
+    m_sc2_transaction_history_active = false;
+  }
   ReportFrameDispatchProfile();
   m_dispatch_hook = nullptr;
   m_dispatch_hook_pcs.clear();
@@ -502,6 +524,7 @@ void StaticRecompCore::UninstallDispatchHook(StaticRecompDispatchHook* const hoo
 
 void StaticRecompCore::NotifyVideoFrameBoundary()
 {
+  ++m_sc2_video_frame;
   if (m_frame_dispatch_profiler)
   {
     if (!m_frame_dispatch_profile_armed)
@@ -521,6 +544,135 @@ void StaticRecompCore::NotifyVideoFrameBoundary()
     if (m_frame_dispatch_profiler->IsComplete())
       ReportFrameDispatchProfile();
   }
+}
+
+void StaticRecompCore::Sc2RollbackTransactionWriteTrampoline(const u32 offset, const u32 size,
+                                                              void* const user)
+{
+  auto* const core = static_cast<StaticRecompCore*>(user);
+  if (!core->m_sc2_transaction_history_active || !core->m_sc2_transaction_store || size == 0 ||
+      !core->m_sc2_transaction_store->RecordWrite(
+          offset, size, std::span<const u8>{core->m_guest.ram, core->m_guest.ram_size}))
+  {
+    core->m_sc2_transaction_history_faulted = true;
+  }
+}
+
+void StaticRecompCore::ObserveSc2RollbackTransaction(const u32 pc)
+{
+  if (!m_sc2_transaction_history_enabled || m_guest.ram == nullptr || m_guest.ram_size == 0)
+  {
+    return;
+  }
+  if (m_sc2_transaction_history_faulted)
+  {
+    if (m_sc2_transaction_history_active)
+    {
+      if (m_sc2_engine_set_mem_journal)
+        m_sc2_engine_set_mem_journal(nullptr, nullptr);
+      NetPlay::EndSc2EngineInputReplay();
+      m_sc2_transaction_history_active = false;
+    }
+    m_sc2_transaction_store.reset();
+    m_sc2_transaction_id = 1;
+    if (m_sc2_transaction_epoch != std::numeric_limits<u64>::max())
+      ++m_sc2_transaction_epoch;
+    m_sc2_transaction_history_faulted = false;
+    std::fprintf(stderr,
+                 "[sc2-transaction-history] incomplete journal discarded; next_epoch=%llu\n",
+                 static_cast<unsigned long long>(m_sc2_transaction_epoch));
+    return;
+  }
+
+  constexpr u32 BEGIN_PC = 0x80011c80;
+  constexpr u32 BEGIN_LR = 0x8001bbf8;
+  constexpr u32 END_PC = 0x8001bcb0;
+  if (pc == BEGIN_PC && m_guest.lr == BEGIN_LR)
+  {
+    if (m_sc2_transaction_history_active || m_lockstep_verifier->IsEnabled() || m_watch_armed)
+    {
+      m_sc2_transaction_history_faulted = true;
+      return;
+    }
+    if (!m_sc2_transaction_store)
+    {
+      constexpr std::size_t CAPACITY = 10;
+      constexpr std::size_t MAX_UNIQUE_BYTES = 1024 * 1024;
+      m_sc2_transaction_store = std::make_unique<NetPlay::Sc2RollbackTransactionStore>(
+          m_guest.ram_size, CAPACITY, MAX_UNIQUE_BYTES, sizeof(CPUState) + sizeof(u64));
+      m_sc2_engine_set_mem_journal = reinterpret_cast<Sc2EngineSetMemJournalFn>(
+          m_library.GetSymbolAddress("ppc_set_mem_write_journal"));
+      if (m_sc2_transaction_store->GetConfigurationStatus() !=
+              NetPlay::Sc2RollbackTransactionStore::ConfigurationStatus::Valid ||
+          !m_sc2_engine_set_mem_journal)
+      {
+        m_sc2_transaction_history_faulted = true;
+        return;
+      }
+    }
+
+    std::vector<u8> auxiliary(sizeof(CPUState) + sizeof(u64));
+    std::memcpy(auxiliary.data(), &m_guest, sizeof(CPUState));
+    std::memcpy(auxiliary.data() + sizeof(CPUState), &m_tb_cycle_remainder, sizeof(u64));
+    if (!m_sc2_transaction_store->BeginTransaction(
+            m_sc2_transaction_id, m_sc2_video_frame,
+            std::span<const u8>{m_guest.ram, m_guest.ram_size}, auxiliary))
+    {
+      m_sc2_transaction_history_faulted = true;
+      return;
+    }
+    NetPlay::BeginSc2EngineInputCapture();
+    m_sc2_engine_set_mem_journal(&StaticRecompCore::Sc2RollbackTransactionWriteTrampoline, this);
+    m_sc2_transaction_video_frame = m_sc2_video_frame;
+    m_sc2_transaction_entry_fallbacks = m_hook_fallback_instructions;
+    m_sc2_transaction_begin_us = Common::Timer::NowUs();
+    m_sc2_transaction_history_active = true;
+    return;
+  }
+
+  if (pc != END_PC || !m_sc2_transaction_history_active)
+    return;
+
+  m_sc2_engine_set_mem_journal(nullptr, nullptr);
+  std::size_t polls = 0;
+  std::vector<u64> batches;
+  const bool input_valid = NetPlay::FinishSc2EngineInputCapture(&polls, &batches);
+  // Boot/menu updates can legitimately run before NetPlay has assigned an SI
+  // batch. Retain them as inputless transactions; the mapper will never select
+  // them for an input correction, but later retained descendants still need a
+  // contiguous sparse undo lineage.
+  const u64 fallback_delta = m_hook_fallback_instructions - m_sc2_transaction_entry_fallbacks;
+  bool valid = input_valid && fallback_delta == 0;
+  for (const u64 batch : batches)
+    valid = m_sc2_transaction_store->RecordConsumedBatch(batch) && valid;
+  valid = m_sc2_transaction_store->CompleteTransaction(m_sc2_video_frame) && valid;
+  const std::optional<std::size_t> unique_bytes =
+      m_sc2_transaction_store->GetUndoRing().GetUniqueBytes(m_sc2_transaction_id);
+  valid = unique_bytes.has_value() && valid;
+  const u64 elapsed_us = Common::Timer::NowUs() - m_sc2_transaction_begin_us;
+  const u64 first_batch = batches.empty() ? 0 : batches.front();
+  const u64 last_batch = batches.empty() ? 0 : batches.back();
+  std::fprintf(stderr,
+               "[sc2-transaction-history] epoch=%llu transaction=%llu "
+               "video_frames=%llu..%llu polls=%zu batches=%zu unique_bytes=%zu "
+               "first_batch=%llu last_batch=%llu elapsed_us=%llu input_valid=%s "
+               "fallback_instructions=%llu result=%s\n",
+               static_cast<unsigned long long>(m_sc2_transaction_epoch),
+               static_cast<unsigned long long>(m_sc2_transaction_id),
+               static_cast<unsigned long long>(m_sc2_transaction_video_frame),
+               static_cast<unsigned long long>(m_sc2_video_frame), polls, batches.size(),
+               unique_bytes.value_or(0), static_cast<unsigned long long>(first_batch),
+               static_cast<unsigned long long>(last_batch),
+               static_cast<unsigned long long>(elapsed_us),
+               input_valid ? "yes" : "no", static_cast<unsigned long long>(fallback_delta),
+               valid ? "ok" : "failed");
+  m_sc2_transaction_history_active = false;
+  if (!valid || m_sc2_transaction_id == std::numeric_limits<u64>::max())
+  {
+    m_sc2_transaction_history_faulted = true;
+    return;
+  }
+  ++m_sc2_transaction_id;
 }
 
 void StaticRecompCore::ReportFrameDispatchProfile()

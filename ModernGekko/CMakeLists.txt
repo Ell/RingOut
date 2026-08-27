@@ -743,6 +743,22 @@ if(BUILD_TESTING)
     add_test(NAME moderngekko.sc2_rollback_transaction_timeline
         COMMAND moderngekko_sc2_rollback_transaction_timeline_test)
 
+    add_executable(moderngekko_sc2_rollback_transaction_store_test
+        tests/sc2_rollback_transaction_store_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackUndoSnapshotRing.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/Sc2RollbackTransactionTimeline.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/Sc2RollbackTransactionStore.cpp)
+    target_include_directories(moderngekko_sc2_rollback_transaction_store_test PRIVATE
+        vendor/dolphin/Source/Core)
+    target_compile_features(moderngekko_sc2_rollback_transaction_store_test PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(moderngekko_sc2_rollback_transaction_store_test PRIVATE /EHs-c-)
+    else()
+        target_compile_options(moderngekko_sc2_rollback_transaction_store_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.sc2_rollback_transaction_store
+        COMMAND moderngekko_sc2_rollback_transaction_store_test)
+
     add_executable(moderngekko_sc2_rollback_profile_test
         tests/sc2_rollback_profile_test.cpp
         vendor/dolphin/Source/Core/Core/NetPlay/Sc2RollbackProfile.cpp)

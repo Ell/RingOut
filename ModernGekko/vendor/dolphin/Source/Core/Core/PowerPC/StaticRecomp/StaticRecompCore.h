@@ -27,6 +27,7 @@ class System;
 namespace NetPlay
 {
 class RollbackUndoSnapshotRing;
+class Sc2RollbackTransactionStore;
 }
 
 namespace PowerPC
@@ -296,6 +297,7 @@ private:
   void ProfileSc2EngineMemory(u32 pc);
   void ReportSc2EngineMemoryProfile();
   void ProbeSc2EngineReplay(u32 pc);
+  void ObserveSc2RollbackTransaction(u32 pc);
   void ObserveSc2EngineExternalAccess(bool write, u32 address, u8 size);
   void ReportSc2EngineExternalProfile();
   void ObserveSc2EngineDirectCall(u32 pc);
@@ -303,6 +305,7 @@ private:
   void ObserveSc2EngineIndirectCall(u32 pc);
   void ReportSc2EngineIndirectCallProfile();
   static void Sc2EngineDirectCallWriteTrampoline(u32 offset, u32 size, void* user);
+  static void Sc2RollbackTransactionWriteTrampoline(u32 offset, u32 size, void* user);
   bool ReplaySc2UpdateExternalRead(u32 address, u8 size, u64* value);
   bool ReplaySc2UpdateExternalWrite(u32 address, u8 size, u64 value);
   void RecordSc2UpdateExternalRead(u32 address, u8 size, u64 value);
@@ -324,6 +327,16 @@ private:
   std::vector<u8> m_sc2_memory_before;
   std::vector<u32> m_sc2_memory_page_changed_ticks;
   bool m_sc2_engine_replay_probe_enabled = false;
+  bool m_sc2_transaction_history_enabled = false;
+  bool m_sc2_transaction_history_active = false;
+  bool m_sc2_transaction_history_faulted = false;
+  u64 m_sc2_transaction_epoch = 1;
+  u64 m_sc2_transaction_id = 1;
+  u64 m_sc2_transaction_video_frame = 0;
+  u64 m_sc2_video_frame = 0;
+  u64 m_sc2_transaction_entry_fallbacks = 0;
+  u64 m_sc2_transaction_begin_us = 0;
+  std::unique_ptr<NetPlay::Sc2RollbackTransactionStore> m_sc2_transaction_store;
   bool m_sc2_engine_replay_have_entry = false;
   bool m_sc2_engine_replay_replaying = false;
   bool m_sc2_engine_replay_completed = false;
