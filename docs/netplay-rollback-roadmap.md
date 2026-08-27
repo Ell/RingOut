@@ -190,6 +190,15 @@ inferring update ownership from 60 Hz frame parity. The real two-peer route at
 to batch 1249 and retained exact corrected endpoints. Multi-transaction state,
 external-effect, and replay-cursor ownership are still not player-selected.
 
+Commit `864b705b` combines the sparse ring and input mapper into a branchable
+transaction store. The strict shadow run at
+`/tmp/ringout-live-rollback.sc2-transaction-history-29003` retained more than
+800 real SC2 updates per peer, produced 565 exact common network mappings, and
+held a longest safe epoch of 146 transactions. Uncovered fallback instructions
+discarded only their incomplete epoch and capture resumed. The test still left
+actual player correction on the broad store; retained external effects and
+authoritative replay input are the next live integration gate.
+
 This 2026-08-25 run is no longer GPU-safety evidence. Player sessions later
 reported repeated `GFX FIFO: Unknown Opcode` failures and crashes. The audit on
 2026-08-26 found that netplay forced dual-core despite the offline

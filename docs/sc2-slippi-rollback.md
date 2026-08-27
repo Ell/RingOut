@@ -658,6 +658,44 @@ and
 This establishes correction-to-transaction selection; it does not yet make
 the multi-transaction driver the player-selected state store.
 
+Commit `864b705b` makes that history branchable. The transaction store owns the
+input timeline and sparse preimage ring together: restore rewinds both to the
+same transaction, invalidates speculative descendants, replays the corrected
+target in place, and rebuilds later identities. Unit coverage performs two
+successive multi-transaction rewinds with changed corrected branches and
+restores exact RAM plus opaque CPU auxiliary state each time.
+
+The shadow real-module gate at
+`/tmp/ringout-live-rollback.sc2-transaction-history-29003` retained 827 host /
+828 guest transactions, including 565/566 network-owned transactions. Both
+peers agreed on 565 exact `(video frame, SI batch, unique-byte set)` mappings;
+the longest uninterrupted safe epoch was 146 transactions, well above the
+ten-slot configured horizon. Write sets ranged from 4,301 to 145,913 bytes.
+The measured transaction interval (game work plus journaling, not journal
+overhead alone) averaged 2.85 ms host / 2.81 ms guest and peaked at 8.30 / 9.91
+ms. Transactions which entered uncovered fallback code were rejected and the
+incomplete sparse epoch was discarded; capture resumed at the next boundary.
+
+Host and guest log SHA-256 values are
+`678c8ff58deaf8fc0e7162ee47299faee51600ff65e4b4ea1132b000731d3c50`
+and
+`c8c23f074cedbb0949c3fab57c7a280ada329b7882660321b6064299eadf358a`.
+The strengthened harness requires at least 100 matching network transaction
+mappings and one full ten-transaction safe epoch. This run still used the broad
+player state store for actual corrections; external-effect and corrected-input
+contracts must move into each retained slot before selective replay can be
+selected.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-transaction-history-29003 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 120 --hook-diagnostic-limit 0 \
+  --transaction-history-probe --play-seconds 24 --port 29003
+```
+
 ### Preallocated selective checkpoint ring
 
 `RollbackRegionSnapshotRing` validates and sorts non-overlapping profile

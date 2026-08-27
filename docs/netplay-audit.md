@@ -154,6 +154,14 @@ for 30/60 Hz mapping, grouped pads, unconsumed SI gaps, eviction, and invalid
 identity. It is still integration groundwork rather than a shipped selective
 coordinator.
 
+Commit `864b705b` adds branchable sparse transaction ownership and a continuous
+real-module shadow gate. Evidence at
+`/tmp/ringout-live-rollback.sc2-transaction-history-29003` includes 565 exact
+common network mappings and a 146-transaction safe epoch; incomplete fallback
+spans are discarded rather than partially retained. This substantially lowers
+state cost but does not alter the audit verdict: ordinary player corrections
+still use broad whole-emulator restore/resimulation.
+
 That post-fix run passed the ordinary production gate and closes the three
 previously recorded memory-card, teardown-output, and corrected-frontier fault
 blockers for this tested path. A clean production route retained at
