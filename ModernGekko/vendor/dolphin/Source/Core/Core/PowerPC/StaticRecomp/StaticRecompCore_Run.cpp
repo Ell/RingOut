@@ -899,7 +899,8 @@ void StaticRecompCore::Run()
           const s64 charge = -m_guest.downcount;
           m_guest.downcount = 0;
           const u64 charged = static_cast<u64>(charge > 0 ? charge : 1);
-          ppc.downcount -= static_cast<int>(charged);
+          if (!m_sc2_engine_speculative_active)
+            ppc.downcount -= static_cast<int>(charged);
           m_charged_cycles += charged;
           // The Time Base advances at CPU clock / TIMER_RATIO (12), not once
           // per CPU cycle. Advancing it by the full cycle charge ran the guest

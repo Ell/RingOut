@@ -63,6 +63,17 @@ wait/service loop, while gameplay-sensitive virtual updates converge at
 handlers own the largest gameplay write footprints. This is a narrower
 research target, not a shipped selective or live-correction path.
 
+The 2026-08-26 selective object-update oracle subsequently passed a real
+two-peer VS route at `/tmp/ringout-live-rollback.sc2-selective-transaction-28981`.
+It restored roughly 23 KiB of exact module-CPU writes, transactionally adapted
+the two observed system handlers, preserved the canonical hardware frontier,
+and reproduced complete roughly 49.36 MB endpoints byte-for-byte on both
+peers. Page-level attempts exposed asynchronous DSP/device RAM ownership;
+exact-byte journaling fixed that boundary without excluding differences from
+the gate. This is still not a player path: changed/corrected input through the
+adapted handler and live correction scheduling remain unproven. See
+[SC2 game-specific rollback](sc2-slippi-rollback.md).
+
 The executive verdict below remains the historical result for audited commit
 `ff0ad952`. It must not be read as a description of the current
 `codex/rollback-netplay` worktree. At implementation commit `6518db52` on

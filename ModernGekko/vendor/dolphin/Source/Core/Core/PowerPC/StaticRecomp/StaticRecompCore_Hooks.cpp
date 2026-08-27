@@ -19,6 +19,12 @@ constexpr u32 LOCKED_CACHE_BASE = 0xE0000000u;
 u64 StaticRecompCore::HookExternalRead(CPUState* cpu, u32 ea, u8 size)
 {
   auto* core = static_cast<StaticRecompCore*>(cpu->external_user_data);
+  u64 replayed_value = 0;
+  if (core->ReplaySc2UpdateExternalRead(ea, size, &replayed_value))
+  {
+    core->ObserveSc2EngineExternalAccess(false, ea, size);
+    return replayed_value;
+  }
   core->PropagateGuestMSR();
   auto& mmu = core->m_system.GetMMU();
   u64 value;
@@ -40,6 +46,7 @@ u64 StaticRecompCore::HookExternalRead(CPUState* cpu, u32 ea, u8 size)
     ERROR_LOG_FMT(POWERPC, "StaticRecomp: external read of bad size {} at 0x{:08X}", size, ea);
     return 0;
   }
+  core->RecordSc2UpdateExternalRead(ea, size, value);
   core->ObserveSc2EngineExternalAccess(false, ea, size);
   if (core->m_lockstep_verifier->m_ls_journaling &&
       StaticRecompLockstep::LsHwAccessInScope(mmu, ea))
@@ -53,6 +60,9 @@ void StaticRecompCore::HookExternalWrite(CPUState* cpu, u32 ea, u64 value, u8 si
 {
   auto* core = static_cast<StaticRecompCore*>(cpu->external_user_data);
   core->ObserveSc2EngineExternalAccess(true, ea, size);
+  if (core->ReplaySc2UpdateExternalWrite(ea, size, value))
+    return;
+  core->RecordSc2UpdateExternalWrite(ea, size, value);
 
   // Gather-pipe fast path: stores to the write-gather pipe page at effective
   // 0xCC008000 go straight to GPFifo, mirroring the MMU's masked-write
@@ -134,9 +144,16 @@ u32 StaticRecompCore::HookExternalRead32(CPUState* cpu, u32 ea, u8 rid)
   // generated helper; Dolphin's interpreter services the access as a plain
   // MMU read (the rid is carried in EAR only).
   auto* core = static_cast<StaticRecompCore*>(cpu->external_user_data);
+  u64 replayed_value = 0;
+  if (core->ReplaySc2UpdateExternalRead(ea, 4, &replayed_value))
+  {
+    core->ObserveSc2EngineExternalAccess(false, ea, 4);
+    return static_cast<u32>(replayed_value);
+  }
   core->PropagateGuestMSR();
   auto& mmu = core->m_system.GetMMU();
   const u32 value = mmu.Read<u32>(ea);
+  core->RecordSc2UpdateExternalRead(ea, 4, value);
   core->ObserveSc2EngineExternalAccess(false, ea, 4);
   if (core->m_lockstep_verifier->m_ls_journaling &&
       StaticRecompLockstep::LsHwAccessInScope(mmu, ea))
@@ -151,6 +168,9 @@ void StaticRecompCore::HookExternalWrite32(CPUState* cpu, u32 ea, u32 value, u8 
   // ecowx external-control write; see HookExternalRead32.
   auto* core = static_cast<StaticRecompCore*>(cpu->external_user_data);
   core->ObserveSc2EngineExternalAccess(true, ea, 4);
+  if (core->ReplaySc2UpdateExternalWrite(ea, 4, value))
+    return;
+  core->RecordSc2UpdateExternalWrite(ea, 4, value);
   core->PropagateGuestMSR();
   auto& mmu = core->m_system.GetMMU();
   if (core->m_lockstep_verifier->m_ls_journaling &&

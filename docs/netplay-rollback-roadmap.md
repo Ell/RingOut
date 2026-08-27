@@ -113,6 +113,16 @@ next implementation slice is an object-update checkpoint plus replayed reads
 and suppressed writes for the two MMIO-capable handlers, followed by complete-
 endpoint comparison before any live late-input correction uses it.
 
+That same-input object-update gate passed on 2026-08-26. A generated-module
+pre-write journal narrowed the restored set to roughly 23 KiB of exact bytes;
+captured transactions account for the two MMIO-capable handlers; and a
+canonical-hardware re-anchor produced zero MEM1, locked-L1, CPU, timebase, or
+serialized-state differences on both peers in a real VS route. Whole-page
+restore was explicitly rejected after it rewound asynchronous DSP/device bytes
+sharing a page. The next gate is deliberately changed input: prove that a
+corrected SI value crosses the handler boundary and changes intended game
+state before connecting this transaction to live late-input correction.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values

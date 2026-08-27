@@ -74,11 +74,25 @@ for peer in host guest; do
     '[sc2-engine-indirect] result sites=3 completed=3 overflow=no complete=yes' \
     '[sc2-engine-indirect] callsite=0x800097f0 target=0x80100000 invocations=1 written_pages=1 external_reads=0 external_writes=0 fallback_instructions=0' \
     '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' \
-    '[sc2-engine-replay] full-state-result state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=4 external_profile_complete=yes endpoint_bytes=49360152 replay_bytes=49360152 differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=34063786066743458 replay_tb=34063786066743458' \
+    '[sc2-engine-replay] full-state-result state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=4 external_profile_complete=yes external_replay_match=yes external_effects=0 endpoint_bytes=49360152 replay_bytes=49360152 differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=34063786066743458 replay_tb=34063786066743458' \
     >> "$WORK/engine-replay/$peer/log.txt"
 done
 "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \
   --engine-replay-probe >/dev/null
+cp -a "$WORK/engine-replay" "$WORK/update-replay"
+for peer in host guest; do
+  sed -i 's/mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628/mode=full-emulator-update-call begin_pc=0x800095c0 return_pc=0x8001bcb0/' \
+    "$WORK/update-replay/$peer/log.txt"
+done
+"$HARNESS" --verify-existing "$WORK/update-replay" --hook-profile \
+  --update-replay-probe >/dev/null
+cp -a "$WORK/update-replay" "$WORK/selective-update-replay"
+for peer in host guest; do
+  sed -i 's/mode=full-emulator-update-call/mode=selective-update-call/' \
+    "$WORK/selective-update-replay/$peer/log.txt"
+done
+"$HARNESS" --verify-existing "$WORK/selective-update-replay" --hook-profile \
+  --selective-update-replay-probe >/dev/null
 sed -i 's/differing_state_bytes=0/differing_state_bytes=1/' \
   "$WORK/engine-replay/guest/log.txt"
 if "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \

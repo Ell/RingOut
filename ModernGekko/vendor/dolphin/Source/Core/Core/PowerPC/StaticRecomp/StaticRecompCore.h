@@ -298,6 +298,11 @@ private:
   void ObserveSc2EngineIndirectCall(u32 pc);
   void ReportSc2EngineIndirectCallProfile();
   static void Sc2EngineDirectCallWriteTrampoline(u32 offset, u32 size, void* user);
+  bool ReplaySc2UpdateExternalRead(u32 address, u8 size, u64* value);
+  bool ReplaySc2UpdateExternalWrite(u32 address, u8 size, u64 value);
+  void RecordSc2UpdateExternalRead(u32 address, u8 size, u64 value);
+  void RecordSc2UpdateExternalWrite(u32 address, u8 size, u64 value);
+  bool ReplaySc2UpdateSystemHandler(u32 pc);
   std::map<u32, u64> m_gqr_seen[8];
   u64 m_gqr_samples = 0;
   bool m_gqr_log = false;
@@ -318,6 +323,9 @@ private:
   bool m_sc2_engine_replay_replaying = false;
   bool m_sc2_engine_replay_completed = false;
   bool m_sc2_engine_replay_full_emulator = false;
+  bool m_sc2_engine_replay_update_call = false;
+  bool m_sc2_engine_replay_selective_update = false;
+  bool m_sc2_engine_speculative_active = false;
   bool m_sc2_engine_replay_have_reference = false;
   CPUState m_sc2_engine_replay_entry_guest{};
   CPUState m_sc2_engine_replay_endpoint_guest{};
@@ -352,6 +360,12 @@ private:
     u64 external_writes = 0;
     u64 fallback_instructions = 0;
     std::vector<bool> written_pages;
+    // The selective replay boundary must not restore whole pages: DSP/device
+    // DMA can update unrelated bytes in a page while the guest update runs.
+    // Keep the exact module-CPU write set so the canonical hardware frontier
+    // survives an update rewind.
+    std::vector<bool> written_bytes;
+    std::vector<u32> written_offsets;
   };
   std::map<u64, Sc2EngineDirectCallProfile> m_sc2_engine_direct_calls;
   using Sc2EngineSetMemJournalFn = void (*)(void (*)(u32, u32, void*), void*);
@@ -373,6 +387,25 @@ private:
   u64 m_sc2_engine_indirect_call_completed = 0;
   bool m_sc2_engine_indirect_call_active = false;
   bool m_sc2_engine_indirect_call_overflow = false;
+  struct Sc2UpdateExternalEffect
+  {
+    u32 address = 0;
+    u64 value = 0;
+    u8 size = 0;
+    bool write = false;
+  };
+  std::vector<Sc2UpdateExternalEffect> m_sc2_update_external_effects;
+  std::size_t m_sc2_update_external_replay_index = 0;
+  bool m_sc2_update_external_capture = false;
+  bool m_sc2_update_external_replay = false;
+  bool m_sc2_update_external_valid = true;
+  std::map<u64, u64> m_sc2_update_original_write_blocks;
+  std::map<u64, u64> m_sc2_update_replay_write_blocks;
+  std::vector<bool> m_sc2_update_replay_written_bytes;
+  std::vector<u32> m_sc2_update_replay_written_offsets;
+  std::map<u64, std::vector<u8>> m_sc2_update_handler_post_ram;
+  std::map<u64, CPUState> m_sc2_update_handler_post_guest;
+  std::map<u64, u64> m_sc2_update_handler_post_tb_remainder;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;
 

@@ -18,7 +18,8 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--hook-sample-frames <frames>] [--hook-diagnostic-limit <count>] \
          [--hook-idle-control] [--expect-sc2-engine-boundary] \
          [--hook-memory-profile] [--hook-memory-profile-ticks <ticks>] \
-         [--engine-replay-probe] \
+         [--engine-replay-probe] [--update-replay-probe] \
+         [--selective-update-replay-probe] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -77,6 +78,16 @@ engine entry, executes the 30 Hz game-engine iteration twice from that same
 state, and requires byte-identical complete endpoint states on both peers. It
 requires --hook-profile and cannot be combined with the boundary or memory
 profilers because its deliberate extra iterations change their hit counts.
+
+--update-replay-probe applies the same symmetric full-state oracle only to the
+first gameplay object-update call, 0x800095c0 -> LR 0x8001bcb0. It is a narrower
+research gate and is mutually exclusive with --engine-replay-probe.
+
+--selective-update-replay-probe leaves canonical hardware at the update
+frontier, restores the exact module-CPU-written MEM1 bytes plus CPU entry
+state, replaces the two sampled system handlers with captured transactions,
+and compares the complete re-anchored endpoint. It is a correctness oracle,
+not a live late-input correction mode.
 EOF
   exit 2
 }
@@ -108,6 +119,8 @@ EXPECT_SC2_ENGINE_BOUNDARY=0
 HOOK_MEMORY_PROFILE=0
 HOOK_MEMORY_PROFILE_TICKS=60
 ENGINE_REPLAY_PROBE=0
+UPDATE_REPLAY_PROBE=0
+SELECTIVE_UPDATE_REPLAY_PROBE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -145,6 +158,8 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --engine-replay-probe) ENGINE_REPLAY_PROBE=1; shift ;;
+    --update-replay-probe) UPDATE_REPLAY_PROBE=1; shift ;;
+    --selective-update-replay-probe) SELECTIVE_UPDATE_REPLAY_PROBE=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -191,8 +206,11 @@ if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
   [ "$HOOK_PROFILE_SAMPLE" -ge $((HOOK_MEMORY_PROFILE_TICKS * 2)) ] ||
     fail "hook sample must cover at least twice the requested SC2 memory ticks"
 fi
-if [ "$ENGINE_REPLAY_PROBE" -eq 1 ]; then
-  [ "$HOOK_PROFILE" -eq 1 ] || fail "--engine-replay-probe requires --hook-profile"
+if [ "$ENGINE_REPLAY_PROBE" -eq 1 ] || [ "$UPDATE_REPLAY_PROBE" -eq 1 ] ||
+   [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+  [ "$HOOK_PROFILE" -eq 1 ] || fail "replay probes require --hook-profile"
+  [ $((ENGINE_REPLAY_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE)) -eq 1 ] ||
+    fail "SC2 replay probes are mutually exclusive"
   [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 0 ] ||
     fail "--engine-replay-probe cannot be combined with --expect-sc2-engine-boundary"
   [ "$HOOK_MEMORY_PROFILE" -eq 0 ] ||
@@ -377,13 +395,24 @@ verify_hook_profiles() {
       fail "peer SC2 memory profiles differ: $memory_difference"
     fi
   fi
-  if [ "$ENGINE_REPLAY_PROBE" -eq 1 ]; then
+  if [ "$ENGINE_REPLAY_PROBE" -eq 1 ] || [ "$UPDATE_REPLAY_PROBE" -eq 1 ] ||
+     [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
     for peer in host guest; do
       log="$evidence/$peer/log.txt"
-      grep -Fq '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628' "$log" ||
-        fail "$peer did not enable the full-emulator SC2 engine replay probe"
-      grep -Fq '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' "$log" ||
-        fail "$peer did not execute the symmetric SC2 engine replay sequence"
+      if [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+        grep -Fq '[sc2-engine-replay] enabled mode=selective-update-call begin_pc=0x800095c0 return_pc=0x8001bcb0' "$log" ||
+          fail "$peer did not enable the selective SC2 update replay probe"
+      elif [ "$UPDATE_REPLAY_PROBE" -eq 1 ]; then
+        grep -Fq '[sc2-engine-replay] enabled mode=full-emulator-update-call begin_pc=0x800095c0 return_pc=0x8001bcb0' "$log" ||
+          fail "$peer did not enable the full-emulator SC2 update replay probe"
+      else
+        grep -Fq '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628' "$log" ||
+          fail "$peer did not enable the full-emulator SC2 engine replay probe"
+      fi
+      if [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 0 ]; then
+        grep -Fq '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' "$log" ||
+          fail "$peer did not execute the symmetric SC2 engine replay sequence"
+      fi
       grep -Eq '^\[sc2-engine-external\] result reads=[0-9]+ writes=[0-9]+ read_sites=[0-9]+ write_sites=[0-9]+ read_block_sites=[0-9]+ write_block_sites=[0-9]+ fallback_instructions=[0-9]+ overflow=no complete=yes$' "$log" ||
         fail "$peer did not complete the SC2 engine external-effect profile"
       grep -Eq '^\[sc2-engine-calls\] result sites=[1-9][0-9]* completed=[1-9][0-9]* overflow=no complete=yes$' "$log" ||
@@ -392,7 +421,7 @@ verify_hook_profiles() {
         fail "$peer did not complete the SC2 engine indirect-call profile"
       result="$(grep -F '[sc2-engine-replay] full-state-result ' "$log" | tail -1)"
       [ -n "$result" ] || fail "$peer produced no SC2 engine replay result"
-      printf '%s\n' "$result" | grep -Eq 'state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=[0-9]+ external_profile_complete=yes endpoint_bytes=[1-9][0-9]* replay_bytes=[1-9][0-9]* differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=[0-9]+ replay_tb=[0-9]+$' ||
+      printf '%s\n' "$result" | grep -Eq 'state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=[0-9]+ external_profile_complete=yes external_replay_match=yes external_effects=[0-9]+ endpoint_bytes=[1-9][0-9]* replay_bytes=[1-9][0-9]* differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=[0-9]+ replay_tb=[0-9]+$' ||
         fail "$peer SC2 engine replay endpoint was not exact"
       local endpoint_bytes replay_bytes endpoint_tb replay_tb
       endpoint_bytes="$(printf '%s\n' "$result" | sed -E 's/.* endpoint_bytes=([0-9]+).*/\1/')"
@@ -524,6 +553,10 @@ if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
 fi
 if [ "$ENGINE_REPLAY_PROBE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=FULL_EMULATOR_ONE_TICK)
+elif [ "$UPDATE_REPLAY_PROBE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=FULL_EMULATOR_UPDATE_CALL)
+elif [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=SELECTIVE_UPDATE_CALL)
 fi
 if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
   run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)
@@ -566,7 +599,13 @@ fi
     if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
       echo "sc2_memory_profile_ticks=$HOOK_MEMORY_PROFILE_TICKS"
     fi
-    echo "sc2_engine_replay_probe=$([ "$ENGINE_REPLAY_PROBE" -eq 1 ] && echo exact-full-emulator || echo disabled)"
+    if [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+      echo "sc2_engine_replay_probe=selective-update-call"
+    elif [ "$UPDATE_REPLAY_PROBE" -eq 1 ]; then
+      echo "sc2_engine_replay_probe=exact-full-emulator-update-call"
+    else
+      echo "sc2_engine_replay_probe=$([ "$ENGINE_REPLAY_PROBE" -eq 1 ] && echo exact-full-emulator || echo disabled)"
+    fi
   fi
   if [ -n "$DIGEST_MISMATCH_FRAME" ]; then
     echo "expected_digest_mismatch_frame=$DIGEST_MISMATCH_FRAME"

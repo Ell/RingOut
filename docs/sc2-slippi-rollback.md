@@ -9,8 +9,9 @@ implementation commit `7efcceb3`. Exact full-emulator engine-tick replay and
 the bounded SI input replay journal are implementation commit `304df33a`;
 bounded external-effect classification is commit `dbb1682c`; dispatch-PC
 attribution is commit `86513abf`; and direct/indirect update-call attribution
-is commit `0a1dae8d`. All were recorded 2026-08-26. No release is certified by
-this document.
+is commit `0a1dae8d`. A later uncommitted-at-measurement selective object-update
+transaction is recorded below. All were recorded 2026-08-26. No release is
+certified by this document.
 
 ## Outcome and claim boundary
 
@@ -432,6 +433,65 @@ MMIO-capable handlers now need explicit read replay/write suppression. The next
 oracle should replay that phase from a selective checkpoint and prove the
 corrected endpoint while leaving the 6,000-call wait/service loop outside
 resimulation.
+
+### Selective object-update transaction oracle
+
+The next oracle narrows replayed guest work to the first
+`0x800095c0 -> LR 0x8001bcb0` object-update call inside the certified engine
+iteration. It keeps the broad wait/service loop out of resimulation and uses
+the generated module's pre-write journal to record exact CPU-written bytes,
+rather than treating a changed 4 KiB page as indivisible state.
+
+That distinction is load-bearing. Early selective attempts restored 45 to 47
+complete MEM1 pages and consistently differed in roughly 470 to 487 bytes on
+one otherwise unrelated page. The page moved between runs and had no game
+module writer. Exact-byte restoration proved the cause was asynchronous
+DSP/device activity sharing a page with update CPU stores, not divergent game
+execution. The final transaction therefore:
+
+1. retains the canonical complete hardware endpoint;
+2. restores only exact module-CPU bytes written by the original update;
+3. restores the update's resident CPU context;
+4. substitutes captured postimages for sampled MMIO-owning handlers
+   `0x8001af10` and `0x8001f0c0`, accounting for their 13 external effects;
+5. executes every clean update handler normally;
+6. records the union of original and extra replay CPU writes, so an unexpected
+   replay write cannot be hidden; and
+7. re-anchors non-game state at the canonical hardware endpoint before a
+   complete serialized-state, CPU, timebase, MEM1, and locked-L1 comparison.
+
+The real two-peer VS run retained at
+`/tmp/ringout-live-rollback.sc2-selective-transaction-28981` passed on both
+peers. The host transaction contained 23,179 exact game bytes over 45 pages;
+the guest contained 23,134 bytes over 46 pages. Both had zero extra replay
+writes, zero MEM1 and locked-L1 differences, exact CPU and sub-timebase state,
+two captured SI polls, 13 accounted external effects, and byte-identical
+serialized endpoints of 49,360,112 and 49,360,078 bytes respectively. The
+route also completed the ordinary two-peer synchronized-match gate. Host and
+guest logs hash to
+`a3283d4d282a301b7086b5d5109bbf0360de347b810e32fc961b4949925ba98b`
+and
+`930089d51cdd7f9ba8a4b733fa229344147e4baae25053cf2992e7f4625187be`.
+
+Exact reproduction command:
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-selective-transaction-28981 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 60 --hook-diagnostic-limit 0 \
+  --selective-update-replay-probe --play-seconds 24 --port 28981
+```
+
+This closes the same-input selective determinism gate for one sampled gameplay
+object update. It does **not** yet prove corrected input: the system-handler
+postimages contain the original SI-visible result, so a late input must not be
+routed through this adapter until a deliberately changed-input oracle proves
+the corrected value reaches game state. It also still uses a complete endpoint
+snapshot to re-anchor and verify hardware. Live NetPlay therefore continues to
+use the whole-emulator frame-boundary fallback at this checkpoint.
 
 ### Preallocated selective checkpoint ring
 
