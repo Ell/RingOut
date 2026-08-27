@@ -137,6 +137,15 @@ for the observed 24,829-byte SC2 transaction, but is not connected to the live
 state store. This is performance evidence for changing the architecture, not
 evidence that players currently receive selective rollback.
 
+Commit `8c769987` subsequently exercised that ring through the real generated
+SC2 module. Evidence at
+`/tmp/ringout-live-rollback.sc2-sparse-corrected-28998` shows exact agreement
+between the sparse journal and independent write profile (24,784 host / 24,829
+guest bytes), a 17-byte corrected game-state change, and byte-identical full
+endpoints. This closes one-transaction storage coverage only. The ordinary
+player coordinator still selects whole-emulator checkpoints and remains the
+only shipped live path.
+
 That post-fix run passed the ordinary production gate and closes the three
 previously recorded memory-card, teardown-output, and corrected-frontier fault
 blockers for this tested path. A clean production route retained at

@@ -173,6 +173,16 @@ size its synthetic p95 was 2.26-3.80 ms to record and 0.57-0.95 ms to restore
 on this host. The ring is groundwork only until the real module supplies
 complete live journals and the two-peer correction oracle converges.
 
+The real-module half of that gate passed at commit `8c769987`. The retained
+two-peer corrected run at
+`/tmp/ringout-live-rollback.sc2-sparse-corrected-28998` recorded sparse
+preimages for exactly the independently profiled 24,784 host / 24,829 guest
+transaction bytes. Both peers changed 17 game bytes under corrected input and
+matched complete replay endpoints. This proves the storage/journal mechanism
+for one SC2 input/update transaction; frame-history ownership, multi-tick
+correction scheduling, and live coordinator selection remain required before
+the player path can use it.
+
 This 2026-08-25 run is no longer GPU-safety evidence. Player sessions later
 reported repeated `GFX FIFO: Unknown Opcode` failures and crashes. The audit on
 2026-08-26 found that netplay forced dual-core despite the offline

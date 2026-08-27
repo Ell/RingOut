@@ -607,6 +607,37 @@ path. It proves the selective corrected-input mechanism which the live
 coordinator can invoke; the remaining integration gate is replacing the live
 whole-emulator restore/resimulation loop with this SC2 transaction driver.
 
+Commit `8c769987` replaces that oracle's first selective MEM1 reset with the
+sparse preimage ring. The real generated-module callback retained exactly the
+independently profiled transaction set on both peers: 24,784 host bytes and
+24,829 guest bytes in the retained run. Corrected input changed 17 game-owned
+bytes; the verification replay finished with zero MEM1 and locked-L1
+differences and a byte-identical complete serialized endpoint on both peers.
+The strengthened harness now requires sparse-journal bytes to equal the
+profiled write-set bytes, in addition to the complete endpoint contract.
+
+Evidence is retained at
+`/tmp/ringout-live-rollback.sc2-sparse-corrected-28998`. Host and guest log
+SHA-256 values are respectively
+`4cfbe80ce2c3a800e6b263836a86610919ca1998bcebd767d2d4194729a97a70`
+and
+`05b78edd75da9fb0ebe0c3af730d1d37721894c17e762bd1171d20e2710ccca7`.
+The oracle reloads a canonical hardware endpoint between its two comparison
+passes, which deliberately breaks undo-log lineage; its second pass therefore
+uses the retained entry postimage. A live selective transaction does not make
+that intervening full-state load. Applying an undo log across an unrelated
+load is explicitly rejected as an invalid architecture.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-sparse-corrected-28998 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 60 --hook-diagnostic-limit 0 \
+  --selective-input-corrected-replay-probe --play-seconds 24 --port 28998
+```
+
 ### Preallocated selective checkpoint ring
 
 `RollbackRegionSnapshotRing` validates and sorts non-overlapping profile
