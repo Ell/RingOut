@@ -328,6 +328,19 @@ groundwork, not permission to describe current netplay as Slippi-level or to
 select the sparse path for players. Reproduction and hashes are recorded in
 `docs/sc2-slippi-rollback.md`.
 
+Update at diagnostic commit `20573e45` (2026-08-27): repeated live selective
+correction is not deterministic. One 64-delay run passed five corrections, but
+an immediate repetition differed at confirmed logical frame 1020 by three
+exact MEM1 bytes; another differed at frame 1080 by one byte inside a game
+pointer. Automatic per-peer offending-frame dumps now retain this evidence.
+Expanding the transaction to the full certified 30 Hz engine tick was also
+rejected: it cost roughly 94-130 ms per capture and a corrected hidden replay
+stalled when it crossed presentation while the FIFO was safely quarantined.
+The experiment was removed. The audit verdict is unchanged: broad rollback is
+the guarded player fallback, and the isolated selective path is neither
+Slippi-class nor eligible for player activation. Exact runs, offsets, hashes,
+and reproduction commands are in `docs/sc2-slippi-rollback.md`.
+
 The repository contains useful **offline feasibility tooling**, not live rollback:
 
 - `State::SaveToBuffer` and `LoadFromBuffer` expose synchronous in-memory state (`Core/State.h:128-136`).

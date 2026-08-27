@@ -584,6 +584,17 @@ FIFO. Keep that anchor as the fail-safe oracle while replacing it subsystem by
 subsystem; do not select the sparse player path until the smaller host-state
 anchor passes the same post-replay GPU gate.
 
+Later live stress at diagnostic commit `20573e45` rejects that sparse
+transaction as a complete player state boundary. Repeated runs produced exact
+confirmed-frame mismatches of three bytes and one byte respectively, including
+game floats and a pointer. Widening capture to the complete certified 30 Hz
+engine tick then crossed presentation and stopped progressing under the FIFO
+quarantine required for renderer safety. Stage 5 therefore cannot be closed by
+either currently measured boundary. The next oracle must advance all battle
+state entirely before presentation, most likely through an exact-DOL game
+patch or a newly identified inner battle loop, and must repeat the long stress
+corpus before any performance benchmark is meaningful.
+
 **Video:** speculative frames may render normally, but replay frames must not be
 presented; show only the newest correction. The narrow probe skips the video
 backend whose normal state path precedes hardware

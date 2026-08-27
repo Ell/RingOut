@@ -955,3 +955,88 @@ is the correctness fallback, while Slippi-class selective rollback requires a
 game-owned battle-state profile or game patch which excludes GX/audio/device
 state and a stress corpus that passes repeated corrections. A single successful
 selective correction must not enable this path for players.
+
+## 2026-08-27 exact-mismatch and boundary rejection
+
+Diagnostic commit `20573e45` adds a 64-instruction repeated-delay schedule and
+two isolated-only MEM1 capture modes. One dumps a requested confirmed logical
+frame; the other retains the last two periodic confirmed snapshots and writes
+the exact offending logical frame automatically when Dolphin announces a
+desync. The dump path is unavailable without
+`RINGOUT_ROLLBACK_TEST_ACK=HEADLESS_ISOLATED`. Desync handling releases the
+player-roster lock before taking the rollback-client lock, so the evidence path
+does not invert those locks. These facilities diagnose a failure; they do not
+make selective correction safe.
+
+The first repeated run passed five real selective commits across 1,552 physical
+rows. Host and guest confirmed-state logs were byte-identical with SHA-256
+`3a7aa57d236ea5784893bb92ebf5df14802b5cc9e2119782930797ee9c42e212`,
+and both exact frame-1020 MEM1 images hashed to
+`7d30d914c3d02ae11bb78cf6a1e4038c64ab485af422849e2f4b8912775a710d`.
+The retained result is
+`/tmp/ringout-live-rollback.sc2-selective-auto-mismatch-39171`; its
+`rollback-result.env` SHA-256 is
+`709e851f9318dd01f3752f60f2e2c69ac7f1bd73d7ed643e95b8111558858266`.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+RINGOUT_DETERMINISM_DUMP_DIR=/tmp/ringout-selective-auto-mismatch-dumps-39171 \
+RINGOUT_DETERMINISM_DUMP_FRAME=1020 \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --fault-script .github/input-scripts/rollback-fault-sc2-stress.txt \
+  --work /tmp/ringout-live-rollback.sc2-selective-auto-mismatch-39171 \
+  --hook-profile --hook-warmup-frames 0 --hook-sample-frames 120 \
+  --hook-diagnostic-limit 0 --transaction-live-correction-probe \
+  --play-seconds 60 --port 39171
+```
+
+Immediate repetition rejected the apparent pass. Run
+`/tmp/ringout-live-rollback.sc2-selective-auto-mismatch-39173` diverged at exact
+logical frame 1020 after a two-transaction guest correction changed 12 bytes.
+The automatic and requested snapshots were identical within each peer. Only
+three MEM1 offsets differed between peers: `0x002b5a49`, `0x002b5e01`, and
+`0x004271ff`; the first two are bytes in floats whose values were 16 versus 15.
+Host and guest dump SHA-256 values were respectively
+`3abe770813ef4a766f1eaac935ccdf2b1ae11549621a378954565ae40b4f2306` and
+`ed2166a0c478ab1e9160242949dd794b8a417e1a054bc11fd198bf8391554441`.
+
+A second classification run at
+`/tmp/ringout-live-rollback.sc2-selective-gap-delta-39174` diverged at logical
+frame 1080 by one byte, offset `0x00475816`, inside a guest pointer value
+`0x801bfb00` versus `0x801bdb00`. Admitting deterministic bytes from the
+post-video gap added zero bytes in the observed corrections. The equivalent
+system-handler delta experiment also added zero. Restoring a complete emulator
+state at every sparse transaction entry made the external-effect replay
+contract fail and was rejected rather than treated as an oracle.
+
+The independently certified outer engine boundary
+`0x8001ba3c -> 0x8002d628` was then evaluated as the live sparse transaction.
+It captured four polls, two SI batches, and roughly 52-73 KiB of unique MEM1
+writes per 30 Hz update, but capture cost was roughly 94-130 ms. More
+importantly, a real corrected replay reached the video/presentation boundary
+after only two of its four expected polls and then stopped progressing while
+the FIFO remained quarantined. Allowing historical GPU work to proceed would
+violate the renderer-safety contract and recreate the class of FIFO corruption
+this program is meant to remove. Evidence is retained at
+`/tmp/ringout-live-rollback.sc2-engine-safe-fallback-39181`; host and guest log
+SHA-256 values are
+`827344c4f277e87d75167fc4c67b2d9c5c04a0d1e20b96963bab5679bfa9b160` and
+`ec0e87a8c3613222b51c9cfea59adb3cd75459ee752cb32e999ccea005af116e`.
+The whole-engine sparse experiment and its selective-only broad-store bypass
+were removed before commit `20573e45`.
+
+The post-removal Release build passed shell syntax, the stress-schedule parser,
+and all 51 registered CTest tests on 2026-08-27. The protocol test requires
+permission to bind loopback; a sandboxed run's server-construction failure is
+not test evidence.
+
+The conclusion is stronger than the earlier stress failure: neither the narrow
+input/update transaction nor the broad 30 Hz engine tick is a shippable SC2
+rollback boundary. The narrow cut omits persistent game state; the broad cut
+crosses presentation and GPU synchronization. The remaining Slippi-class route
+requires a game patch or a newly identified pre-presentation battle-engine loop
+that advances all gameplay-owned state, renews input, and bypasses render,
+audio, and hardware service by construction. Until that exists and passes
+repeated exact-state stress, player sessions must stay on the guarded broad
+fallback and selective mode must remain isolated.
