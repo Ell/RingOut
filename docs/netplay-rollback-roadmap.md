@@ -574,6 +574,16 @@ Fuzz duplicate, reordered, simultaneous, wraparound, reset, and disconnect cases
 
 ### Stage 5: reconcile output and side effects
 
+Implementation evidence at `8c6a74fa` now proves three corrected SC2 update
+transactions can be sparsely rewound and replayed twice to an identical
+game-owned RAM/CPU/timebase endpoint on both real peers. It also proves that a
+FIFO pause alone is insufficient: the first transition-focused run reached an
+exact game endpoint and then fed an invalid opcode to the renderer. The passing
+oracle restores a roughly 49.36 MB canonical emulator anchor before unpausing
+FIFO. Keep that anchor as the fail-safe oracle while replacing it subsystem by
+subsystem; do not select the sparse player path until the smaller host-state
+anchor passes the same post-replay GPU gate.
+
 **Video:** speculative frames may render normally, but replay frames must not be
 presented; show only the newest correction. The narrow probe skips the video
 backend whose normal state path precedes hardware

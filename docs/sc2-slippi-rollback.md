@@ -696,6 +696,62 @@ RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
   --transaction-history-probe --play-seconds 24 --port 29003
 ```
 
+### Multi-transaction corrected replay oracle
+
+Commit `8c6a74fa` advances the selective path from retained history to an
+isolated three-transaction correction. Each transaction slot now owns its exact
+SI polls and batch IDs, CPU/timebase entry state, sparse RAM preimages, external
+device effects, and compact postimages for the two identified system handlers.
+The oracle rewinds three real SC2 transactions, toggles remote A only in the
+oldest transaction, replays the corrected branch twice, and compares the exact
+union of bytes written by that branch plus CPU and timebase state. It also hashes
+`(RAM offset, corrected value)` pairs; the two peers must produce the same
+corrected-state digest.
+
+This work found and retained two important negative results. A strict global
+MMIO event tape failed on the second corrected transaction because changed game
+state legitimately selected `0xcc003000` where the original path next accessed
+`0xcc006438`. External reads and suppressed writes are therefore replayed by
+typed `(read/write, address, size, occurrence)` queues, with captured system-
+handler ranges reserved from general matching. A later run reached exact game
+state but corrupted the FIFO immediately after replay: pausing FIFO consumption
+did not restore all renderer/device internals. The oracle now locks the FIFO for
+the complete rewind and re-simulation and restores a canonical full-emulator
+anchor before rendering resumes. This is safe evidence, but the 49.36 MB anchor
+is explicitly not the desired player implementation.
+
+The final two-peer run is retained at
+`/tmp/ringout-live-rollback.sc2-transaction-replay-reanchor-29010`. Both peers
+replayed three transactions twice, changed 4,772 of 12,276 transaction-owned
+bytes, matched every owned byte plus CPU/timebase, and produced corrected-state
+CRC32 `aaf1d91c`. Exactly 892 bytes outside the transaction-owned union differed
+between the two passes; those bytes belong to the canonical device frontier and
+are deliberately excluded from game-state convergence. Both full emulator
+anchors restored successfully (`49,360,071` host bytes and `49,360,080` guest
+bytes), the subsequent GPU/FIFO gate passed, and the synchronized match route
+completed. Host and guest log SHA-256 values are
+`901d94fb4a4e8d155c45f63c95ce859bcc9d07eea99229ea5f776c135b51264c`
+and
+`9f2547200101506f8a9d9bdde2e3451c152a9a6c8109d0b4b594ab7bf93ee60e`.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-transaction-replay-reanchor-29010 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 120 --hook-diagnostic-limit 0 \
+  --transaction-replay-probe --play-seconds 24 --port 29010
+```
+
+This remains an isolated research gate. The ordinary player correction still
+uses `DolphinRollbackStateStore`; the selective transaction path does not yet
+consume a live scheduler correction or publish a corrected frontier. Promotion
+requires replacing the broad emulator anchor with audited minimal renderer,
+audio, timing, and device state; resolving retained poll batches from the live
+authoritative journal; and passing real correction, renderer, audio, impairment,
+cross-platform, and long-match gates.
+
 ### Preallocated selective checkpoint ring
 
 `RollbackRegionSnapshotRing` validates and sorts non-overlapping profile
@@ -832,7 +888,7 @@ bash -n .github/scripts/rollback-live-real-game.sh \
   .github/scripts/rollback-continuous-sync.sh
 ```
 
-The complete Linux build at implementation commit `7f7fad00` passed all 49
+The complete Linux build after implementation commit `8c6a74fa` passed all 51
 registered CTest tests. The asset-free log-contract harness includes negative
 cases for incomplete samples, wrong caller/predecessor edges, and asymmetric
 peer candidate sets. The earlier source also built the Windows release target

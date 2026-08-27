@@ -318,6 +318,16 @@ The lobby displays names, ping, assigned pad port, and game comparison. Starting
 
 ## Rollback research status
 
+Update at commit `8c6a74fa` (2026-08-26): an isolated two-peer oracle now
+rewinds and replays three real SC2 update transactions with corrected input.
+Both peers reached the same corrected owned-state digest and exact RAM/CPU/
+timebase endpoint twice. A full canonical emulator anchor was still required to
+resume rendering without FIFO corruption. Therefore the shipped/player path
+remains broad whole-emulator rollback; this result is selective replay
+groundwork, not permission to describe current netplay as Slippi-level or to
+select the sparse path for players. Reproduction and hashes are recorded in
+`docs/sc2-slippi-rollback.md`.
+
 The repository contains useful **offline feasibility tooling**, not live rollback:
 
 - `State::SaveToBuffer` and `LoadFromBuffer` expose synchronous in-memory state (`Core/State.h:128-136`).
