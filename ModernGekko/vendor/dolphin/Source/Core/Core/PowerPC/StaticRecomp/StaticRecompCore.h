@@ -331,6 +331,7 @@ private:
   u32 m_sc2_engine_replay_pass_returns = 0;
   bool m_sc2_engine_speculative_active = false;
   bool m_sc2_engine_replay_have_reference = false;
+  bool m_sc2_engine_replay_selective_corrected_reference = false;
   CPUState m_sc2_engine_replay_entry_guest{};
   CPUState m_sc2_engine_replay_endpoint_guest{};
   CPUState m_sc2_engine_replay_original_endpoint_guest{};
@@ -395,6 +396,7 @@ private:
   u64 m_sc2_engine_indirect_call_entry_reads = 0;
   u64 m_sc2_engine_indirect_call_entry_writes = 0;
   u64 m_sc2_engine_indirect_call_entry_fallbacks = 0;
+  std::size_t m_sc2_engine_indirect_call_entry_effect = 0;
   u64 m_sc2_engine_indirect_call_completed = 0;
   bool m_sc2_engine_indirect_call_active = false;
   bool m_sc2_engine_indirect_call_overflow = false;
@@ -418,10 +420,12 @@ private:
   std::map<u64, std::vector<u8>> m_sc2_update_handler_post_ram;
   std::map<u64, CPUState> m_sc2_update_handler_post_guest;
   std::map<u64, u64> m_sc2_update_handler_post_tb_remainder;
+  std::map<u64, std::pair<std::size_t, std::size_t>> m_sc2_update_handler_effect_ranges;
   std::vector<u32> m_sc2_input_handler_post_offsets;
   std::vector<u8> m_sc2_input_handler_post_values;
   CPUState m_sc2_input_handler_post_guest{};
   u64 m_sc2_input_handler_post_tb_remainder = 0;
+  std::size_t m_sc2_input_handler_external_effect_count = 0;
   bool m_sc2_input_handler_have_post = false;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;

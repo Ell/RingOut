@@ -65,6 +65,12 @@ public:
 
   DataResponse GetData(u32& hi, u32& low) override;
 
+  // Encode an already-resolved pad sample using the controller's current SI
+  // transfer mode without polling input or mutating device timing state. This
+  // is used by SC2's selective rollback path after hardware transactions have
+  // been held at the canonical frontier.
+  void EncodePadStatus(const GCPadStatus& pad_status, u32& hi, u32& low);
+
   // Send a command directly
   void SendCommand(u32 command, u8 poll) override;
 

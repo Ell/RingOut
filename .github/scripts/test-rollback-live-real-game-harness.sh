@@ -110,6 +110,18 @@ for peer in host guest; do
 done
 "$HARNESS" --verify-existing "$WORK/selective-input-update-replay" --hook-profile \
   --selective-input-update-replay-probe >/dev/null
+cp -a "$WORK/selective-input-update-replay" "$WORK/selective-input-corrected-replay"
+for peer in host guest; do
+  sed -i \
+    -e 's/mode=selective-input-update-span/mode=selective-input-update-corrected/' \
+    -e 's/corrected_input=no perturbed_polls=0 corrected_state_bytes=0/corrected_input=yes perturbed_polls=1 corrected_state_bytes=17/' \
+    "$WORK/selective-input-corrected-replay/$peer/log.txt"
+  printf '%s\n' \
+    '[sc2-engine-replay] selective corrected reference game_bytes=17 perturbed_polls=1; restored entry for verification replay' \
+    >> "$WORK/selective-input-corrected-replay/$peer/log.txt"
+done
+"$HARNESS" --verify-existing "$WORK/selective-input-corrected-replay" --hook-profile \
+  --selective-input-corrected-replay-probe >/dev/null
 sed -i 's/differing_state_bytes=0/differing_state_bytes=1/' \
   "$WORK/engine-replay/guest/log.txt"
 if "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \

@@ -180,6 +180,14 @@ DataResponse CSIDevice_GCController::GetData(u32& hi, u32& low)
   if (HandleButtonCombos(pad_status) == COMBO_ORIGIN)
     pad_status.button |= PAD_GET_ORIGIN;
 
+  EncodePadStatus(pad_status, hi, low);
+
+  return DataResponse::Success;
+}
+
+void CSIDevice_GCController::EncodePadStatus(const GCPadStatus& pad_status, u32& hi,
+                                              u32& low)
+{
   hi = MapPadStatus(pad_status);
 
   // Low bits are packed differently per mode
@@ -226,8 +234,6 @@ DataResponse CSIDevice_GCController::GetData(u32& hi, u32& low)
     low |= pad_status.substickY << 16;  // All 8 bits
     low |= pad_status.substickX << 24;  // All 8 bits
   }
-
-  return DataResponse::Success;
 }
 
 u32 CSIDevice_GCController::MapPadStatus(const GCPadStatus& pad_status)

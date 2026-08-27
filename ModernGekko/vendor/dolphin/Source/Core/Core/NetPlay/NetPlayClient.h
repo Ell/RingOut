@@ -445,6 +445,8 @@ unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot);
 void BeginSc2EngineInputCapture();
 bool FinishSc2EngineInputCapture(std::size_t* captured_polls);
 bool BeginSc2EngineInputReplay(bool perturb_remote_a = false);
+bool ConsumeSc2EngineInputReplay(int pad_num, bool batching, GCPadStatus* status,
+                                 bool* result);
 bool FinishSc2EngineInputReplay(std::size_t* perturbed_polls = nullptr);
 void EndSc2EngineInputReplay();
 }  // namespace NetPlay

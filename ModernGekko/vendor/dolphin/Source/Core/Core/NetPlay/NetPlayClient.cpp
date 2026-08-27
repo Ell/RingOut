@@ -191,6 +191,14 @@ bool BeginSc2EngineInputReplay(const bool perturb_remote_a)
   return true;
 }
 
+bool ConsumeSc2EngineInputReplay(const int pad_num, const bool batching,
+                                 GCPadStatus* const status, bool* const result)
+{
+  if (status == nullptr || result == nullptr)
+    return false;
+  return TryReplaySc2EngineInput(pad_num, batching, status, result);
+}
+
 bool FinishSc2EngineInputReplay(std::size_t* const perturbed_polls)
 {
   const bool valid = s_sc2_engine_input_mode == Sc2EngineInputMode::Replay &&

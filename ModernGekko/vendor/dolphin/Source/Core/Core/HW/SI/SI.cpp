@@ -24,6 +24,7 @@
 #include "Core/HW/MMIO.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SI/SI_DeviceGBA.h"
+#include "Core/HW/SI/SI_DeviceGCController.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
 #include "Core/NetPlay/LiveRollbackOutputGate.h"
@@ -61,6 +62,19 @@ SerialInterfaceManager::SerialInterfaceManager(Core::System& system) : m_system(
 }
 
 SerialInterfaceManager::~SerialInterfaceManager() = default;
+
+bool SerialInterfaceManager::EncodeGCControllerPadStatus(const int channel,
+                                                          const GCPadStatus& status, u32* const hi,
+                                                          u32* const low)
+{
+  if (channel < 0 || channel >= MAX_SI_CHANNELS || hi == nullptr || low == nullptr)
+    return false;
+  auto* const controller = dynamic_cast<CSIDevice_GCController*>(m_channel[channel].device.get());
+  if (!controller)
+    return false;
+  controller->EncodePadStatus(status, *hi, *low);
+  return true;
+}
 
 static constexpr u32 GetRDSTBit(u32 channel)
 {

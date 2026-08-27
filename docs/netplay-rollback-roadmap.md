@@ -141,6 +141,13 @@ essential: populate guest raw-pad state from the corrected scheduler input
 before `0x8002a694`, rather than replaying the predicted root postimage, then
 prove changed-input convergence through the selective span.
 
+That gate is complete: device-mode-aware pad encoding at the observed SI-copy
+dispatch produces a 17-byte corrected game-state change, and two consecutive
+selective corrected replays match complete endpoints on both real peers. The
+next implementation step is live coordinator integration: retain this exact
+transaction journal per logical frame and invoke it for the correction range
+instead of loading and replaying the complete emulator/GPU state.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values

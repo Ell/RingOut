@@ -573,6 +573,40 @@ therefore remains gated on replacing the raw pad slot at `0x80427340 + 8*pad`
 from the rollback scheduler and proving the existing controller conversion
 produces the corrected game endpoint without replaying the hardware service.
 
+That corrected selective gate now passes. The coarse root postimage was
+replaced by a bounded external-effect transaction: SC2's SI-copy output is
+replaced at dispatch `0x80183708` (returning to `0x801bfa80`) with a
+`GCPadStatus` encoded using the live controller device's actual SI mode. The
+game then executes its own controller mapping and first object update. Bytes
+last written by the certified SI/OS service range are excluded from the game
+postimage and the canonical hardware endpoint supplies them instead.
+
+The two-peer run at
+`/tmp/ringout-live-rollback.sc2-selective-input-corrected-28994` deliberately
+toggled remote A and repeated the corrected selective transaction twice. Both
+peers changed 17 game-owned bytes, consumed one perturbed remote poll, and
+matched RAM, locked L1, CPU, timebase remainder, the captured external-effect
+contract, and the complete approximately 49.36 MB serialized endpoint. The
+host and guest logs hash to
+`4ac355cf08ceae0b03ce8f95efd1472481f607b6b736b58112aed079e537cf66`
+and
+`5dbf86f22bcdfcdff84224b787e8b732737e3707610287fac34aedf2467ee830`.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-selective-input-corrected-28994 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 60 --hook-diagnostic-limit 0 \
+  --selective-input-corrected-replay-probe --play-seconds 24 --port 28994
+```
+
+This is still a deliberately armed one-transaction oracle, not the player
+path. It proves the selective corrected-input mechanism which the live
+coordinator can invoke; the remaining integration gate is replacing the live
+whole-emulator restore/resimulation loop with this SC2 transaction driver.
+
 ### Preallocated selective checkpoint ring
 
 `RollbackRegionSnapshotRing` validates and sorts non-overlapping profile

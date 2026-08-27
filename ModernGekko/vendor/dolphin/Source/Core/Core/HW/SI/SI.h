@@ -11,6 +11,7 @@
 #include "Common/CommonTypes.h"
 
 class PointerWrap;
+struct GCPadStatus;
 
 namespace Core
 {
@@ -65,6 +66,11 @@ public:
   void ChangeDevice(SIDevices device, int channel);
 
   SIDevices GetDeviceType(int channel) const;
+
+  // Purely encode a resolved GameCube pad sample with the live device's SI
+  // mode. No input poll or emulated hardware state is advanced.
+  bool EncodeGCControllerPadStatus(int channel, const GCPadStatus& status, u32* hi,
+                                   u32* low);
 
   u32 GetPollXLines();
 

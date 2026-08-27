@@ -46,6 +46,13 @@ postimage, both peers reproduced complete endpoints while restoring only
 raw input and is not live correction; corrected scheduler input must replace
 the raw pad slot before controller conversion.
 
+The follow-up corrected selective oracle now passes on two real peers. It
+injects a scheduler-resolved remote A correction at SC2's SI-copy output,
+executes the game's own controller conversion and update, and reproduces two
+identical corrected complete endpoints while changing 17 game-owned bytes.
+This closes the mechanism proof but not live activation: the ordinary player
+coordinator still invokes the broad whole-emulator replay driver.
+
 Follow-up commit `7efcceb3` measures the exact engine function's MEM1 write
 footprint. A 60-tick idle control and 60-tick automated VS route passed on both
 peers with identical per-route regions; their observed union is 52 pages
