@@ -129,6 +129,14 @@ Runtime, module, and DOL SHA-256 values were respectively
 `e01d1fc7f14d41cf170fb5b036e5c754cb3062b8e5421f147258b627e2931d48`,
 and `0ad25684426e6e04ee92a1d7919eec08d8d1528af8513472c44dd2eb20ea7ac5`.
 
+A 2026-08-26 instrumented correction at commit `7f7fad00`, retained at
+`/tmp/ringout-live-rollback.performance-28996`, passed without a GPU crash but
+measured 28.6-35.0 ms average whole-state capture and 16.4-17.0 ms restore.
+The newly added sparse preimage ring benchmarks below a millisecond p95 restore
+for the observed 24,829-byte SC2 transaction, but is not connected to the live
+state store. This is performance evidence for changing the architecture, not
+evidence that players currently receive selective rollback.
+
 That post-fix run passed the ordinary production gate and closes the three
 previously recorded memory-card, teardown-output, and corrected-frontier fault
 blockers for this tested path. A clean production route retained at

@@ -162,6 +162,17 @@ through 660.
 The matching confirmed files hash to
 `4969a73790008801a05a27522d2508a7ffceb32d181a55be1b2f5d14caec9795`.
 
+The current broad-store performance was measured again at commit `7f7fad00`
+with a production-path late-input correction. Evidence at
+`/tmp/ringout-live-rollback.performance-28996` shows approximately 45.98 MiB
+per checkpoint, 28.6-35.0 ms average capture, 74.8-82.7 ms maximum capture,
+and 16.4-17.0 ms restore across the two peers. Correctness passed in that run;
+the frame cost does not meet the performance gate. The same commit adds a
+fail-closed sparse preimage ring. At the observed 24,829-byte SC2 transaction
+size its synthetic p95 was 2.26-3.80 ms to record and 0.57-0.95 ms to restore
+on this host. The ring is groundwork only until the real module supplies
+complete live journals and the two-peer correction oracle converges.
+
 This 2026-08-25 run is no longer GPU-safety evidence. Player sessions later
 reported repeated `GFX FIFO: Unknown Opcode` failures and crashes. The audit on
 2026-08-26 found that netplay forced dual-core despite the offline

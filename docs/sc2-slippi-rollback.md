@@ -633,6 +633,43 @@ This establishes that preallocated region copying can fit comfortably below a
 represent Deck/Windows memory bandwidth, and must not be used as a release
 threshold by itself.
 
+Commit `7f7fad00` adds the complementary sparse preimage form,
+`RollbackUndoSnapshotRing`. The generated-module and fallback journals call it
+before covered writes; it retains the first value of each byte written during
+a transaction, so rewinding cost scales with actual mutation rather than a
+guessed enclosing region. The ring preallocates its slots, rejects incomplete
+history before changing RAM, invalidates a transaction on capacity overflow,
+and cannot advance past an invalid transaction. These properties make an
+unknown write set a fail-closed fallback condition instead of a partially
+restored game.
+
+The synthetic Release benchmark uses the 24,829 unique bytes observed in the
+real corrected SC2 input/update transaction, 512 auxiliary bytes, ten history
+slots, and 240 record/restore pairs. Four runs on the 2026-08-26 development
+host produced capture p50 0.85-1.77 ms, capture p95 2.26-3.80 ms, restore p50
+0.22-0.52 ms, and restore p95 0.57-0.95 ms. This measures deliberately
+worst-shaped one-byte journal calls and is not a live-game latency claim.
+
+The same commit instruments the still-active whole-emulator store. A real
+two-peer correction run retained at
+`/tmp/ringout-live-rollback.performance-28996` measured approximately 45.98
+MiB per retained checkpoint. Host capture averaged 28.9 ms (81.3 ms maximum)
+and restore took 16.4-16.6 ms; guest capture averaged 28.6-35.0 ms (74.8-82.7
+ms maximum) and restore took 16.9-17.0 ms. The run passed and did not reproduce
+the historical GPU crash, but those costs rule out Slippi-class catch-up with
+the broad store. The sparse ring remains unselected until real-module journal
+coverage and corrected two-peer convergence pass.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.performance-28996 \
+  --production --fault-script .github/input-scripts/rollback-fault-correction.txt \
+  --play-seconds 12 --port 28996
+/tmp/ringout-sc2-rollback-build/moderngekko_rollback_undo_snapshot_benchmark
+```
+
 `StaticRecompDispatchHook` is the chassis seam for the eventual driver. A
 certified list of PCs can be forced back through the DolRecomp dispatcher; a
 CPU-thread callback may then continue normally, return to the guest link
@@ -693,17 +730,20 @@ cmake -S ModernGekko -B /tmp/ringout-sc2-rollback-build \
 cmake --build /tmp/ringout-sc2-rollback-build --target \
   moderngekko_frame_dispatch_profiler_test \
   moderngekko_rollback_region_snapshot_ring_test \
+  moderngekko_rollback_undo_snapshot_ring_test \
   moderngekko_sc2_rollback_profile_test \
-  moderngekko_rollback_region_snapshot_benchmark core -j4
+  moderngekko_rollback_region_snapshot_benchmark \
+  moderngekko_rollback_undo_snapshot_benchmark core -j4
 ctest --test-dir /tmp/ringout-sc2-rollback-build \
-  -R 'moderngekko.(frame_dispatch_profiler|rollback_region_snapshot_ring|sc2_rollback_profile)' \
+  -R 'moderngekko.(frame_dispatch_profiler|rollback_(region|undo)_snapshot_ring|sc2_rollback_profile)' \
   --output-on-failure
 /tmp/ringout-sc2-rollback-build/moderngekko_rollback_region_snapshot_benchmark
+/tmp/ringout-sc2-rollback-build/moderngekko_rollback_undo_snapshot_benchmark
 bash -n .github/scripts/rollback-live-real-game.sh \
   .github/scripts/rollback-continuous-sync.sh
 ```
 
-The complete Linux build at implementation commit `7ad94d48` passed all 48
+The complete Linux build at implementation commit `7f7fad00` passed all 49
 registered CTest tests. The asset-free log-contract harness includes negative
 cases for incomplete samples, wrong caller/predecessor edges, and asymmetric
 peer candidate sets. The earlier source also built the Windows release target
