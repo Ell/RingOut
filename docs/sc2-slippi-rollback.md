@@ -538,6 +538,41 @@ RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
   --engine-replay-corrected-input-probe --play-seconds 24 --port 28986
 ```
 
+The same-input form of that wider selective boundary now passes. The first
+attempt correctly failed with 24 game-byte differences and 12 extra replay
+writes: root call `0x80011c80` itself performs 25 hardware reads and nine
+writes, so executing it against the already-advanced canonical hardware
+frontier changed its service branch. The final adapter captures the root
+call's 371-byte postimage, then executes the remaining pure controller/game
+work plus the previously adapted inner handlers.
+
+The real two-peer run at
+`/tmp/ringout-live-rollback.sc2-selective-input-adapted-28988` passed on both
+peers. Each transaction restored 24,829 exact game bytes across 46 observed
+pages, replayed the 371-byte root input-service postimage and 13 inner external
+effects, produced zero extra replay writes, and matched MEM1, locked L1, CPU,
+timebase remainder, and the complete roughly 49.36 MB serialized endpoint.
+The host and guest logs hash to
+`9ba65b44dd1662ebd2b57e8a3ff72c87a329f50ce30d2e633488003fae68df66`
+and
+`688076225a492ab0aa0d65ded1ad4a753645a9c8fbccb8da8418e758bc3ede02`.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-selective-input-adapted-28988 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 60 --hook-diagnostic-limit 0 \
+  --selective-input-update-replay-probe --play-seconds 24 --port 28988
+```
+
+This closes same-input replay for the game-owned input/update half of an SC2
+tick. It still reuses the predicted root-service postimage. Corrected activation
+therefore remains gated on replacing the raw pad slot at `0x80427340 + 8*pad`
+from the rollback scheduler and proving the existing controller conversion
+produces the corrected game endpoint without replaying the hardware service.
+
 ### Preallocated selective checkpoint ring
 
 `RollbackRegionSnapshotRing` validates and sorts non-overlapping profile

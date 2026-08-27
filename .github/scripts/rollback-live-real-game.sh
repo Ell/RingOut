@@ -21,6 +21,7 @@ usage: RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME rollback-live-real-game.sh \
          [--engine-replay-probe] [--engine-replay-corrected-input-probe] \
          [--update-replay-probe] \
          [--selective-update-replay-probe] \
+         [--selective-input-update-replay-probe] \
          [--expect-digest-mismatch <logical-frame>]
 
 Test-only runtime contract:
@@ -94,6 +95,10 @@ frontier, restores the exact module-CPU-written MEM1 bytes plus CPU entry
 state, replaces the two sampled system handlers with captured transactions,
 and compares the complete re-anchored endpoint. It is a correctness oracle,
 not a live late-input correction mode.
+
+--selective-input-update-replay-probe extends that transaction backward to
+the first controller conversion call at 0x80011c80 and ends after the first
+0x800095c0 object update at LR 0x8001bcb0.
 EOF
   exit 2
 }
@@ -128,6 +133,7 @@ ENGINE_REPLAY_PROBE=0
 ENGINE_REPLAY_CORRECTED_INPUT_PROBE=0
 UPDATE_REPLAY_PROBE=0
 SELECTIVE_UPDATE_REPLAY_PROBE=0
+SELECTIVE_INPUT_UPDATE_REPLAY_PROBE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -168,6 +174,7 @@ while [ "$#" -gt 0 ]; do
     --engine-replay-corrected-input-probe) ENGINE_REPLAY_CORRECTED_INPUT_PROBE=1; shift ;;
     --update-replay-probe) UPDATE_REPLAY_PROBE=1; shift ;;
     --selective-update-replay-probe) SELECTIVE_UPDATE_REPLAY_PROBE=1; shift ;;
+    --selective-input-update-replay-probe) SELECTIVE_INPUT_UPDATE_REPLAY_PROBE=1; shift ;;
     --expect-digest-mismatch)
       [ "$#" -ge 2 ] || usage
       DIGEST_MISMATCH_FRAME="$2"
@@ -216,9 +223,10 @@ if [ "$HOOK_MEMORY_PROFILE" -eq 1 ]; then
 fi
 if [ "$ENGINE_REPLAY_PROBE" -eq 1 ] || [ "$ENGINE_REPLAY_CORRECTED_INPUT_PROBE" -eq 1 ] ||
    [ "$UPDATE_REPLAY_PROBE" -eq 1 ] ||
-   [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+   [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ] ||
+   [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
   [ "$HOOK_PROFILE" -eq 1 ] || fail "replay probes require --hook-profile"
-  [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE)) -eq 1 ] ||
+  [ $((ENGINE_REPLAY_PROBE + ENGINE_REPLAY_CORRECTED_INPUT_PROBE + UPDATE_REPLAY_PROBE + SELECTIVE_UPDATE_REPLAY_PROBE + SELECTIVE_INPUT_UPDATE_REPLAY_PROBE)) -eq 1 ] ||
     fail "SC2 replay probes are mutually exclusive"
   [ "$EXPECT_SC2_ENGINE_BOUNDARY" -eq 0 ] ||
     fail "--engine-replay-probe cannot be combined with --expect-sc2-engine-boundary"
@@ -406,10 +414,14 @@ verify_hook_profiles() {
   fi
   if [ "$ENGINE_REPLAY_PROBE" -eq 1 ] || [ "$ENGINE_REPLAY_CORRECTED_INPUT_PROBE" -eq 1 ] ||
      [ "$UPDATE_REPLAY_PROBE" -eq 1 ] ||
-     [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+     [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ] ||
+     [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
     for peer in host guest; do
       log="$evidence/$peer/log.txt"
-      if [ "$ENGINE_REPLAY_CORRECTED_INPUT_PROBE" -eq 1 ]; then
+      if [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+        grep -Fq '[sc2-engine-replay] enabled mode=selective-input-update-span begin_pc=0x80011c80 return_pc=0x8001bcb0 ticks=1' "$log" ||
+          fail "$peer did not enable the selective SC2 input/update replay probe"
+      elif [ "$ENGINE_REPLAY_CORRECTED_INPUT_PROBE" -eq 1 ]; then
         grep -Fq '[sc2-engine-replay] enabled mode=full-emulator-one-tick-corrected-input begin_pc=0x8001ba3c return_pc=0x8002d628 ticks=2' "$log" ||
           fail "$peer did not enable the corrected-input SC2 engine replay probe"
       elif [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
@@ -422,7 +434,8 @@ verify_hook_profiles() {
         grep -Fq '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628 ticks=1' "$log" ||
           fail "$peer did not enable the full-emulator SC2 engine replay probe"
       fi
-      if [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 0 ]; then
+      if [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 0 ] &&
+         [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 0 ]; then
         grep -Fq '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' "$log" ||
           fail "$peer did not execute the symmetric SC2 engine replay sequence"
       fi
@@ -577,6 +590,8 @@ elif [ "$UPDATE_REPLAY_PROBE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=FULL_EMULATOR_UPDATE_CALL)
 elif [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
   run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=SELECTIVE_UPDATE_CALL)
+elif [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+  run_env+=(RINGOUT_SC2_ENGINE_REPLAY_PROBE=SELECTIVE_INPUT_UPDATE_SPAN)
 fi
 if [ "$HOOK_IDLE_CONTROL" -eq 1 ]; then
   run_env+=(RINGOUT_NETPLAY_IDLE_ROUTE=1)
@@ -621,6 +636,8 @@ fi
     fi
     if [ "$ENGINE_REPLAY_CORRECTED_INPUT_PROBE" -eq 1 ]; then
       echo "sc2_engine_replay_probe=exact-full-emulator-corrected-input"
+    elif [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
+      echo "sc2_engine_replay_probe=selective-input-update-span"
     elif [ "$SELECTIVE_UPDATE_REPLAY_PROBE" -eq 1 ]; then
       echo "sc2_engine_replay_probe=selective-update-call"
     elif [ "$UPDATE_REPLAY_PROBE" -eq 1 ]; then

@@ -38,6 +38,14 @@ SC2 latches SI input into controller-conversion state on the following engine
 tick. This establishes a corrected-input pipeline and its latency, but remains
 an isolated full-state oracle rather than live selective correction.
 
+The selective boundary was then widened from object update alone to the first
+input-service/controller-conversion call through the first object-update
+return. After transaction-adapting the root call's hardware-owned 371-byte
+postimage, both peers reproduced complete endpoints while restoring only
+24,829 exact game bytes across 46 observed pages. This still reuses predicted
+raw input and is not live correction; corrected scheduler input must replace
+the raw pad slot before controller conversion.
+
 Follow-up commit `7efcceb3` measures the exact engine function's MEM1 write
 footprint. A 60-tick idle control and 60-tick automated VS route passed on both
 peers with identical per-route regions; their observed union is 52 pages

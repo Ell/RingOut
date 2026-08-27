@@ -133,6 +133,14 @@ the `0x800095c0` object update. The next selective experiment must span those
 two game-owned phases and renew raw pad state directly; replaying hardware wait
 loops is not the target architecture.
 
+The same-input selective form of that input/update span now passes with 24,829
+exact game bytes and a 371-byte transaction adapter for the root hardware
+service. It excludes the later engine wait/render half and reproduces complete
+endpoints on both peers. The remaining correctness gate is narrow but
+essential: populate guest raw-pad state from the corrected scheduler input
+before `0x8002a694`, rather than replaying the predicted root postimage, then
+prove changed-input convergence through the selective span.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values

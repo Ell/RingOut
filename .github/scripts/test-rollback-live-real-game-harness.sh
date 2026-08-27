@@ -102,6 +102,14 @@ for peer in host guest; do
 done
 "$HARNESS" --verify-existing "$WORK/selective-update-replay" --hook-profile \
   --selective-update-replay-probe >/dev/null
+cp -a "$WORK/selective-update-replay" "$WORK/selective-input-update-replay"
+for peer in host guest; do
+  sed -i \
+    's/mode=selective-update-call begin_pc=0x800095c0/mode=selective-input-update-span begin_pc=0x80011c80/' \
+    "$WORK/selective-input-update-replay/$peer/log.txt"
+done
+"$HARNESS" --verify-existing "$WORK/selective-input-update-replay" --hook-profile \
+  --selective-input-update-replay-probe >/dev/null
 sed -i 's/differing_state_bytes=0/differing_state_bytes=1/' \
   "$WORK/engine-replay/guest/log.txt"
 if "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \

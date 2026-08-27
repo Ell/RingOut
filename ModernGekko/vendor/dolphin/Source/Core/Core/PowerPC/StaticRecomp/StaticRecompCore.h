@@ -324,6 +324,7 @@ private:
   bool m_sc2_engine_replay_completed = false;
   bool m_sc2_engine_replay_full_emulator = false;
   bool m_sc2_engine_replay_update_call = false;
+  bool m_sc2_engine_replay_input_update_span = false;
   bool m_sc2_engine_replay_selective_update = false;
   bool m_sc2_engine_replay_corrected_input = false;
   u32 m_sc2_engine_replay_tick_span = 1;
@@ -417,6 +418,11 @@ private:
   std::map<u64, std::vector<u8>> m_sc2_update_handler_post_ram;
   std::map<u64, CPUState> m_sc2_update_handler_post_guest;
   std::map<u64, u64> m_sc2_update_handler_post_tb_remainder;
+  std::vector<u32> m_sc2_input_handler_post_offsets;
+  std::vector<u8> m_sc2_input_handler_post_values;
+  CPUState m_sc2_input_handler_post_guest{};
+  u64 m_sc2_input_handler_post_tb_remainder = 0;
+  bool m_sc2_input_handler_have_post = false;
   StaticRecompDispatchHook* m_dispatch_hook = nullptr;
   std::vector<u32> m_dispatch_hook_pcs;
 
