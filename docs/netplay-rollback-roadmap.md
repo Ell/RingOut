@@ -123,6 +123,16 @@ sharing a page. The next gate is deliberately changed input: prove that a
 corrected SI value crosses the handler boundary and changes intended game
 state before connecting this transaction to live late-input correction.
 
+The deliberately changed-input full-state gate now passes across two SC2
+engine ticks: four remote polls change, module-owned controller/game state
+changes, two corrected passes converge exactly, and the original live endpoint
+is restored. A one-tick attempt changed no game bytes and was rejected, proving
+the SI result is consumed by the controller-conversion path on the following
+30 Hz tick. Exact writers locate that path at `0x80011c80 -> 0x8002a694`, before
+the `0x800095c0` object update. The next selective experiment must span those
+two game-owned phases and renew raw pad state directly; replaying hardware wait
+loops is not the target architecture.
+
 The post-fix production-path run retained at
 `/tmp/ringout-live-rollback.final-correction.OHN0EzDz` used
 runtime/module/DOL SHA-256 values

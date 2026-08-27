@@ -493,6 +493,51 @@ the corrected value reaches game state. It also still uses a complete endpoint
 snapshot to re-anchor and verify hardware. Live NetPlay therefore continues to
 use the whole-emulator frame-boundary fallback at this checkpoint.
 
+### Deliberately changed-input engine oracle
+
+`--engine-replay-corrected-input-probe` separates deterministic resimulation
+from the weaker same-input result. It captures the original resolved SI poll
+journal, toggles the remote pad's A bit only in two isolated normalized replay
+passes, and requires all of the following on both peers:
+
+- at least one remote poll was actually altered;
+- the corrected endpoint differs from the original at a byte written by the
+  generated game module;
+- the two independently corrected complete endpoints are byte-identical; and
+- the untouched original endpoint is restored before ordinary play resumes.
+
+A one-engine-tick version was rejected: SC2 consumed the changed SI polls but
+had changed zero game-owned bytes at that endpoint. The input hardware result
+is latched and reaches game state in the following 30 Hz iteration. Extending
+the oracle to two engine ticks passed. The retained safe run at
+`/tmp/ringout-live-rollback.sc2-corrected-safe-28986` captured eight polls per
+pass, changed four remote polls, changed 28 module-written bytes in the host
+sample, reproduced complete 49,360,062-byte corrected endpoints exactly, then
+restored the original endpoint and completed the synchronized two-peer route.
+The host and guest logs hash to
+`0493ccd3f626193fa05b5d81246133b3844723a888ff7f9d5d29b00f045fd7ee`
+and
+`1296460c976941b963aa107b6286ea6f76a3a0e5d3770f6defb0bcf29d66b8f4`.
+
+The changed bytes also identify the input pipeline. SI-side copies write the
+pad-1 raw slot at guest `0x80427348` from `0x801bfa0c`. On the following tick,
+the already-identified controller conversion function at `0x8002a694` writes
+button/axis transition state around guest `0x802b59xx`; representative exact
+writers are `0x8002a5e0`, `0x8002a654`, and `0x8002a688`. This makes the next
+selective boundary concrete: capture before outer call `0x80011c80`, renew the
+raw pad state from the corrected scheduler input, execute controller conversion
+and the `0x800095c0` object update, and stop at LR `0x8001bcb0`.
+
+```bash
+RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
+  .github/scripts/rollback-live-real-game.sh \
+  --package /tmp/ringout-sc2-private.z5XlEc1C/package \
+  --work /tmp/ringout-live-rollback.sc2-corrected-safe-28986 \
+  --production --hook-profile --hook-warmup-frames 0 \
+  --hook-sample-frames 60 --hook-diagnostic-limit 0 \
+  --engine-replay-corrected-input-probe --play-seconds 24 --port 28986
+```
+
 ### Preallocated selective checkpoint ring
 
 `RollbackRegionSnapshotRing` validates and sorts non-overlapping profile

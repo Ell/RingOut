@@ -67,21 +67,30 @@ printf '%s\n' '[rollback live] correction committed' \
 cp -a "$WORK/hook-profile" "$WORK/engine-replay"
 for peer in host guest; do
   printf '%s\n' \
-    '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628' \
+    '[sc2-engine-replay] enabled mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628 ticks=1' \
     '[sc2-engine-external] result reads=4 writes=0 read_sites=2 write_sites=0 read_block_sites=2 write_block_sites=0 fallback_instructions=0 overflow=no complete=yes' \
     '[sc2-engine-calls] result sites=2 completed=2 overflow=no complete=yes' \
     '[sc2-engine-calls] callsite=0x8001ba5c target=0x8001f664 invocations=1 written_pages=0 external_reads=0 external_writes=0 fallback_instructions=0' \
     '[sc2-engine-indirect] result sites=3 completed=3 overflow=no complete=yes' \
     '[sc2-engine-indirect] callsite=0x800097f0 target=0x80100000 invocations=1 written_pages=1 external_reads=0 external_writes=0 fallback_instructions=0' \
     '[sc2-engine-replay] captured normalized reference; restored entry for verification replay' \
-    '[sc2-engine-replay] full-state-result state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=4 external_profile_complete=yes external_replay_match=yes external_effects=0 endpoint_bytes=49360152 replay_bytes=49360152 differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=34063786066743458 replay_tb=34063786066743458' \
+    '[sc2-engine-replay] full-state-result state_match=yes cpu_match=yes tb_remainder_match=yes input_replay_match=yes input_polls=4 external_profile_complete=yes external_replay_match=yes external_effects=0 corrected_input=no perturbed_polls=0 corrected_state_bytes=0 endpoint_bytes=49360152 replay_bytes=49360152 differing_state_bytes=0 first_state_difference=0x00000000 last_state_difference=0x00000000 endpoint_value=0x00 replay_value=0x00 endpoint_tb=34063786066743458 replay_tb=34063786066743458' \
     >> "$WORK/engine-replay/$peer/log.txt"
 done
 "$HARNESS" --verify-existing "$WORK/engine-replay" --hook-profile \
   --engine-replay-probe >/dev/null
+cp -a "$WORK/engine-replay" "$WORK/corrected-input-replay"
+for peer in host guest; do
+  sed -i \
+    -e 's/mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628 ticks=1/mode=full-emulator-one-tick-corrected-input begin_pc=0x8001ba3c return_pc=0x8002d628 ticks=2/' \
+    -e 's/corrected_input=no perturbed_polls=0 corrected_state_bytes=0/corrected_input=yes perturbed_polls=2 corrected_state_bytes=17/' \
+    "$WORK/corrected-input-replay/$peer/log.txt"
+done
+"$HARNESS" --verify-existing "$WORK/corrected-input-replay" --hook-profile \
+  --engine-replay-corrected-input-probe >/dev/null
 cp -a "$WORK/engine-replay" "$WORK/update-replay"
 for peer in host guest; do
-  sed -i 's/mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628/mode=full-emulator-update-call begin_pc=0x800095c0 return_pc=0x8001bcb0/' \
+  sed -i 's/mode=full-emulator-one-tick begin_pc=0x8001ba3c return_pc=0x8002d628 ticks=1/mode=full-emulator-update-call begin_pc=0x800095c0 return_pc=0x8001bcb0 ticks=1/' \
     "$WORK/update-replay/$peer/log.txt"
 done
 "$HARNESS" --verify-existing "$WORK/update-replay" --hook-profile \

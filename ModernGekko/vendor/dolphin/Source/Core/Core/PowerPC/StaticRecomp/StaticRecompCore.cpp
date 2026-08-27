@@ -259,6 +259,8 @@ void StaticRecompCore::Init()
     if (const char* const replay_probe = std::getenv("RINGOUT_SC2_ENGINE_REPLAY_PROBE");
         replay_probe && (std::strcmp(replay_probe, "FULL_MEM1_ONE_TICK") == 0 ||
                          std::strcmp(replay_probe, "FULL_EMULATOR_ONE_TICK") == 0 ||
+                         std::strcmp(replay_probe,
+                                     "FULL_EMULATOR_ONE_TICK_CORRECTED_INPUT") == 0 ||
                          std::strcmp(replay_probe, "FULL_EMULATOR_UPDATE_CALL") == 0 ||
                          std::strcmp(replay_probe, "SELECTIVE_UPDATE_CALL") == 0))
     {
@@ -270,15 +272,21 @@ void StaticRecompCore::Init()
           std::strcmp(replay_probe, "SELECTIVE_UPDATE_CALL") == 0;
       m_sc2_engine_replay_selective_update =
           std::strcmp(replay_probe, "SELECTIVE_UPDATE_CALL") == 0;
+      m_sc2_engine_replay_corrected_input =
+          std::strcmp(replay_probe, "FULL_EMULATOR_ONE_TICK_CORRECTED_INPUT") == 0;
+      m_sc2_engine_replay_tick_span = m_sc2_engine_replay_corrected_input ? 2 : 1;
       std::fprintf(stderr,
                    "[sc2-engine-replay] enabled mode=%s begin_pc=0x%08x "
-                   "return_pc=0x%08x\n",
+                   "return_pc=0x%08x ticks=%u\n",
+                   m_sc2_engine_replay_corrected_input ?
+                       "full-emulator-one-tick-corrected-input" :
                    m_sc2_engine_replay_selective_update ? "selective-update-call" :
                    m_sc2_engine_replay_update_call ? "full-emulator-update-call" :
                    m_sc2_engine_replay_full_emulator ? "full-emulator-one-tick" :
                                                        "full-mem1-one-tick",
                    m_sc2_engine_replay_update_call ? 0x800095c0 : 0x8001ba3c,
-                   m_sc2_engine_replay_update_call ? 0x8001bcb0 : 0x8002d628);
+                   m_sc2_engine_replay_update_call ? 0x8001bcb0 : 0x8002d628,
+                   m_sc2_engine_replay_tick_span);
     }
   }
 
@@ -953,6 +961,8 @@ void StaticRecompCore::Sc2EngineDirectCallWriteTrampoline(const u32 offset, cons
     pages[page] = true;
   for (u32 byte = offset; byte <= last_offset; ++byte)
   {
+    if (!core->m_sc2_engine_speculative_active)
+      core->m_sc2_update_original_last_writer[byte] = core->m_guest.pc;
     if (!bytes[byte])
     {
       bytes[byte] = true;
@@ -1243,6 +1253,7 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
       NetPlay::BeginSc2EngineInputCapture();
       m_sc2_update_external_effects.clear();
       m_sc2_update_original_write_blocks.clear();
+      m_sc2_update_original_last_writer.clear();
       m_sc2_update_replay_write_blocks.clear();
       m_sc2_update_replay_written_bytes.assign(m_guest.ram_size, false);
       m_sc2_update_replay_written_offsets.clear();
@@ -1317,10 +1328,32 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
   if (pc != replay_return_pc || !m_sc2_engine_replay_have_entry)
     return;
 
+  ++m_sc2_engine_replay_pass_returns;
+  if (m_sc2_engine_replay_pass_returns < m_sc2_engine_replay_tick_span)
+    return;
+  m_sc2_engine_replay_pass_returns = 0;
+
   if (!m_sc2_engine_replay_replaying)
   {
     if (m_sc2_engine_replay_full_emulator)
     {
+      if (m_sc2_engine_replay_corrected_input)
+      {
+        m_sc2_engine_replay_original_endpoint_guest = m_guest;
+        m_sc2_engine_replay_original_endpoint_tb_remainder = m_tb_cycle_remainder;
+        m_sc2_engine_replay_original_endpoint_ram.assign(
+            m_guest.ram, m_guest.ram + m_guest.ram_size);
+        if (!capture_full_emulator_state(m_sc2_engine_replay_original_endpoint_state,
+                                         m_sc2_engine_replay_original_endpoint_state_size))
+        {
+          std::fprintf(stderr,
+                       "[sc2-engine-replay] failed original endpoint capture\n");
+          m_sc2_engine_replay_completed = true;
+          return;
+        }
+        m_guest = m_sc2_engine_replay_original_endpoint_guest;
+        m_tb_cycle_remainder = m_sc2_engine_replay_original_endpoint_tb_remainder;
+      }
       m_sc2_update_external_capture = false;
       m_sc2_engine_external_profile_active = false;
       ReportSc2EngineExternalProfile();
@@ -1388,7 +1421,7 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
       if (!m_sc2_engine_replay_input_capture_valid ||
           !restore_full_emulator_state(m_sc2_engine_replay_entry_state,
                                        m_sc2_engine_replay_entry_state_size) ||
-          !NetPlay::BeginSc2EngineInputReplay())
+          !NetPlay::BeginSc2EngineInputReplay(m_sc2_engine_replay_corrected_input))
       {
         NetPlay::EndSc2EngineInputReplay();
         std::fprintf(stderr,
@@ -1483,15 +1516,64 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
     }
     if (!m_sc2_engine_replay_have_reference)
     {
+      if (m_sc2_engine_replay_corrected_input)
+      {
+        std::vector<bool> compared(m_guest.ram_size, false);
+        std::vector<u32> corrected_offsets;
+        m_sc2_engine_replay_corrected_state_bytes = 0;
+        for (const auto& [key, profile] : m_sc2_engine_direct_calls)
+        {
+          for (const u32 offset : profile.written_offsets)
+          {
+            if (compared[offset])
+              continue;
+            compared[offset] = true;
+            if (m_sc2_engine_replay_original_endpoint_ram[offset] != m_guest.ram[offset])
+            {
+              ++m_sc2_engine_replay_corrected_state_bytes;
+              if (corrected_offsets.size() < 64)
+                corrected_offsets.push_back(offset);
+            }
+          }
+        }
+        std::fprintf(stderr,
+                     "[sc2-engine-replay] corrected-input-effect game_bytes=%zu\n",
+                     m_sc2_engine_replay_corrected_state_bytes);
+        for (const u32 offset : corrected_offsets)
+        {
+          std::fprintf(stderr,
+                       "[sc2-engine-replay] corrected-input-byte offset=0x%08x "
+                       "original=0x%02x corrected=0x%02x\n",
+                       offset, m_sc2_engine_replay_original_endpoint_ram[offset],
+                       m_guest.ram[offset]);
+          const auto writer = m_sc2_update_original_last_writer.find(offset);
+          if (writer != m_sc2_update_original_last_writer.end())
+          {
+            std::fprintf(stderr,
+                         "[sc2-engine-replay] corrected-input-writer offset=0x%08x "
+                         "pc=0x%08x\n",
+                         offset, writer->second);
+          }
+        }
+        if (m_sc2_engine_replay_corrected_state_bytes == 0)
+        {
+          NetPlay::EndSc2EngineInputReplay();
+          std::fprintf(stderr,
+                       "[sc2-engine-replay] corrected input did not alter game-owned state\n");
+          m_sc2_engine_replay_completed = true;
+          return;
+        }
+      }
       m_sc2_engine_replay_endpoint_guest = replayed_guest;
       m_sc2_engine_replay_endpoint_tb_remainder = replayed_tb_remainder;
-      m_sc2_engine_replay_reference_input_valid = NetPlay::FinishSc2EngineInputReplay();
+      m_sc2_engine_replay_reference_input_valid = NetPlay::FinishSc2EngineInputReplay(
+          &m_sc2_engine_replay_reference_perturbed_polls);
       if (!m_sc2_engine_replay_reference_input_valid ||
           !capture_full_emulator_state(m_sc2_engine_replay_endpoint_state,
                                        m_sc2_engine_replay_endpoint_state_size) ||
           !restore_full_emulator_state(m_sc2_engine_replay_entry_state,
                                        m_sc2_engine_replay_entry_state_size) ||
-          !NetPlay::BeginSc2EngineInputReplay())
+          !NetPlay::BeginSc2EngineInputReplay(m_sc2_engine_replay_corrected_input))
       {
         NetPlay::EndSc2EngineInputReplay();
         std::fprintf(stderr,
@@ -1523,9 +1605,15 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
         (m_sc2_update_external_valid &&
          m_sc2_update_external_replay_index == m_sc2_update_external_effects.size());
     std::size_t replayed_state_size = 0;
+    std::size_t verification_perturbed_polls = 0;
     const bool verification_input_valid =
-        m_sc2_engine_replay_selective_update ? true : NetPlay::FinishSc2EngineInputReplay();
-    if (!verification_input_valid ||
+        m_sc2_engine_replay_selective_update ? true :
+        NetPlay::FinishSc2EngineInputReplay(&verification_perturbed_polls);
+    const bool corrected_input_valid =
+        !m_sc2_engine_replay_corrected_input ||
+        (m_sc2_engine_replay_reference_perturbed_polls != 0 &&
+         verification_perturbed_polls == m_sc2_engine_replay_reference_perturbed_polls);
+    if (!verification_input_valid || !corrected_input_valid ||
         !capture_full_emulator_state(m_sc2_engine_replay_replayed_state, replayed_state_size))
     {
       NetPlay::EndSc2EngineInputReplay();
@@ -1629,6 +1717,7 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
                  "[sc2-engine-replay] full-state-result state_match=%s cpu_match=%s "
                  "tb_remainder_match=%s input_replay_match=%s input_polls=%zu "
                  "external_profile_complete=%s external_replay_match=%s external_effects=%zu "
+                 "corrected_input=%s perturbed_polls=%zu corrected_state_bytes=%zu "
                  "endpoint_bytes=%zu replay_bytes=%zu "
                  "differing_state_bytes=%zu first_state_difference=0x%08zx "
                  "last_state_difference=0x%08zx endpoint_value=0x%02x replay_value=0x%02x "
@@ -1640,6 +1729,8 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
                          !m_sc2_engine_external_profile_overflow ?
                      "yes" : "no",
                  external_replay_valid ? "yes" : "no", m_sc2_update_external_effects.size(),
+                 corrected_input_valid && m_sc2_engine_replay_corrected_input ? "yes" : "no",
+                 verification_perturbed_polls, m_sc2_engine_replay_corrected_state_bytes,
                  m_sc2_engine_replay_endpoint_state_size,
                  replayed_state_size, differing_state_bytes, state_match ? 0 : state_difference,
                  state_match ? 0 : last_state_difference,
@@ -1651,7 +1742,20 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
                  static_cast<unsigned long long>(replayed_guest.timebase));
     std::fflush(stderr);
     NetPlay::EndSc2EngineInputReplay();
-    if (m_sc2_engine_replay_selective_update &&
+    if (m_sc2_engine_replay_corrected_input)
+    {
+      if (!restore_full_emulator_state(m_sc2_engine_replay_original_endpoint_state,
+                                       m_sc2_engine_replay_original_endpoint_state_size))
+      {
+        std::fprintf(stderr,
+                     "[sc2-engine-replay] failed corrected-input canonical recovery\n");
+      }
+      m_guest = m_sc2_engine_replay_original_endpoint_guest;
+      m_tb_cycle_remainder = m_sc2_engine_replay_original_endpoint_tb_remainder;
+      std::fprintf(stderr,
+                   "[sc2-engine-replay] restored original endpoint after corrected-input gate\n");
+    }
+    else if (m_sc2_engine_replay_selective_update &&
         (!state_match || !cpu_match || !tb_remainder_match || !external_replay_valid))
     {
       if (!restore_full_emulator_state(m_sc2_engine_replay_endpoint_state,

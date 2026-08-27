@@ -444,7 +444,7 @@ unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot);
 // explicitly armed research probe.
 void BeginSc2EngineInputCapture();
 bool FinishSc2EngineInputCapture(std::size_t* captured_polls);
-bool BeginSc2EngineInputReplay();
-bool FinishSc2EngineInputReplay();
+bool BeginSc2EngineInputReplay(bool perturb_remote_a = false);
+bool FinishSc2EngineInputReplay(std::size_t* perturbed_polls = nullptr);
 void EndSc2EngineInputReplay();
 }  // namespace NetPlay

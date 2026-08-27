@@ -29,6 +29,15 @@ engine-iteration boundary on both peers. State regions and side-effect hooks
 remain uncertified, so live netplay still uses whole-emulator checkpoints. See
 [SC2 game-specific rollback](sc2-slippi-rollback.md).
 
+A follow-up changed-input oracle also passed on both peers. It deliberately
+toggled four remote SI polls across a two-engine-tick replay, proved the change
+reached module-written game state, reproduced complete corrected endpoints,
+restored the original endpoint, and completed the ordinary synchronized route.
+The one-tick variant changed no game-owned bytes and was correctly rejected;
+SC2 latches SI input into controller-conversion state on the following engine
+tick. This establishes a corrected-input pipeline and its latency, but remains
+an isolated full-state oracle rather than live selective correction.
+
 Follow-up commit `7efcceb3` measures the exact engine function's MEM1 write
 footprint. A 60-tick idle control and 60-tick automated VS route passed on both
 peers with identical per-route regions; their observed union is 52 pages

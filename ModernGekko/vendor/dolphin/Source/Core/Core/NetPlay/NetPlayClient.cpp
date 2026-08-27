@@ -117,6 +117,8 @@ thread_local Sc2EngineInputMode s_sc2_engine_input_mode = Sc2EngineInputMode::Di
 thread_local std::vector<Sc2EngineInputPoll> s_sc2_engine_input_polls;
 thread_local std::size_t s_sc2_engine_input_cursor = 0;
 thread_local bool s_sc2_engine_input_valid = true;
+thread_local bool s_sc2_engine_input_perturb_remote_a = false;
+thread_local std::size_t s_sc2_engine_input_perturbed_polls = 0;
 
 bool TryReplaySc2EngineInput(const int pad_num, const bool batching, GCPadStatus* const status,
                              bool* const result)
@@ -136,6 +138,11 @@ bool TryReplaySc2EngineInput(const int pad_num, const bool batching, GCPadStatus
   if (poll.pad_num != pad_num || poll.batching != batching)
     s_sc2_engine_input_valid = false;
   *status = poll.status;
+  if (s_sc2_engine_input_perturb_remote_a && poll.pad_num == 1 && poll.result)
+  {
+    status->button ^= PAD_BUTTON_A;
+    ++s_sc2_engine_input_perturbed_polls;
+  }
   *result = poll.result;
   return true;
 }
@@ -173,21 +180,28 @@ bool FinishSc2EngineInputCapture(std::size_t* const captured_polls)
   return valid;
 }
 
-bool BeginSc2EngineInputReplay()
+bool BeginSc2EngineInputReplay(const bool perturb_remote_a)
 {
   if (s_sc2_engine_input_mode != Sc2EngineInputMode::Disabled || !s_sc2_engine_input_valid)
     return false;
   s_sc2_engine_input_cursor = 0;
+  s_sc2_engine_input_perturb_remote_a = perturb_remote_a;
+  s_sc2_engine_input_perturbed_polls = 0;
   s_sc2_engine_input_mode = Sc2EngineInputMode::Replay;
   return true;
 }
 
-bool FinishSc2EngineInputReplay()
+bool FinishSc2EngineInputReplay(std::size_t* const perturbed_polls)
 {
   const bool valid = s_sc2_engine_input_mode == Sc2EngineInputMode::Replay &&
                      s_sc2_engine_input_valid &&
-                     s_sc2_engine_input_cursor == s_sc2_engine_input_polls.size();
+                     s_sc2_engine_input_cursor == s_sc2_engine_input_polls.size() &&
+                     (!s_sc2_engine_input_perturb_remote_a ||
+                      s_sc2_engine_input_perturbed_polls != 0);
+  if (perturbed_polls)
+    *perturbed_polls = s_sc2_engine_input_perturbed_polls;
   s_sc2_engine_input_mode = Sc2EngineInputMode::Disabled;
+  s_sc2_engine_input_perturb_remote_a = false;
   return valid;
 }
 
@@ -197,6 +211,8 @@ void EndSc2EngineInputReplay()
   s_sc2_engine_input_polls.clear();
   s_sc2_engine_input_cursor = 0;
   s_sc2_engine_input_valid = true;
+  s_sc2_engine_input_perturb_remote_a = false;
+  s_sc2_engine_input_perturbed_polls = 0;
 }
 
 // called from ---GUI--- thread
