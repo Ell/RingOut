@@ -57,6 +57,9 @@ private:
   std::vector<Slot> m_slots;
   const ConfigurationStatus m_configuration_status;
   std::optional<std::size_t> m_last_reported_snapshot_size;
+  u64 m_capture_count = 0;
+  u64 m_capture_total_us = 0;
+  u64 m_capture_max_us = 0;
 };
 
 }  // namespace NetPlay

@@ -565,6 +565,7 @@ add_library(core
   NetPlay/RollbackInputTimeline.cpp
   NetPlay/RollbackInputTimeline.h
   NetPlay/RollbackRegionSnapshotRing.cpp
+  NetPlay/RollbackUndoSnapshotRing.cpp
   NetPlay/RollbackRegionSnapshotRing.h
   NetPlay/RollbackSIInputJournal.cpp
   NetPlay/RollbackSIInputJournal.h

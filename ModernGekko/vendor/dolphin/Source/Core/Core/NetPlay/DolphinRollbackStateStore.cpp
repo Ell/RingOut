@@ -3,12 +3,14 @@
 
 #include "Core/NetPlay/DolphinRollbackStateStore.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <span>
 
 #include "Core/Core.h"
 #include "Core/State.h"
 #include "Core/System.h"
+#include "Common/Timer.h"
 #include "VideoCommon/Fifo.h"
 
 namespace NetPlay
@@ -62,11 +64,16 @@ bool DolphinRollbackStateStore::CaptureFrameStart(const u64 frame)
   // as either the old frame or the requested new frame.
   slot.frame.reset();
   slot.valid_size = 0;
+  const u64 capture_start_us = Common::Timer::NowUs();
   const ScopedRollbackGpuQuiescence gpu_quiescence(m_system);
   const State::ScopedRollbackSnapshot rollback_snapshot_scope;
   const std::size_t size = State::SaveToBuffer(m_system, slot.buffer);
   if (size == 0)
     return false;
+  const u64 capture_us = Common::Timer::NowUs() - capture_start_us;
+  ++m_capture_count;
+  m_capture_total_us += capture_us;
+  m_capture_max_us = std::max(m_capture_max_us, capture_us);
   slot.valid_size = size;
   slot.frame = frame;
   if (!m_last_reported_snapshot_size.has_value())
@@ -96,9 +103,23 @@ bool DolphinRollbackStateStore::RestoreFrameStart(const u64 frame)
   Slot* const slot = FindSlot(frame);
   if (slot == nullptr)
     return false;
+  const u64 restore_start_us = Common::Timer::NowUs();
   const ScopedRollbackGpuQuiescence gpu_quiescence(m_system);
   const State::ScopedRollbackSnapshot rollback_snapshot_scope;
-  return State::LoadFromBuffer(m_system, std::span<u8>{slot->buffer.data(), slot->valid_size});
+  const bool restored =
+      State::LoadFromBuffer(m_system, std::span<u8>{slot->buffer.data(), slot->valid_size});
+  const u64 restore_us = Common::Timer::NowUs() - restore_start_us;
+  std::fprintf(stderr,
+               "[rollback state] restore frame=%llu bytes=%zu restore_us=%llu "
+               "capture_avg_us=%llu capture_max_us=%llu captures=%llu result=%s\n",
+               static_cast<unsigned long long>(frame), slot->valid_size,
+               static_cast<unsigned long long>(restore_us),
+               static_cast<unsigned long long>(m_capture_count == 0 ? 0 :
+                                                m_capture_total_us / m_capture_count),
+               static_cast<unsigned long long>(m_capture_max_us),
+               static_cast<unsigned long long>(m_capture_count), restored ? "ok" : "failed");
+  std::fflush(stderr);
+  return restored;
 }
 
 std::optional<std::size_t> DolphinRollbackStateStore::GetSnapshotSize(const u64 frame) const

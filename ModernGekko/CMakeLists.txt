@@ -717,6 +717,18 @@ if(BUILD_TESTING)
     add_test(NAME moderngekko.rollback_region_snapshot_ring
         COMMAND moderngekko_rollback_region_snapshot_ring_test)
 
+    add_executable(moderngekko_rollback_undo_snapshot_ring_test
+        tests/rollback_undo_snapshot_ring_test.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackUndoSnapshotRing.cpp)
+    target_include_directories(moderngekko_rollback_undo_snapshot_ring_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+    target_compile_features(moderngekko_rollback_undo_snapshot_ring_test PRIVATE cxx_std_20)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(moderngekko_rollback_undo_snapshot_ring_test PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME moderngekko.rollback_undo_snapshot_ring
+        COMMAND moderngekko_rollback_undo_snapshot_ring_test)
+
     add_executable(moderngekko_sc2_rollback_profile_test
         tests/sc2_rollback_profile_test.cpp
         vendor/dolphin/Source/Core/Core/NetPlay/Sc2RollbackProfile.cpp)
@@ -738,6 +750,18 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
     target_compile_features(moderngekko_rollback_region_snapshot_benchmark PRIVATE cxx_std_20)
 
+    add_executable(moderngekko_rollback_undo_snapshot_benchmark
+        tests/rollback_undo_snapshot_benchmark.cpp
+        vendor/dolphin/Source/Core/Core/NetPlay/RollbackUndoSnapshotRing.cpp)
+    target_include_directories(moderngekko_rollback_undo_snapshot_benchmark PRIVATE
+        vendor/dolphin/Source/Core)
+    target_compile_features(moderngekko_rollback_undo_snapshot_benchmark PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(moderngekko_rollback_undo_snapshot_benchmark PRIVATE /EHs-c-)
+    else()
+        target_compile_options(moderngekko_rollback_undo_snapshot_benchmark PRIVATE -fno-exceptions)
+    endif()
+
     # These focused targets compile Dolphin headers directly instead of
     # inheriting Dolphin's `common` target.  Link the declared fmt dependency
     # so its include directory is present on minimal release builders that do
@@ -753,6 +777,7 @@ if(BUILD_TESTING)
             moderngekko_rollback_state_digest_test
             moderngekko_frame_dispatch_profiler_test
             moderngekko_rollback_region_snapshot_ring_test
+            moderngekko_rollback_undo_snapshot_ring_test
             moderngekko_sc2_rollback_profile_test)
         target_link_libraries(${_rollback_test_target} PRIVATE fmt::fmt)
     endforeach()
