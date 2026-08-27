@@ -638,6 +638,26 @@ RINGOUT_REAL_GAME_ACK=I_OWN_THE_GAME \
   --selective-input-corrected-replay-probe --play-seconds 24 --port 28998
 ```
 
+Commit `c5d7ae8c` removes the video-frame guess from correction ownership.
+`Sc2RollbackTransactionTimeline` is a bounded identity-checked ring which maps
+each 30 Hz SC2 input/update transaction to the exact SI batch IDs it consumed.
+Its tests cover transactions spanning two 60 Hz frames, grouped pads sharing a
+batch, gaps for hardware polls the game did not consume, active-transaction
+rejection, history eviction, and nonsequential identity. A correction to a
+hardware-only poll now produces no game rewind; an evicted consumed batch fails
+closed.
+
+The real two-peer run at `/tmp/ringout-live-rollback.sc2-batch-map-28999`
+proved that both peers mapped the sampled SC2 transaction to exactly batch
+1249, while retaining exact sparse coverage and complete corrected endpoints.
+The harness requires one concrete batch and equality across peers. Host and
+guest log SHA-256 values are
+`817bb1a76fe87a756f9dd18a2f7ed2630a9b6e9d5453ba53c8967aec8a374501`
+and
+`befae7f93bfc33b4c95f378e41e3e5014c2b82543292e1308231e195a921c26b`.
+This establishes correction-to-transaction selection; it does not yet make
+the multi-transaction driver the player-selected state store.
+
 ### Preallocated selective checkpoint ring
 
 `RollbackRegionSnapshotRing` validates and sorts non-overlapping profile

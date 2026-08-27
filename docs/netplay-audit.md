@@ -146,6 +146,14 @@ endpoints. This closes one-transaction storage coverage only. The ordinary
 player coordinator still selects whole-emulator checkpoints and remains the
 only shipped live path.
 
+Commit `c5d7ae8c` then attached exact rollback batch identity to each captured
+SC2 controller transaction. In the retained two-peer run at
+`/tmp/ringout-live-rollback.sc2-batch-map-28999`, both peers selected batch
+1249 and passed sparse/full endpoint gates. The transaction timeline is tested
+for 30/60 Hz mapping, grouped pads, unconsumed SI gaps, eviction, and invalid
+identity. It is still integration groundwork rather than a shipped selective
+coordinator.
+
 That post-fix run passed the ordinary production gate and closes the three
 previously recorded memory-card, teardown-output, and corrected-frontier fault
 blockers for this tested path. A clean production route retained at

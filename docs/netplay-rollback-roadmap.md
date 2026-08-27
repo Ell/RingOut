@@ -183,6 +183,13 @@ for one SC2 input/update transaction; frame-history ownership, multi-tick
 correction scheduling, and live coordinator selection remain required before
 the player path can use it.
 
+Commit `c5d7ae8c` adds the first of those missing ownership layers. A bounded
+SC2 transaction timeline records exact consumed SI batch IDs rather than
+inferring update ownership from 60 Hz frame parity. The real two-peer route at
+`/tmp/ringout-live-rollback.sc2-batch-map-28999` mapped both peers' transaction
+to batch 1249 and retained exact corrected endpoints. Multi-transaction state,
+external-effect, and replay-cursor ownership are still not player-selected.
+
 This 2026-08-25 run is no longer GPU-safety evidence. Player sessions later
 reported repeated `GFX FIFO: Unknown Opcode` failures and crashes. The audit on
 2026-08-26 found that netplay forced dual-core despite the offline
