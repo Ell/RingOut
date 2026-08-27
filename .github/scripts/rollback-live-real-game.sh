@@ -429,7 +429,13 @@ verify_hook_profiles() {
       if [ "$SELECTIVE_INPUT_CORRECTED_REPLAY_PROBE" -eq 1 ]; then
         grep -Fq '[sc2-engine-replay] enabled mode=selective-input-update-corrected begin_pc=0x80011c80 return_pc=0x8001bcb0 ticks=1' "$log" ||
           fail "$peer did not enable the selective corrected-input SC2 replay probe"
-        grep -Eq '\[sc2-engine-replay\] selective corrected reference game_bytes=[1-9][0-9]* perturbed_polls=[1-9][0-9]*; restored entry for verification replay' "$log" ||
+        sparse_restore="$(grep -E '^\[sc2-engine-replay\] selective restore bytes=[1-9][0-9]* journal_bytes=[1-9][0-9]* pages=[1-9][0-9]* effects=[0-9]+; replaying update with hardware held at canonical frontier$' "$log" | tail -1)"
+        [ -n "$sparse_restore" ] || fail "$peer did not execute the sparse selective restore"
+        sparse_profile_bytes="$(printf '%s\n' "$sparse_restore" | sed -E 's/.* restore bytes=([0-9]+).*/\1/')"
+        sparse_journal_bytes="$(printf '%s\n' "$sparse_restore" | sed -E 's/.* journal_bytes=([0-9]+).*/\1/')"
+        [ "$sparse_profile_bytes" = "$sparse_journal_bytes" ] ||
+          fail "$peer sparse journal did not cover the complete profiled write set"
+        grep -Eq '\[sc2-engine-replay\] selective corrected reference game_bytes=[1-9][0-9]* oracle_reset_bytes=[1-9][0-9]* perturbed_polls=[1-9][0-9]*; restored entry for verification replay' "$log" ||
           fail "$peer did not prove corrected input changed selective game state"
       elif [ "$SELECTIVE_INPUT_UPDATE_REPLAY_PROBE" -eq 1 ]; then
         grep -Fq '[sc2-engine-replay] enabled mode=selective-input-update-span begin_pc=0x80011c80 return_pc=0x8001bcb0 ticks=1' "$log" ||

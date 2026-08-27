@@ -21,6 +21,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/NetPlay/NetPlayClient.h"
+#include "Core/NetPlay/RollbackUndoSnapshotRing.h"
 #include "Core/PowerPC/StaticRecomp/FrameDispatchProfiler.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/RecompDeterminism.h"
@@ -957,6 +958,14 @@ void StaticRecompCore::Sc2EngineDirectCallWriteTrampoline(const u32 offset, cons
   {
     return;
   }
+  if (core->m_sc2_engine_undo_ring &&
+      !core->m_sc2_engine_undo_ring->RecordWrite(
+          offset, size, std::span<const u8>{core->m_guest.ram, core->m_guest.ram_size}))
+  {
+    core->m_sc2_engine_direct_call_overflow = true;
+    core->m_sc2_update_external_valid = false;
+    return;
+  }
   constexpr u32 PAGE_BYTES = 4096;
   auto& write_blocks = core->m_sc2_engine_speculative_active ?
                            core->m_sc2_update_replay_write_blocks :
@@ -1350,6 +1359,20 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
       m_sc2_engine_direct_call_completed = 0;
       m_sc2_engine_direct_call_active = m_sc2_engine_replay_update_call;
       m_sc2_engine_direct_call_overflow = false;
+      if (m_sc2_engine_replay_selective_update)
+      {
+        constexpr std::size_t MAX_SELECTIVE_UNIQUE_BYTES = 1024 * 1024;
+        m_sc2_engine_undo_ring = std::make_unique<NetPlay::RollbackUndoSnapshotRing>(
+            m_guest.ram_size, 1, MAX_SELECTIVE_UNIQUE_BYTES);
+        if (m_sc2_engine_undo_ring->GetConfigurationStatus() !=
+                NetPlay::RollbackUndoSnapshotRing::ConfigurationStatus::Valid ||
+            !m_sc2_engine_undo_ring->BeginFrame(
+                1, std::span<const u8>{m_guest.ram, m_guest.ram_size}))
+        {
+          m_sc2_engine_direct_call_overflow = true;
+          m_sc2_update_external_valid = false;
+        }
+      }
       if (m_sc2_engine_replay_update_call)
       {
         m_sc2_engine_direct_call_target = replay_begin_pc;
@@ -1513,8 +1536,16 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
           m_sc2_engine_replay_completed = true;
           return;
         }
-        for (const u32 offset : update_profile->second.written_offsets)
-          m_guest.ram[offset] = m_sc2_engine_replay_entry_ram[offset];
+        const std::optional<std::size_t> sparse_bytes =
+            m_sc2_engine_undo_ring ? m_sc2_engine_undo_ring->GetUniqueBytes(1) : std::nullopt;
+        if (!sparse_bytes ||
+            !m_sc2_engine_undo_ring->RestoreFrame(
+                1, std::span<u8>{m_guest.ram, m_guest.ram_size}))
+        {
+          std::fprintf(stderr, "[sc2-engine-replay] sparse entry restore failed\n");
+          m_sc2_engine_replay_completed = true;
+          return;
+        }
         m_guest = m_sc2_engine_replay_entry_guest;
         if (m_sc2_engine_replay_input_update_span)
         {
@@ -1545,9 +1576,11 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
         m_sc2_engine_replay_have_reference = true;
         m_sc2_engine_replay_replaying = true;
         std::fprintf(stderr,
-                     "[sc2-engine-replay] selective restore bytes=%zu pages=%zu effects=%zu; "
+                     "[sc2-engine-replay] selective restore bytes=%zu journal_bytes=%zu "
+                     "pages=%zu effects=%zu; "
                      "replaying update with hardware held at canonical frontier\n",
                      update_profile->second.written_offsets.size(),
+                     *sparse_bytes,
                      static_cast<std::size_t>(std::count(
                          update_profile->second.written_pages.begin(),
                          update_profile->second.written_pages.end(), true)),
@@ -1698,8 +1731,16 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
         m_guest = m_sc2_engine_replay_endpoint_guest;
         m_tb_cycle_remainder = m_sc2_engine_replay_endpoint_tb_remainder;
 
+        // The canonical endpoint load above intentionally replaced the RAM
+        // lineage which the sparse undo log describes. Reset the oracle from
+        // its retained entry postimage rather than applying an undo log across
+        // that unrelated full-state load. The live selective driver keeps one
+        // direct transaction lineage and therefore does not need this oracle-
+        // only reset.
         for (const u32 offset : update_profile->second.written_offsets)
           m_guest.ram[offset] = m_sc2_engine_replay_entry_ram[offset];
+        const std::size_t oracle_reset_bytes = update_profile->second.written_offsets.size();
+        m_sc2_engine_undo_ring.reset();
         u8* const entry_ram = m_guest.ram;
         const u32 entry_ram_size = m_guest.ram_size;
         u8* const entry_mem2 = m_guest.mem2;
@@ -1726,8 +1767,10 @@ void StaticRecompCore::ProbeSc2EngineReplay(const u32 pc)
         m_sc2_engine_replay_selective_corrected_reference = true;
         std::fprintf(stderr,
                      "[sc2-engine-replay] selective corrected reference game_bytes=%zu "
-                     "perturbed_polls=%zu; restored entry for verification replay\n",
+                     "oracle_reset_bytes=%zu perturbed_polls=%zu; restored entry for verification "
+                     "replay\n",
                      m_sc2_engine_replay_corrected_state_bytes,
+                     oracle_reset_bytes,
                      m_sc2_engine_replay_reference_perturbed_polls);
         return;
       }

@@ -24,6 +24,11 @@ namespace Core
 class System;
 }
 
+namespace NetPlay
+{
+class RollbackUndoSnapshotRing;
+}
+
 namespace PowerPC
 {
 class FrameDispatchProfiler;
@@ -343,6 +348,7 @@ private:
   std::vector<u8> m_sc2_engine_replay_original_endpoint_ram;
   std::vector<u8> m_sc2_engine_replay_entry_l1;
   std::vector<u8> m_sc2_engine_replay_endpoint_l1;
+  std::unique_ptr<NetPlay::RollbackUndoSnapshotRing> m_sc2_engine_undo_ring;
   Common::UniqueBuffer<u8> m_sc2_engine_replay_entry_state;
   Common::UniqueBuffer<u8> m_sc2_engine_replay_endpoint_state;
   Common::UniqueBuffer<u8> m_sc2_engine_replay_original_endpoint_state;
